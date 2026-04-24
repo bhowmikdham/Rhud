@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  node:
+    name: lint · typecheck · test (node)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rhud
+          POSTGRES_PASSWORD: rhud
+          POSTGRES_DB: rhud
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U rhud -d rhud"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://rhud:rhud@localhost:5432/rhud?schema=public
+      JWT_SECRET: ci-ci-ci-ci-ci-ci-ci-ci-ci-ci-ci-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - run: pnpm install --frozen-lockfile
+
+      # Apply init SQL + Prisma migrations before running RLS tests.
+      - name: Apply infra init SQL
+        run: psql "$DATABASE_URL" -f infra/postgres/init/01-extensions.sql
+      - name: Apply Prisma migrations
+        working-directory: apps/api
+        run: pnpm prisma:migrate:deploy
+
+      - run: pnpm --filter @rhud/shared build
+      - run: pnpm -r --parallel run lint
+      - run: pnpm -r --parallel run typecheck
+      - run: pnpm --filter @rhud/api test
+
+  python:
+    name: lint · typecheck (python ml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install -e 'apps/ml[dev]'
+      - run: ruff check apps/ml
+      - run: mypy apps/ml/rhud_ml

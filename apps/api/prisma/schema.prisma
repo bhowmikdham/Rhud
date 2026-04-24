@@ -1,0 +1,74 @@
+// Rhud core schema.
+// Sprint 1 scope: tenants, users, magic_links + RLS foundation.
+// Later sprints add: templates, engagements, thread_events, tokens, files, ml_models.
+//
+// Tenant isolation contract:
+//   - Every tenant-scoped table has RLS enabled + a policy keyed on
+//     current_setting('app.tenant_id')::uuid.
+//   - App code connects as the `rhud_app` role (NOBYPASSRLS) and must call
+//     withTenant() before any DB access. See apps/api/src/db/with-tenant.ts.
+//   - Migrations run as the superuser (DATABASE_URL); runtime uses APP_DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  plan        String   @default("mvp")
+  // JSONB configs for external integrations; secrets live in KMS/Doppler,
+  // these columns hold non-secret pointers (urls, workspace ids, etc.).
+  odooConfig  Json?    @map("odoo_config")
+  slackConfig Json?    @map("slack_config")
+  teamsConfig Json?    @map("teams_config")
+  gammaConfig Json?    @map("gamma_config")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  users       User[]
+  magicLinks  MagicLink[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  email        String   @db.Citext
+  passwordHash String?  @map("password_hash")
+  // CHECK constraint is added in the migration SQL.
+  role         String
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  magicLinks MagicLink[]
+
+  // Email is globally unique. Even across tenants we don't want two users
+  // sharing an email — simpler mental model for the MVP.
+  @@unique([email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+model MagicLink {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  // argon2id hash of the one-time token. Only the hash ever hits the DB.
+  tokenHash  String    @map("token_hash")
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tenantId])
+  @@map("magic_links")
+}

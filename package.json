@@ -1,0 +1,26 @@
+{
+  "name": "rhud",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Rhud — intelligent scope-to-proposal automation (MVP monorepo)",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "api:dev": "pnpm --filter @rhud/api dev",
+    "web:dev": "pnpm --filter @rhud/web dev",
+    "ml:dev": "cd apps/ml && uvicorn rhud_ml.main:app --reload --port 8001",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "infra:logs": "docker compose -f infra/docker-compose.yml logs -f",
+    "lint": "pnpm -r --parallel run lint",
+    "typecheck": "pnpm -r --parallel run typecheck",
+    "test": "pnpm -r run test"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@types/node": "^22.7.5"
+  }
+}
