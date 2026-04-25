@@ -20,7 +20,9 @@ async function bootstrap(): Promise<void> {
       transform: true,
     }),
   );
-  app.setGlobalPrefix('api/v1');
+  // Tokenised gathering links live at the unprefixed /g/:token namespace
+  // (design doc §4.5). Everything else is /api/v1.
+  app.setGlobalPrefix('api/v1', { exclude: ['/g/(.*)'] });
 
   await app.listen(env.API_PORT);
   Logger.log(`Rhud API listening on :${env.API_PORT}`, 'Bootstrap');

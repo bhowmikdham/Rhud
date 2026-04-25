@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from './prisma.service.js';
+import { SystemPrismaService } from './prisma.service.js';
 
 /**
  * Whitelist of DB operations that genuinely cannot be tenant-scoped.
@@ -19,7 +19,7 @@ import { PrismaService } from './prisma.service.js';
  */
 @Injectable()
 export class UnscopedDb {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: SystemPrismaService) {}
 
   async findUserByEmail(email: string): Promise<{
     id: string;
@@ -67,6 +67,48 @@ export class UnscopedDb {
       tenantId: r.tenant_id,
       userId: r.user_id,
       tokenHash: r.token_hash,
+    }));
+  }
+
+  /**
+   * Returns active (unexpired, unrevoked) gathering tokens. The plaintext
+   * token coming in over `/g/:token` doesn't reveal a tenant, so token
+   * resolution scans candidates and verifies each via argon2.
+   *
+   * `LIMIT 200` is comfortably above any realistic in-flight count for a
+   * tenant; a higher value here mostly trades RAM for fewer pages.
+   */
+  async findActiveGatheringTokens(limit = 200): Promise<
+    Array<{
+      id: string;
+      tenantId: string;
+      engagementId: string;
+      tokenHash: string;
+      boundFingerprintHash: string | null;
+      accessCount: number;
+    }>
+  > {
+    type Row = {
+      id: string;
+      tenant_id: string;
+      engagement_id: string;
+      token_hash: string;
+      bound_fingerprint_hash: string | null;
+      access_count: number;
+    };
+    const rows = await this.prisma.$queryRaw<Row[]>`SELECT id, tenant_id, engagement_id, token_hash,
+                                                            bound_fingerprint_hash, access_count
+        FROM gathering_tokens
+       WHERE expires_at > now() AND revoked_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT ${limit}`;
+    return rows.map((r: Row) => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      engagementId: r.engagement_id,
+      tokenHash: r.token_hash,
+      boundFingerprintHash: r.bound_fingerprint_hash,
+      accessCount: r.access_count,
     }));
   }
 }

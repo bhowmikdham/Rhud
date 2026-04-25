@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
-import { PrismaService } from './prisma.service.js';
+import { AppPrismaService } from './prisma.service.js';
 
 /**
  * The transactional client shape passed to a withTenant callback. We narrow
@@ -37,7 +37,7 @@ export type PrismaTx = Omit<
  */
 @Injectable()
 export class TenantDb {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: AppPrismaService) {}
 
   async run<T>(tenantId: string, fn: (tx: PrismaTx) => Promise<T>): Promise<T> {
     return this.prisma.$transaction(async (tx: PrismaTx) => {

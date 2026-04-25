@@ -24,16 +24,208 @@ model Tenant {
   plan        String   @default("mvp")
   // JSONB configs for external integrations; secrets live in KMS/Doppler,
   // these columns hold non-secret pointers (urls, workspace ids, etc.).
-  odooConfig  Json?    @map("odoo_config")
-  slackConfig Json?    @map("slack_config")
-  teamsConfig Json?    @map("teams_config")
-  gammaConfig Json?    @map("gamma_config")
+  odooConfig         Json?    @map("odoo_config")
+  slackConfig        Json?    @map("slack_config")
+  teamsConfig        Json?    @map("teams_config")
+  gammaConfig        Json?    @map("gamma_config")
+  // Per-tenant notification routing override. See @rhud/shared
+  // TenantNotificationConfig. Null = use defaults.
+  notificationConfig Json?    @map("notification_config")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  users       User[]
-  magicLinks  MagicLink[]
+  users           User[]
+  magicLinks      MagicLink[]
+  templates       Template[]
+  engagements     Engagement[]
+  auditChainLinks AuditChainLink[]
 
   @@map("tenants")
+}
+
+model Template {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  serviceLine String   @map("service_line")
+  name        String
+  version     Int      @default(1)
+  // draft | published | archived — CHECK constraint in migration SQL.
+  status      String   @default("draft")
+  // FK to the first node in the tree. Nullable: new templates start empty.
+  rootNodeId  String?  @map("root_node_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  nodes       TemplateNode[]
+  engagements Engagement[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("templates")
+}
+
+// ── Sprint 3: engagements, gathering, threads, files ────────────────────────
+
+model Engagement {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId            String   @map("tenant_id") @db.Uuid
+  templateId          String   @map("template_id") @db.Uuid
+  // Snapshot of the template version this engagement was issued against, so
+  // editing the template later doesn't change in-flight engagements.
+  templateVersion     Int      @default(1) @map("template_version")
+  salesEmployeeId     String   @map("sales_employee_id") @db.Uuid
+  salesManagerId      String?  @map("sales_manager_id") @db.Uuid
+  clientEmail         String   @map("client_email") @db.Citext
+  // Lifecycle — see @rhud/shared ENGAGEMENT_STATUSES. CHECK in migration.
+  status              String   @default("issued")
+  predictedPriceCents BigInt?  @map("predicted_price_cents")
+  priceLowCents       BigInt?  @map("price_low_cents")
+  priceHighCents      BigInt?  @map("price_high_cents")
+  approvedPriceCents  BigInt?  @map("approved_price_cents")
+  odooQuotationId     String?  @map("odoo_quotation_id")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  submittedAt         DateTime? @map("submitted_at") @db.Timestamptz
+  closedAt            DateTime? @map("closed_at") @db.Timestamptz
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template Template          @relation(fields: [templateId], references: [id])
+  tokens   GatheringToken[]
+  answers  EngagementAnswer[]
+  files    EngagementFile[]
+  events   ThreadEvent[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([salesEmployeeId])
+  @@map("engagements")
+}
+
+model GatheringToken {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId              String    @map("tenant_id") @db.Uuid
+  engagementId          String    @map("engagement_id") @db.Uuid
+  // argon2id hash of the plaintext token. Plaintext is shown to the client
+  // exactly once (in the email). Only the hash hits the DB.
+  tokenHash             String    @map("token_hash")
+  expiresAt             DateTime  @map("expires_at") @db.Timestamptz
+  // Set on first successful access. Used to detect material device changes
+  // (different fingerprint or wildly different IP) on subsequent accesses.
+  boundFingerprintHash  String?   @map("bound_fingerprint_hash")
+  accessCount           Int       @default(0) @map("access_count")
+  revokedAt             DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([engagementId])
+  @@map("gathering_tokens")
+}
+
+model EngagementAnswer {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  engagementId String   @map("engagement_id") @db.Uuid
+  nodeId       String   @map("node_id") @db.Uuid
+  // Answer is JSONB — string | string[] | number, see @rhud/shared Answer type.
+  answer       Json
+  answeredAt   DateTime @default(now()) @map("answered_at") @db.Timestamptz
+
+  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  // One answer per (engagement, node). Re-answers UPSERT.
+  @@unique([engagementId, nodeId])
+  @@index([tenantId])
+  @@map("engagement_answers")
+}
+
+model EngagementFile {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  engagementId String   @map("engagement_id") @db.Uuid
+  nodeId       String   @map("node_id") @db.Uuid
+  // S3 object key — `engagements/<engagementId>/<uuid>/<filename>`.
+  s3Key        String   @map("s3_key")
+  filename     String
+  sizeBytes    BigInt   @map("size_bytes")
+  contentType  String   @map("content_type")
+  uploadedAt   DateTime @default(now()) @map("uploaded_at") @db.Timestamptz
+
+  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([engagementId])
+  @@map("engagement_files")
+}
+
+model AuditChainLink {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  // Sequential per (tenant_id). Starts at 1; new tenant's first link is 1.
+  sequence      Int
+  // sha256 hex of (prevHash ?? '0'×64) || canonical(events covered).
+  rootHash      String   @map("root_hash")
+  prevHash      String?  @map("prev_hash")
+  // Window covered by this link [from, to). Closed-open interval.
+  fromCreatedAt DateTime @map("from_created_at") @db.Timestamptz
+  toCreatedAt   DateTime @map("to_created_at") @db.Timestamptz
+  eventCount    Int      @map("event_count")
+  // ISO8601 of when this link was computed (not the same as the window).
+  computedAt    DateTime @default(now()) @map("computed_at") @db.Timestamptz
+  // S3 mirror status — null until mirrored to Object Lock; populated by
+  // a background job in a later sprint. Not load-bearing for chain integrity.
+  mirroredS3Key String?  @map("mirrored_s3_key")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, sequence])
+  @@index([tenantId, computedAt])
+  @@map("audit_chain_links")
+}
+
+model ThreadEvent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  engagementId String   @map("engagement_id") @db.Uuid
+  // Must be one of the values in @rhud/shared THREAD_EVENT_TYPES — design
+  // doc §4.7 contract. CHECK constraint in migration SQL.
+  eventType    String   @map("event_type")
+  // 'user' | 'client' | 'system' | 'integration'
+  actorType    String   @map("actor_type")
+  // Free-form id of the actor (user UUID, client email, integration name).
+  actorId      String?  @map("actor_id")
+  // Event-specific payload; shape per event type lives in @rhud/shared types.
+  payload      Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([engagementId, createdAt])
+  @@map("thread_events")
+}
+
+model TemplateNode {
+  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  templateId String  @map("template_id") @db.Uuid
+  // Denormalized from the parent template so RLS policies stay single-table.
+  tenantId   String  @map("tenant_id") @db.Uuid
+  question   String
+  // single_select | multi_select | short_text | long_text | number | file_upload
+  nodeType   String  @map("node_type")
+  // For selects: [{value, label, desc?}]. Null otherwise.
+  options    Json?
+  allowFiles Boolean @default(false) @map("allow_files")
+  // [{when: {op, value}, goto: <nodeId> | 'END'}, ...] — evaluated in order.
+  nextRules  Json    @default("[]") @map("next_rules")
+  // Display order in the editor; runtime order is dictated by nextRules.
+  position   Int     @default(0)
+
+  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@index([tenantId])
+  @@map("template_nodes")
 }
 
 model User {

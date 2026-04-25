@@ -20,7 +20,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
-import { PrismaService } from '../src/db/prisma.service.js';
+import { AppPrismaService } from '../src/db/prisma.service.js';
 import { TenantDb } from '../src/db/with-tenant.js';
 
 const TENANT_A = '00000000-0000-0000-0000-00000000000a';
@@ -43,10 +43,8 @@ describe('RLS tenant isolation', () => {
   const rootUrl = process.env.DATABASE_URL;
   if (!rootUrl) throw new Error('DATABASE_URL must be set to run this test');
   const root = new PrismaClient({ datasources: { db: { url: rootUrl } } });
-  const appClient = new PrismaService(); // uses DATABASE_URL by default
-  // Override app client to use rhud_app role
   const appRlsClient = new PrismaClient({ datasources: { db: { url: appDatabaseUrl() } } });
-  const tenantDb = new TenantDb(appRlsClient as unknown as PrismaService);
+  const tenantDb = new TenantDb(appRlsClient as unknown as AppPrismaService);
 
   beforeAll(async () => {
     // Clean slate — these rows will be re-created.
@@ -69,7 +67,6 @@ describe('RLS tenant isolation', () => {
     await root.$executeRaw`DELETE FROM tenants      WHERE id        IN (${TENANT_A}::uuid, ${TENANT_B}::uuid)`;
     await root.$disconnect();
     await appRlsClient.$disconnect();
-    await appClient.$disconnect();
   });
 
   it('sees only tenant A rows inside withTenant(A)', async () => {

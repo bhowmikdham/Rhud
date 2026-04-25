@@ -1,23 +1,21 @@
 import { Global, Module } from '@nestjs/common';
-import { PrismaService } from './prisma.service.js';
+import { AppPrismaService, SystemPrismaService } from './prisma.service.js';
 import { TenantDb } from './with-tenant.js';
 import { UnscopedDb } from './unscoped-db.js';
 
 /**
- * DB module exposes `TenantDb` (the default) and `UnscopedDb` (narrow
- * whitelist for auth-boundary ops).
+ * DB module wires two Prisma clients to two services:
+ *   - AppPrismaService (rhud_app, RLS-enforced) → TenantDb
+ *   - SystemPrismaService (superuser, BYPASSRLS) → UnscopedDb
  *
- * `PrismaService` is intentionally NOT exported — making tenant-scoped
- * access the path of least resistance and cross-tenant access a conscious
- * decision that requires editing src/db/unscoped-db.ts.
- *
- * The ESLint `no-restricted-imports` rule bans `@prisma/client` outside this
- * directory, so application code has no syntactic way to reach the bare
- * PrismaClient.
+ * Both Prisma services are intentionally module-private — only `TenantDb`
+ * and `UnscopedDb` are exported. The ESLint `no-restricted-imports` rule
+ * bans `@prisma/client` outside this directory, so application code has no
+ * syntactic way to reach a bare PrismaClient.
  */
 @Global()
 @Module({
-  providers: [PrismaService, TenantDb, UnscopedDb],
+  providers: [AppPrismaService, SystemPrismaService, TenantDb, UnscopedDb],
   exports: [TenantDb, UnscopedDb],
 })
 export class DbModule {}

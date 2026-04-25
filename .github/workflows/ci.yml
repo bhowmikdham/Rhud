@@ -22,6 +22,10 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
       DATABASE_URL: postgresql://rhud:rhud@localhost:5432/rhud?schema=public
+      # The runtime DB role. NOBYPASSRLS — required for tenant isolation to
+      # actually enforce. If you only set DATABASE_URL the API will run as
+      # superuser and silently bypass every RLS policy. Both must be set.
+      APP_DATABASE_URL: postgresql://rhud_app:rhud_app@localhost:5432/rhud?schema=public
       JWT_SECRET: ci-ci-ci-ci-ci-ci-ci-ci-ci-ci-ci-ci
     steps:
       - uses: actions/checkout@v4
