@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { GatheringService } from './gathering.service.js';
-import { CreateUploadUrlDto, SubmitAnswerDto } from './dto.js';
+import { CreateUploadUrlDto, LoopStepDto, SubmitAnswerDto } from './dto.js';
 
 /**
  * Client-facing gathering endpoints. NOT prefixed with /api/v1 — they live
@@ -28,6 +28,19 @@ export class GatheringController {
     return this.svc.submitAnswer(token, ctxFromReq(req), {
       nodeId: dto.nodeId,
       answer: dto.answer as Parameters<GatheringService['submitAnswer']>[2]['answer'],
+    });
+  }
+
+  @Post('loop-step')
+  @HttpCode(200)
+  async submitLoopStep(
+    @Param('token') token: string,
+    @Req() req: Request,
+    @Body() dto: LoopStepDto,
+  ) {
+    return this.svc.submitLoopStep(token, ctxFromReq(req), {
+      loopId: dto.loopId,
+      action: dto.action,
     });
   }
 

@@ -18,6 +18,8 @@ export const THREAD_EVENT_TYPES = [
   'proposal_sent',
   'engagement_synced',
   'engagement_closed',
+  'quote_computed',
+  'quote_approved',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];

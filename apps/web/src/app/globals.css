@@ -535,6 +535,45 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
 .attach-item .name { flex: 1; font-weight: 500; }
 .attach-item .size { color: var(--fg-subtle); font-family: var(--font-mono); font-size: 11px; }
 
+/* ───────── ML prediction card ───────── */
+
+.ml-hero {
+  padding: 28px 32px;
+  border-radius: 16px;
+  background:
+    radial-gradient(ellipse at top right, var(--accent-tint) 0%, transparent 60%),
+    radial-gradient(ellipse at bottom left, var(--accent-tint) 0%, transparent 65%),
+    var(--bg-elev);
+  border: 1px solid var(--border);
+  position: relative; overflow: hidden;
+}
+.ml-label {
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  font-weight: 600; color: var(--accent);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.ml-label .pulse {
+  width: 6px; height: 6px; border-radius: 999px; background: var(--accent);
+  animation: pulse 1.4s infinite;
+}
+@keyframes pulse {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50%     { opacity: 0.45; transform: scale(1.3); }
+}
+.ml-price {
+  margin-top: 14px;
+  font-size: 44px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  display: flex; align-items: baseline; gap: 12px;
+  flex-wrap: wrap;
+}
+.ml-price .currency { font-size: 22px; color: var(--fg-muted); font-weight: 500; }
+.ml-price .band { font-size: 16px; color: var(--fg-muted); font-weight: 500; }
+.ml-meta { display: flex; align-items: center; gap: 14px; color: var(--fg-muted); font-size: 12.5px; margin-top: 4px; flex-wrap: wrap; }
+.ml-meta b { color: var(--fg); font-weight: 500; }
+
 /* ───────── Misc ───────── */
 
 .empty { text-align: center; padding: 48px 24px; color: var(--fg-muted); }
@@ -554,3 +593,63 @@ button:focus-visible, a:focus-visible, .input:focus-visible {
   display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ───────── Route transitions ─────────
+   Wraps the page tree in `.route-enter` keyed on pathname so the
+   animation replays whenever the route changes. Children with known
+   classes (.page-header, .stat-grid, .card, table, .thread-pane,
+   .artifact-pane) stagger in slightly after the parent.            */
+
+.route-enter {
+  animation: routeIn .42s cubic-bezier(.22, .8, .3, 1) both;
+  will-change: opacity, transform, filter;
+}
+@keyframes routeIn {
+  0%   { opacity: 0; transform: translateY(14px) scale(.985); filter: blur(4px); }
+  60%  { opacity: 1; filter: blur(0); }
+  100% { opacity: 1; transform: none; filter: none; }
+}
+
+.route-enter > * > .page-header,
+.route-enter .page-header {
+  animation: routeChild .52s cubic-bezier(.22, .8, .3, 1) both;
+  animation-delay: .05s;
+}
+.route-enter > * > .stat-grid,
+.route-enter .stat-grid {
+  animation: routeChild .56s cubic-bezier(.22, .8, .3, 1) both;
+  animation-delay: .12s;
+}
+.route-enter > * > .card,
+.route-enter > * > table,
+.route-enter .thread-pane,
+.route-enter .artifact-pane {
+  animation: routeChild .6s cubic-bezier(.22, .8, .3, 1) both;
+  animation-delay: .18s;
+}
+.route-enter .thread-pane { animation-delay: .08s; }
+.route-enter .artifact-pane { animation-delay: .2s; }
+
+@keyframes routeChild {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Sidebar nav: active pill pop-in */
+.nav-item.active::before {
+  animation: navPop .32s cubic-bezier(.3, .9, .3, 1.4) both;
+}
+@keyframes navPop {
+  0%   { transform: scaleY(0); opacity: 0; }
+  60%  { transform: scaleY(1.15); opacity: 1; }
+  100% { transform: scaleY(1); opacity: 1; }
+}
+
+/* Crumbs swap on route change */
+.crumbs {
+  animation: crumbsFade .32s ease-out both;
+}
+@keyframes crumbsFade {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: none; }
+}

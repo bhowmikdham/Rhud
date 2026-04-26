@@ -71,6 +71,11 @@ export const Icon = {
   Dot: makeIcon(<circle cx="12" cy="12" r="3" fill="currentColor" />),
   Circle: makeIcon(<circle cx="12" cy="12" r="9" />),
   Slack: makeIcon(<><rect x="3" y="10" width="4" height="11" rx="2" /><rect x="10" y="3" width="11" height="4" rx="2" /><rect x="10" y="10" width="11" height="11" rx="2" /></>),
+  LogOut: makeIcon(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></>),
+  CreditCard: makeIcon(<><rect x="3" y="6" width="18" height="13" rx="2" /><path d="M3 11h18M7 16h4" /></>),
+  Code: makeIcon(<><path d="m8 16-4-4 4-4" /><path d="m16 8 4 4-4 4" /><path d="m14 4-4 16" /></>),
+  MoreHorizontal: makeIcon(<><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></>),
+  Hash: makeIcon(<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18" />),
 } as const;
 
 export type IconName = keyof typeof Icon;

@@ -41,6 +41,8 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   proposal_sent:             ['sales_employee', 'sales_manager', 'client'],
   engagement_synced:         ['sales_employee'],
   engagement_closed:         ['sales_employee', 'sales_manager'],
+  quote_computed:            [],  // background event, surfaced in the UI thread only
+  quote_approved:            ['sales_employee'],
 };
 
 /**

@@ -15,14 +15,23 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
 import { TemplatesService } from './templates.service.js';
-import { CreateNodeDto, CreateTemplateDto, UpdateNodeDto, UpdateTemplateDto } from './dto.js';
+import {
+  CreateNodeDto,
+  CreateTemplateDto,
+  ImportNodesDto,
+  UpdateNodeDto,
+  UpdateTemplateDto,
+} from './dto.js';
 
 /**
- * All template routes require a valid JWT. Mutations are admin-only — the
- * template library is tenant-wide configuration, not per-user state.
+ * All template routes require a valid JWT.
  *
- * Reads are allowed for any authed user in the tenant because sales employees
- * will need to browse templates when issuing gathering links (sprint 3).
+ * Mutations: admin + sales_manager. Templates are tenant-wide configuration
+ * that managers in practice need to author and tweak; sales_employee stays
+ * read-only so engagement issuance still works for them without
+ * accidentally letting individual reps fork the template library.
+ *
+ * Reads: any authed user in the tenant.
  */
 @Controller('templates')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -40,14 +49,14 @@ export class TemplatesController {
   }
 
   @Post()
-  @Roles('admin')
+  @Roles('admin', 'sales_manager')
   @HttpCode(201)
   create(@Req() req: AuthedRequest, @Body() dto: CreateTemplateDto) {
     return this.svc.create(req.tenantId, dto);
   }
 
   @Patch(':id')
-  @Roles('admin')
+  @Roles('admin', 'sales_manager')
   update(
     @Req() req: AuthedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
@@ -57,7 +66,7 @@ export class TemplatesController {
   }
 
   @Delete(':id')
-  @Roles('admin')
+  @Roles('admin', 'sales_manager')
   @HttpCode(204)
   async remove(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
     await this.svc.remove(req.tenantId, id);
@@ -66,7 +75,7 @@ export class TemplatesController {
   // ── Nodes ─────────────────────────────────────────────────────────────────
 
   @Post(':id/nodes')
-  @Roles('admin')
+  @Roles('admin', 'sales_manager')
   @HttpCode(201)
   addNode(
     @Req() req: AuthedRequest,
@@ -77,7 +86,7 @@ export class TemplatesController {
   }
 
   @Patch(':id/nodes/:nodeId')
-  @Roles('admin')
+  @Roles('admin', 'sales_manager')
   updateNode(
     @Req() req: AuthedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
@@ -88,7 +97,7 @@ export class TemplatesController {
   }
 
   @Delete(':id/nodes/:nodeId')
-  @Roles('admin')
+  @Roles('admin', 'sales_manager')
   @HttpCode(204)
   async removeNode(
     @Req() req: AuthedRequest,
@@ -98,10 +107,30 @@ export class TemplatesController {
     await this.svc.removeNode(req.tenantId, id, nodeId);
   }
 
+  // ── Bulk import ───────────────────────────────────────────────────────────
+  // Paste a list of questions (often parsed client-side from CSV / a Numbers
+  // export / an existing intake doc) and we'll create them as a linear chain.
+  // First node becomes root if the template has none; every node gets an
+  // `always → next` rule, last one terminates with END.
+
+  @Post(':id/nodes/import')
+  @Roles('admin', 'sales_manager')
+  @HttpCode(201)
+  async importNodes(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: ImportNodesDto,
+  ) {
+    return this.svc.importNodes(req.tenantId, id, {
+      replace: dto.replace ?? false,
+      nodes: dto.nodes,
+    });
+  }
+
   // ── Validation ────────────────────────────────────────────────────────────
 
   @Post(':id/validate')
-  @Roles('admin')
+  @Roles('admin', 'sales_manager')
   @HttpCode(200)
   async validate(
     @Req() req: AuthedRequest,

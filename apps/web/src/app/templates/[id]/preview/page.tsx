@@ -64,6 +64,8 @@ export default function TemplatePreviewPage() {
   if (!node) return <BareErr msg={`unknown node ${currentId}`} backHref={`/templates/${id}`} />;
 
   const answer = answers[node.id] ?? null;
+  const isSection = node.nodeType === 'section';
+  const isOptional = node.required === false;
 
   function setAnswer(a: Answer) {
     setAnswers((m) => ({ ...m, [node!.id]: a }));
@@ -102,6 +104,8 @@ export default function TemplatePreviewPage() {
   }
 
   const canAdvance = (() => {
+    if (isSection) return true;
+    if (isOptional) return true;
     if (node.nodeType === 'single_select') return typeof answer === 'string' && answer.length > 0;
     if (node.nodeType === 'multi_select') return Array.isArray(answer) && answer.length > 0;
     if (node.nodeType === 'short_text' || node.nodeType === 'long_text') return typeof answer === 'string' && answer.trim().length > 0;
@@ -133,10 +137,19 @@ export default function TemplatePreviewPage() {
         </div>
 
         <div className="client-body">
-          <div className="client-q">Question {idx + 1} of {path.length}</div>
+          <div className="client-q">
+            {isSection ? 'Section' : `Question ${idx + 1} of ${path.length}`}
+            {isOptional && !isSection && <span style={{ marginLeft: 8, color: 'var(--fg-subtle)' }}>· optional</span>}
+          </div>
           <div className="client-title">{node.question}</div>
 
-          <NodeInput node={node} value={answer} onChange={setAnswer} />
+          {node.helpText && (
+            <p style={{ marginTop: 10, fontSize: 13.5, color: 'var(--fg-muted)', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
+              {node.helpText}
+            </p>
+          )}
+
+          {!isSection && <NodeInput node={node} value={answer} onChange={setAnswer} />}
         </div>
 
         <div className="client-foot">
@@ -211,13 +224,13 @@ function NodeInput({ node, value, onChange }: { node: TemplateNode; value: Answe
 
   if (node.nodeType === 'short_text') {
     return (
-      <input className="input" style={{ marginTop: 28 }} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} placeholder="Type your answer…" />
+      <input className="input" style={{ marginTop: 28 }} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} placeholder={node.placeholder ?? 'Type your answer…'} />
     );
   }
 
   if (node.nodeType === 'long_text') {
     return (
-      <textarea className="input" style={{ marginTop: 28 }} rows={5} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} placeholder="Type your answer…" />
+      <textarea className="input" style={{ marginTop: 28 }} rows={5} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} placeholder={node.placeholder ?? 'Type your answer…'} />
     );
   }
 
@@ -226,7 +239,7 @@ function NodeInput({ node, value, onChange }: { node: TemplateNode; value: Answe
       <input className="input" type="number" style={{ marginTop: 28, height: 56, fontSize: 28, fontWeight: 500, padding: '0 18px' }}
         value={typeof value === 'number' ? value : ''}
         onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-        placeholder="0" />
+        placeholder={node.placeholder ?? '0'} />
     );
   }
 

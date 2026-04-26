@@ -129,12 +129,15 @@ describe('validateAnswerShape', () => {
     expect(validateAnswerShape('short_text', 'hi').ok).toBe(true);
     expect(validateAnswerShape('long_text', 'longer').ok).toBe(true);
     expect(validateAnswerShape('file_upload', null).ok).toBe(true);
+    expect(validateAnswerShape('section', null).ok).toBe(true);
+    expect(validateAnswerShape('section', '').ok).toBe(true);
   });
 
   it('rejects mismatches', () => {
     expect(validateAnswerShape('number', '42' as unknown as number).ok).toBe(false);
     expect(validateAnswerShape('multi_select', 'not an array' as unknown as string[]).ok).toBe(false);
     expect(validateAnswerShape('number', Number.POSITIVE_INFINITY).ok).toBe(false);
+    expect(validateAnswerShape('section', 'oops' as unknown as string).ok).toBe(false);
   });
 });
 

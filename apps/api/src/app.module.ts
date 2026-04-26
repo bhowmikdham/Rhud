@@ -9,6 +9,8 @@ import { StorageModule } from './storage/storage.module.js';
 import { EngagementsModule } from './engagements/engagements.module.js';
 import { GatheringModule } from './gathering/gathering.module.js';
 import { AuditModule } from './audit/audit.module.js';
+import { MlModule } from './ml/ml.module.js';
+import { PricingModule } from './pricing/pricing.module.js';
 import { HealthController } from './health.controller.js';
 
 @Module({
@@ -28,6 +30,8 @@ import { HealthController } from './health.controller.js';
     EngagementsModule,
     GatheringModule,
     AuditModule,
+    MlModule,
+    PricingModule,
   ],
   controllers: [HealthController],
 })

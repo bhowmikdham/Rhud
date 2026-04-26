@@ -32,6 +32,7 @@ export default [
         __dirname: 'readonly',
         NodeJS: 'readonly',
         URL: 'readonly',
+        fetch: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',

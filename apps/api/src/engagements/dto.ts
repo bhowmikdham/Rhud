@@ -1,4 +1,4 @@
-import { IsEmail, IsInt, IsOptional, Matches, Min } from 'class-validator';
+import { IsEmail, IsInt, IsOptional, IsString, Matches, MaxLength, Min } from 'class-validator';
 
 // UUID-shape match. `@IsUUID()` requires version 1-5; some of our seed
 // fixtures use version 0 ("nil-ish") UUIDs for stable references, so we
@@ -12,6 +12,12 @@ export class CreateEngagementDto {
 
   @IsEmail()
   clientEmail!: string;
+
+  /** Free-text label ("Acme Q3 Security Assessment"). Optional but recommended. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  name?: string;
 
   /** Days until the link expires. Default: 7 (per design doc §3.1). */
   @IsOptional()

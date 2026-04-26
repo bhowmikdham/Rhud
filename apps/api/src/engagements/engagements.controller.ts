@@ -15,18 +15,15 @@ import type { AuthedRequest } from '../auth/auth.types.js';
 import { EngagementsService } from './engagements.service.js';
 import { CreateEngagementDto } from './dto.js';
 
-@Controller('engagements')
+// Mounted at both routes so the rebrand is purely cosmetic for clients:
+// new code calls /opportunities, in-flight integrations + older tests still
+// work against /engagements. Internal terminology stays "engagement"
+// because the DB table + Prisma model are still called that.
+@Controller(['opportunities', 'engagements'])
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class EngagementsController {
   constructor(private readonly svc: EngagementsService) {}
 
-  /**
-   * Issue a new engagement and a tokenised gathering link.
-   *
-   * Returns the plaintext token in the response — this is the ONLY time
-   * it's ever exposed. In production the email-out step happens out-of-band
-   * (Postmark/SES); for sprint 3 we hand it to the caller for manual delivery.
-   */
   @Post()
   @Roles('sales_employee', 'sales_manager', 'admin')
   @HttpCode(201)

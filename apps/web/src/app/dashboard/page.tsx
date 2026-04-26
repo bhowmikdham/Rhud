@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { engagements, type EngagementSummary } from '@/lib/api';
+import { opportunities, type EngagementSummary } from '@/lib/api';
 import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
@@ -22,7 +22,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!user) return;
-    engagements.list().then(setItems).catch((e) => setErr(String(e)));
+    opportunities.list().then(setItems).catch((e) => setErr(String(e)));
   }, [user]);
 
   const firstName = user ? user.email.split('@')[0]?.split('.')[0] ?? '' : '';
@@ -49,7 +49,7 @@ export default function DashboardPage() {
           <div>
             <h1 className="page-title">Good {timeOfDay()}{firstName && `, ${capitalize(firstName)}`}</h1>
             <p className="page-subtitle">
-              You have <b style={{ color: 'var(--fg)' }}>{open.length} open engagement{open.length === 1 ? '' : 's'}</b>
+              You have <b style={{ color: 'var(--fg)' }}>{open.length} open opportunit{open.length === 1 ? 'y' : 'ies'}</b>
               {awaitingApproval.length > 0 && (
                 <>
                   , <b style={{ color: 'var(--warn)' }}>{awaitingApproval.length} waiting on approval</b>
@@ -59,9 +59,9 @@ export default function DashboardPage() {
             </p>
           </div>
           <div className="page-actions">
-            <Link href="/engagements/new" className="btn accent">
+            <Link href="/opportunities/new" className="btn accent">
               <Icon.Plus size={13} />
-              New engagement
+              New opportunity
             </Link>
           </div>
         </div>
@@ -71,10 +71,10 @@ export default function DashboardPage() {
         )}
 
         <div className="stat-grid">
-          <Stat label="Open engagements" value={items === null ? '…' : String(open.length)} />
+          <Stat label="Open opportunities" value={items === null ? '…' : String(open.length)} />
           <Stat label="Awaiting approval" value={items === null ? '…' : String(awaitingApproval.length)} tone={awaitingApproval.length > 0 ? 'warn' : 'default'} />
           <Stat label="Submitted this week" value={items === null ? '…' : String(submittedThisWeek.length)} />
-          <Stat label="Total engagements" value={items === null ? '…' : String(items.length)} />
+          <Stat label="Total opportunities" value={items === null ? '…' : String(items.length)} />
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 12, marginBottom: 24 }}>
@@ -83,10 +83,10 @@ export default function DashboardPage() {
               <div>
                 <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 600, letterSpacing: '-0.01em' }}>Pipeline by stage</h3>
                 <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 2 }}>
-                  {items?.length ?? 0} total engagements
+                  {items?.length ?? 0} total opportunities
                 </div>
               </div>
-              <Link href="/engagements" className="btn sm ghost">
+              <Link href="/opportunities" className="btn sm ghost">
                 View all <Icon.ArrowUpRight size={12} />
               </Link>
             </div>
@@ -122,7 +122,7 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 awaitingApproval.slice(0, 5).map((e) => (
-                  <Link key={e.id} href={`/engagements/${e.id}`} style={{
+                  <Link key={e.id} href={`/opportunities/${e.id}`} style={{
                     display: 'grid', gridTemplateColumns: '1fr auto', gap: 10,
                     padding: '10px 18px', alignItems: 'center', textDecoration: 'none',
                   }}>
@@ -139,8 +139,8 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>Recent engagements</h2>
-          <Link href="/engagements" className="btn sm ghost">
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>Recent opportunities</h2>
+          <Link href="/opportunities" className="btn sm ghost">
             View all {items?.length ?? 0} <Icon.ArrowUpRight size={12} />
           </Link>
         </div>
@@ -161,13 +161,13 @@ export default function DashboardPage() {
                 <tr>
                   <td colSpan={5}>
                     <div className="empty">
-                      No engagements yet.{' '}
-                      <Link href="/engagements/new" style={{ color: 'var(--fg)' }}>Issue your first link →</Link>
+                      No opportunities yet.{' '}
+                      <Link href="/opportunities/new" style={{ color: 'var(--fg)' }}>Issue your first link →</Link>
                     </div>
                   </td>
                 </tr>
               ) : recent.map((e) => (
-                <tr key={e.id} onClick={() => location.assign(`/engagements/${e.id}`)}>
+                <tr key={e.id} onClick={() => location.assign(`/opportunities/${e.id}`)}>
                   <td className="cell-strong">{e.clientEmail}</td>
                   <td className="cell-muted" style={{ fontSize: 12.5 }}>{e.templateName}</td>
                   <td><StageChip stage={e.status} /></td>

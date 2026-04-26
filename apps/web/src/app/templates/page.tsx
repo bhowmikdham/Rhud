@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { templates, type Template } from '@/lib/api';
+import { templates, describeError, type Template } from '@/lib/api';
 import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
@@ -12,9 +12,11 @@ export default function TemplatesListPage() {
   const [items, setItems] = useState<Template[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  const canEdit = user ? ['admin', 'sales_manager'].includes(user.role) : false;
+
   useEffect(() => {
     if (!user) return;
-    templates.list().then(setItems).catch((e) => setErr(String(e)));
+    templates.list().then(setItems).catch((e) => setErr(describeError(e)));
   }, [user]);
 
   return (
@@ -23,17 +25,46 @@ export default function TemplatesListPage() {
         <div className="page-header">
           <div>
             <h1 className="page-title">Templates</h1>
-            <p className="page-subtitle">Decision-tree forms your sales team uses to gather scope. Branch by answer, attach files at any step.</p>
+            <p className="page-subtitle">
+              Decision-tree forms your sales team uses to gather scope. Branch by answer, attach files at any step.
+            </p>
           </div>
-          <div className="page-actions">
-            <Link href="/templates/new" className="btn accent">
-              <Icon.Plus size={13} />
-              New template
-            </Link>
-          </div>
+          {canEdit && (
+            <div className="page-actions">
+              <Link href="/templates/new" className="btn accent">
+                <Icon.Plus size={13} />
+                New template
+              </Link>
+            </div>
+          )}
         </div>
 
-        {err && <div className="card" style={{ padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16 }}>{err}</div>}
+        {err && (
+          <div
+            className="card"
+            style={{
+              padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16,
+              background: 'var(--danger-tint)',
+              borderColor: 'color-mix(in oklch, var(--danger) 22%, transparent)',
+            }}
+          >
+            {err}
+          </div>
+        )}
+
+        {!canEdit && (
+          <div
+            className="card"
+            style={{
+              padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+              marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+              background: 'var(--bg-sunk)',
+            }}
+          >
+            <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+            Read-only — only admins and sales managers can author templates.
+          </div>
+        )}
 
         <div className="card" style={{ overflow: 'hidden' }}>
           <table className="table">
@@ -48,13 +79,23 @@ export default function TemplatesListPage() {
               </tr>
             </thead>
             <tbody>
-              {items === null && !err && <tr><td colSpan={6}><div className="empty">Loading…</div></td></tr>}
+              {items === null && !err && (
+                <tr><td colSpan={6}><div className="empty">Loading…</div></td></tr>
+              )}
               {items?.length === 0 && (
-                <tr><td colSpan={6}>
-                  <div className="empty">
-                    No templates yet. <Link href="/templates/new" style={{ color: 'var(--fg)', textDecoration: 'underline' }}>Create one</Link>.
-                  </div>
-                </td></tr>
+                <tr>
+                  <td colSpan={6}>
+                    <div className="empty">
+                      No templates yet.
+                      {canEdit && (
+                        <>
+                          {' '}
+                          <Link href="/templates/new" style={{ color: 'var(--fg)', textDecoration: 'underline' }}>Create one</Link>.
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
               )}
               {items?.map((t) => (
                 <tr key={t.id} onClick={() => location.assign(`/templates/${t.id}`)}>

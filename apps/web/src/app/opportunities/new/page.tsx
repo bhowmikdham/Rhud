@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { engagements, templates, type IssuedLink, type Template } from '@/lib/api';
+import { opportunities, templates, type IssuedLink, type Template } from '@/lib/api';
 import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
@@ -16,7 +16,7 @@ const TTL_OPTIONS: Array<[string, string, number]> = [
   ['30d', '30 days', 30],
 ];
 
-export default function NewEngagementPage() {
+export default function NewOpportunityPage() {
   const user = useRequireAuth();
   const router = useRouter();
 
@@ -57,7 +57,12 @@ export default function NewEngagementPage() {
     setBusy(true);
     try {
       const ttl = TTL_OPTIONS.find((t) => t[0] === ttlKey)?.[2] ?? 7;
-      const r = await engagements.issue({ templateId, clientEmail, expiresInDays: ttl });
+      const r = await opportunities.issue({
+        templateId,
+        clientEmail,
+        ...(title.trim() ? { name: title.trim() } : {}),
+        expiresInDays: ttl,
+      });
       setIssued(r);
       setStep(3);
     } catch (e) {
@@ -70,17 +75,17 @@ export default function NewEngagementPage() {
   if (!user) return null;
 
   return (
-    <AppShell crumbs={[{ label: 'Engagements', href: '/engagements' }, { label: 'New' }]}>
+    <AppShell crumbs={[{ label: 'Opportunities', href: '/opportunities' }, { label: 'New' }]}>
       <div className="page-inner" style={{ maxWidth: 720 }}>
         <div style={{ marginBottom: 24 }}>
-          <button className="btn ghost sm" onClick={() => router.push('/engagements')}>
+          <button className="btn ghost sm" onClick={() => router.push('/opportunities')}>
             <Icon.ChevronLeft size={13} /> Back
           </button>
         </div>
 
         <div className="page-header">
           <div>
-            <h1 className="page-title">New engagement</h1>
+            <h1 className="page-title">New opportunity</h1>
             <p className="page-subtitle">
               Issue a secure, single-use scoping link. The client opens it — no account required.
             </p>
@@ -98,18 +103,18 @@ export default function NewEngagementPage() {
         {step === 1 && (
           <div className="card" style={{ padding: 28 }}>
             <div style={{ display: 'grid', gap: 16 }}>
-              <Field label="Client company" hint="Surfaces prior engagements with this company automatically.">
+              <Field label="Client company" hint="Surfaces prior opportunities with this company automatically.">
                 <input className="input" value={companyHint} onChange={(e) => setCompanyHint(e.target.value)} placeholder="Northwind Analytics" />
               </Field>
               <Field label="Primary contact email" hint="The link will be scoped to this email on first open.">
                 <input className="input" type="email" required value={clientEmail} onChange={(e) => setClientEmail(e.target.value)} placeholder="alex@northwind.io" />
               </Field>
-              <Field label="Engagement title" hint="Short, internal — shown in the thread and dashboard.">
-                <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Q3 data platform scoping" />
+              <Field label="Opportunity name" hint="Short, internal — shown in the thread and dashboard.">
+                <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Acme Q3 Security Assessment" />
               </Field>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 24 }}>
-              <button className="btn" onClick={() => router.push('/engagements')}>Cancel</button>
+              <button className="btn" onClick={() => router.push('/opportunities')}>Cancel</button>
               <button className="btn accent" disabled={!clientEmail} onClick={() => setStep(2)}>
                 Continue <Icon.ArrowRight size={12} />
               </button>
@@ -266,7 +271,7 @@ export default function NewEngagementPage() {
                 <Icon.Slack size={13} />Post to Slack
               </button>
               <button className="btn" style={{ height: 36, justifyContent: 'center' }}
-                onClick={() => navigator.clipboard.writeText(`Hi — here's a secure link to scope ${title || 'your engagement'}: ${issued.url}`)}
+                onClick={() => navigator.clipboard.writeText(`Hi — here's a secure link to scope ${title || 'your opportunity'}: ${issued.url}`)}
               >
                 <Icon.Copy size={13} />Copy rich message
               </button>
@@ -276,8 +281,8 @@ export default function NewEngagementPage() {
               <Link href={`/g/${issued.token}`} className="btn ghost" target="_blank">
                 <Icon.Eye size={13} />Preview client view
               </Link>
-              <Link href={`/engagements/${issued.engagementId}`} className="btn accent">
-                Open engagement thread <Icon.ArrowRight size={12} />
+              <Link href={`/opportunities/${issued.engagementId}`} className="btn accent">
+                Open opportunity thread <Icon.ArrowRight size={12} />
               </Link>
             </div>
           </div>

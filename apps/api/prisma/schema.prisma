@@ -38,6 +38,9 @@ model Tenant {
   templates       Template[]
   engagements     Engagement[]
   auditChainLinks AuditChainLink[]
+  rateCards       RateCard[]
+  predictions     Prediction[]
+  pricingConfig   TenantPricingConfig?
 
   @@map("tenants")
 }
@@ -52,15 +55,21 @@ model Template {
   status      String   @default("draft")
   // FK to the first node in the tree. Nullable: new templates start empty.
   rootNodeId  String?  @map("root_node_id") @db.Uuid
+  // Default rate card used for engagements issued from this template.
+  // Null on legacy templates; quotes are computed iff the engagement's
+  // template has one set at submission time.
+  rateCardId  String?  @map("rate_card_id") @db.Uuid
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rateCard    RateCard?      @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
   nodes       TemplateNode[]
   engagements Engagement[]
 
   @@index([tenantId])
   @@index([tenantId, status])
+  @@index([rateCardId])
   @@map("templates")
 }
 
@@ -76,28 +85,75 @@ model Engagement {
   salesEmployeeId     String   @map("sales_employee_id") @db.Uuid
   salesManagerId      String?  @map("sales_manager_id") @db.Uuid
   clientEmail         String   @map("client_email") @db.Citext
+  // Free-text label shown in the UI ("Acme Q3 Security Assessment"). The
+  // table itself is still called engagements for historical reasons; the
+  // user-facing concept is "Opportunity".
+  name                String?
   // Lifecycle — see @rhud/shared ENGAGEMENT_STATUSES. CHECK in migration.
   status              String   @default("issued")
   predictedPriceCents BigInt?  @map("predicted_price_cents")
   priceLowCents       BigInt?  @map("price_low_cents")
   priceHighCents      BigInt?  @map("price_high_cents")
   approvedPriceCents  BigInt?  @map("approved_price_cents")
+  // Snapshot of closed-engagement count for this tenant at predict-time.
+  // Pinned so a re-evaluation later doesn't shift regime under our feet.
+  closedEngagementCountSnapshot Int? @map("closed_engagement_count_snapshot")
   odooQuotationId     String?  @map("odoo_quotation_id")
+  // Loop cursor state, keyed by loop node id:
+  //   { "<loopNodeId>": { iter: <currentIteration>, status: 'iterating'|'done' } }
+  // The runtime updates this as the responder enters/exits each loop;
+  // findCurrentNode reads it to know which body iteration to show.
+  loopState           Json     @default("{}") @map("loop_state")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   submittedAt         DateTime? @map("submitted_at") @db.Timestamptz
   closedAt            DateTime? @map("closed_at") @db.Timestamptz
 
-  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template Template          @relation(fields: [templateId], references: [id])
-  tokens   GatheringToken[]
-  answers  EngagementAnswer[]
-  files    EngagementFile[]
-  events   ThreadEvent[]
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template    Template          @relation(fields: [templateId], references: [id])
+  tokens      GatheringToken[]
+  answers     EngagementAnswer[]
+  files       EngagementFile[]
+  events      ThreadEvent[]
+  quote       EngagementQuote?
+  predictions Prediction[]
 
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([salesEmployeeId])
   @@map("engagements")
+}
+
+// Persisted output of the deterministic Stage 2 base price computation,
+// plus space for Stage 3 modifier predictions and manager overrides.
+// One per engagement; recomputed on submit.
+model EngagementQuote {
+  id                       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId                 String    @map("tenant_id") @db.Uuid
+  engagementId             String    @unique @map("engagement_id") @db.Uuid
+  rateCardId               String?   @map("rate_card_id") @db.Uuid
+  rateCardVersion          Int       @map("rate_card_version")
+  currency                 String
+  baseTotalCents           BigInt    @map("base_total_cents")
+  baseBreakdown            Json      @map("base_breakdown")
+  // Stage 3 (modifier) — nullable until ML lands.
+  predictedAdjustmentPct   Decimal?  @map("predicted_adjustment_pct") @db.Decimal
+  predictedPriceCents      BigInt?   @map("predicted_price_cents")
+  predictedBandLowCents    BigInt?   @map("predicted_band_low_cents")
+  predictedBandHighCents   BigInt?   @map("predicted_band_high_cents")
+  winProbability           Decimal?  @map("win_probability") @db.Decimal
+  modifierDrivers          Json?     @map("modifier_drivers")
+  // Manager approval / override — null until used.
+  approvedPriceCents       BigInt?   @map("approved_price_cents")
+  approvedAt               DateTime? @map("approved_at") @db.Timestamptz
+  approvedBy               String?   @map("approved_by") @db.Uuid
+  computedAt               DateTime  @default(now()) @map("computed_at") @db.Timestamptz
+
+  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  rateCard   RateCard?  @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([rateCardId])
+  @@map("engagement_quotes")
 }
 
 model GatheringToken {
@@ -123,18 +179,22 @@ model GatheringToken {
 }
 
 model EngagementAnswer {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId     String   @map("tenant_id") @db.Uuid
-  engagementId String   @map("engagement_id") @db.Uuid
-  nodeId       String   @map("node_id") @db.Uuid
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  engagementId    String   @map("engagement_id") @db.Uuid
+  nodeId          String   @map("node_id") @db.Uuid
+  // Loop iteration this answer belongs to. 0 for non-loop answers; 0..N-1
+  // for nodes inside a loop body where the responder iterated N times.
+  iterationIndex  Int      @default(0) @map("iteration_index")
   // Answer is JSONB — string | string[] | number, see @rhud/shared Answer type.
-  answer       Json
-  answeredAt   DateTime @default(now()) @map("answered_at") @db.Timestamptz
+  answer          Json
+  answeredAt      DateTime @default(now()) @map("answered_at") @db.Timestamptz
 
   engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
 
-  // One answer per (engagement, node). Re-answers UPSERT.
-  @@unique([engagementId, nodeId])
+  // One answer per (engagement, node, iteration). Re-answers within the
+  // same iteration UPSERT in place; new iteration writes a new row.
+  @@unique([engagementId, nodeId, iterationIndex], map: "engagement_answers_eng_node_iter_key")
   @@index([tenantId])
   @@map("engagement_answers")
 }
@@ -205,13 +265,115 @@ model ThreadEvent {
   @@map("thread_events")
 }
 
+// ── Pricing engine: rate cards ──────────────────────────────────────────────
+// Versioned, tenant-owned price book. Stage 2 of the pricing engine
+// (deterministic base price) is a pure walk over service_lines + tiers.
+// See Rhud_Pricing_Engine.pdf §2.2, §3.3.
+model RateCard {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  name            String
+  version         Int      @default(1)
+  // draft | published | archived — CHECK in migration.
+  status          String   @default("draft")
+  // ISO 4217 — INR / USD / EUR / GBP. Kept simple; FX in v1.1 per §7.
+  currency        String   @default("INR")
+  effectiveFrom   DateTime? @map("effective_from") @db.Timestamptz
+  effectiveTo     DateTime? @map("effective_to")   @db.Timestamptz
+  sourceFileKey   String?   @map("source_file_key")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @updatedAt      @map("updated_at") @db.Timestamptz
+
+  tenant              Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  serviceLines        RateCardServiceLine[]
+  openPricedServices  RateCardOpenPricedService[]
+  templates           Template[]
+  engagementQuotes    EngagementQuote[]
+
+  @@unique([tenantId, name, version], map: "rate_cards_tenant_name_version_uniq")
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("rate_cards")
+}
+
+model RateCardServiceLine {
+  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String  @map("tenant_id") @db.Uuid
+  rateCardId    String  @map("rate_card_id") @db.Uuid
+  // Machine identifier. Templates reference this in node mappings, so
+  // the pricing engine can hop from a gathering answer to the right
+  // service line. Stable across rate card versions.
+  slug          String
+  displayName   String  @map("display_name")
+  // pages | screens | apis | loc | devices | hours | other — CHECK in migration.
+  scopeUnit     String  @map("scope_unit")
+  // tier_lookup | per_unit | flat | hourly — only tier_lookup is wired today.
+  pricingModel  String  @default("tier_lookup") @map("pricing_model")
+  position      Int     @default(0)
+
+  rateCard RateCard            @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+  tiers    RateCardTier[]
+
+  @@unique([rateCardId, slug], map: "rate_card_service_lines_card_slug_uniq")
+  @@index([tenantId])
+  @@map("rate_card_service_lines")
+}
+
+model RateCardTier {
+  id              String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String  @map("tenant_id") @db.Uuid
+  serviceLineId   String  @map("service_line_id") @db.Uuid
+  // Inclusive bounds. rangeMax NULL = open-ended ("200 & Above").
+  rangeMin        Int     @map("range_min")
+  rangeMax        Int?    @map("range_max")
+  // 'grey_box' | 'black_box' | 'va' | 'pt' | null — service-line specific.
+  methodology     String?
+  // 'internal' | 'external' — CHECK in migration.
+  customerType    String  @map("customer_type")
+  priceCents      BigInt  @map("price_cents")
+  // The original tier label as written in the source ("Upto 50",
+  // "200 & Above") — surfaces in the proposal line items for traceability.
+  displayLabel    String? @map("display_label")
+
+  serviceLine RateCardServiceLine @relation(fields: [serviceLineId], references: [id], onDelete: Cascade)
+
+  @@index([serviceLineId])
+  @@index([tenantId])
+  @@index([serviceLineId, customerType, methodology], map: "rate_card_tiers_lookup_idx")
+  @@map("rate_card_tiers")
+}
+
+model RateCardOpenPricedService {
+  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String  @map("tenant_id") @db.Uuid
+  rateCardId    String  @map("rate_card_id") @db.Uuid
+  slug          String
+  displayName   String  @map("display_name")
+  category      String?
+  position      Int     @default(0)
+
+  rateCard RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+
+  @@unique([rateCardId, slug], map: "rate_card_open_priced_services_card_slug_uniq")
+  @@index([tenantId])
+  @@map("rate_card_open_priced_services")
+}
+
 model TemplateNode {
   id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   templateId String  @map("template_id") @db.Uuid
   // Denormalized from the parent template so RLS policies stay single-table.
   tenantId   String  @map("tenant_id") @db.Uuid
   question   String
-  // single_select | multi_select | short_text | long_text | number | file_upload
+  // For section nodes this is the heading description (longer body of copy).
+  // For input nodes it's the helper text under the field.
+  helpText   String? @map("help_text")
+  // Optional placeholder shown inside text/number inputs.
+  placeholder String?
+  // If FALSE the responder may skip the question; defaults TRUE.
+  required   Boolean @default(true)
+  // single_select | multi_select | short_text | long_text | number |
+  // file_upload | section | loop
   nodeType   String  @map("node_type")
   // For selects: [{value, label, desc?}]. Null otherwise.
   options    Json?
@@ -220,11 +382,25 @@ model TemplateNode {
   nextRules  Json    @default("[]") @map("next_rules")
   // Display order in the editor; runtime order is dictated by nextRules.
   position   Int     @default(0)
+  // Loop bodies: child nodes of a `loop` parent. Self-referential FK.
+  parentNodeId String? @map("parent_node_id") @db.Uuid
+  // Loop-specific config: { mode: 'open_ended', label?: 'Application',
+  //                         serviceLineSlug?: 'vapt_web_app' }
+  loopConfig   Json?   @map("loop_config")
+  // Stage 1 binding: which rate-card dimension this answer fills.
+  // { field: 'scope_value' | 'methodology' | 'customer_type',
+  //   valueMap?: Record<string, string> }
+  binding      Json?
 
   template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  // Self-relation for loop body containment. Cascade delete drops the body
+  // when the loop node is removed.
+  parent   TemplateNode?  @relation("LoopBody", fields: [parentNodeId], references: [id], onDelete: Cascade)
+  children TemplateNode[] @relation("LoopBody")
 
   @@index([templateId])
   @@index([tenantId])
+  @@index([parentNodeId])
   @@map("template_nodes")
 }
 
@@ -263,4 +439,56 @@ model MagicLink {
   @@index([userId])
   @@index([tenantId])
   @@map("magic_links")
+}
+
+// ── Adaptive pricing: predictions + per-tenant config ──────────────────────
+//
+// Predictions are append-only. A re-predict creates a new row; the latest
+// (by created_at desc) is the active one. Older rows are preserved for
+// audit + the manager UI's "what changed since last time" diffing.
+model Prediction {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId              String   @map("tenant_id") @db.Uuid
+  engagementId          String   @map("engagement_id") @db.Uuid
+  // 'cold_start' | 'rules' | 'linear' | 'boosted' — CHECK in migration.
+  regime                String
+  basePriceCents        BigInt   @map("base_price_cents")
+  predictedPriceCents   BigInt   @map("predicted_price_cents")
+  // Signed ratio (final/base − 1). Decimal, NOT_NULL with default 0.
+  adjustmentPct         Decimal  @default(0) @map("adjustment_pct") @db.Decimal(6, 4)
+  bandLowCents          BigInt   @map("band_low_cents")
+  bandHighCents         BigInt   @map("band_high_cents")
+  // Win-prob fields stay null until a classifier ships.
+  winProbAtPredicted    Decimal? @map("win_prob_at_predicted") @db.Decimal(4, 3)
+  winProbAtBase         Decimal? @map("win_prob_at_base")      @db.Decimal(4, 3)
+  winProbAtBandLow      Decimal? @map("win_prob_at_band_low")  @db.Decimal(4, 3)
+  drivers               Json     @default("[]")
+  similarPast           Json     @default("[]") @map("similar_past")
+  dataQuality           Json     @default("{}") @map("data_quality")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([engagementId, createdAt(sort: Desc)])
+  @@map("predictions")
+}
+
+// Per-tenant tunables: regime thresholds, loyalty rules, manual modifiers,
+// retrain hour. Stored in DB (not code) so a customer with thin data can
+// opt to stay in rules longer if their early ML attempts looked unstable.
+model TenantPricingConfig {
+  tenantId               String   @id @map("tenant_id") @db.Uuid
+  loyaltyRules           Json     @default("[]") @map("loyalty_rules")
+  manualModifiers        Json     @default("[]") @map("manual_modifiers")
+  coldStartUntilNClosed  Int      @default(5)   @map("cold_start_until_n_closed")
+  rulesUntilNClosed      Int      @default(30)  @map("rules_until_n_closed")
+  linearUntilNClosed     Int      @default(100) @map("linear_until_n_closed")
+  retrainHourUtc         Int      @default(2)   @map("retrain_hour_utc")
+  updatedAt              DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_pricing_config")
 }

@@ -119,6 +119,74 @@ describe('Templates tenant isolation', () => {
     expect(published.status).toBe('published');
   });
 
+  it('importNodes wires a paste-imported list as a linear chain and sets the root', async () => {
+    const t = await svc.create(TENANT_A, { serviceLine: 'Web', name: 'imported' });
+
+    const result = await svc.importNodes(TENANT_A, t.id, {
+      nodes: [
+        { question: 'Engagement Details', nodeType: 'section', helpText: 'Tell us about the project' },
+        { question: 'Client name', nodeType: 'short_text', placeholder: 'Acme Inc.' },
+        {
+          question: 'Industry',
+          nodeType: 'single_select',
+          options: [
+            { value: 'fin', label: 'Financial' },
+            { value: 'health', label: 'Healthcare' },
+          ],
+        },
+        { question: 'Approximate budget?', nodeType: 'number', required: false },
+      ],
+    });
+
+    expect(result.created).toBe(4);
+
+    const reloaded = await svc.getById(TENANT_A, t.id);
+    expect(reloaded.nodes).toHaveLength(4);
+    expect(reloaded.rootNodeId).toBe(result.rootNodeId);
+
+    // First node is the section heading.
+    expect(reloaded.nodes[0]!.nodeType).toBe('section');
+    expect(reloaded.nodes[0]!.helpText).toBe('Tell us about the project');
+
+    // Each non-terminal node has a single `always` rule pointing at the next.
+    for (let i = 0; i < reloaded.nodes.length - 1; i++) {
+      const rules = reloaded.nodes[i]!.nextRules;
+      expect(rules).toHaveLength(1);
+      expect(rules[0]!.when.op).toBe('always');
+      expect(rules[0]!.goto).toBe(reloaded.nodes[i + 1]!.id);
+    }
+    // Last terminates with END.
+    const last = reloaded.nodes[reloaded.nodes.length - 1]!;
+    expect(last.nextRules[0]!.goto).toBe('END');
+    expect(last.required).toBe(false);
+    expect(last.nodeType).toBe('number');
+
+    // Carryover fields landed.
+    expect(reloaded.nodes[1]!.placeholder).toBe('Acme Inc.');
+    expect(reloaded.nodes[2]!.options).toHaveLength(2);
+  });
+
+  it('importNodes with replace=true wipes existing nodes', async () => {
+    const t = await svc.create(TENANT_A, { serviceLine: 'Web', name: 'replace test' });
+    await svc.addNode(TENANT_A, t.id, {
+      question: 'pre-existing',
+      nodeType: 'short_text',
+      nextRules: [{ when: { op: 'always' }, goto: 'END' }],
+    });
+
+    await svc.importNodes(TENANT_A, t.id, {
+      replace: true,
+      nodes: [
+        { question: 'first', nodeType: 'short_text' },
+        { question: 'second', nodeType: 'short_text' },
+      ],
+    });
+
+    const reloaded = await svc.getById(TENANT_A, t.id);
+    expect(reloaded.nodes).toHaveLength(2);
+    expect(reloaded.nodes.map((n) => n.question)).toEqual(['first', 'second']);
+  });
+
   it('rejects a rootNodeId from a different template', async () => {
     const tA = await svc.create(TENANT_A, { serviceLine: 'Web', name: 'A1' });
     const tA2 = await svc.create(TENANT_A, { serviceLine: 'Web', name: 'A2' });

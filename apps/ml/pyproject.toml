@@ -40,3 +40,9 @@ select = ["E", "F", "I", "W", "B", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[[tool.mypy.overrides]]
+# sklearn / xgboost / boto3 ship without typed stubs out of the box.
+# Drop strict-mode noise from those imports rather than vendor stubs.
+module = ["sklearn.*", "xgboost.*", "boto3.*", "botocore.*", "joblib.*"]
+ignore_missing_imports = true

@@ -102,6 +102,18 @@ export function validateAnswerShape(
       return answer === null || answer === ''
         ? { ok: true }
         : { ok: false, reason: 'file_upload nodes do not take an inline answer' };
+    case 'section':
+      // Section nodes are pure dividers: no answer captured. The runtime
+      // sends null (or omits the call entirely) when advancing past one.
+      return answer == null || answer === ''
+        ? { ok: true }
+        : { ok: false, reason: 'section nodes do not take an answer' };
+    case 'loop':
+      // Loop nodes are containers — they delegate answers to body
+      // children, never capture a value of their own.
+      return answer == null || answer === ''
+        ? { ok: true }
+        : { ok: false, reason: 'loop nodes do not take an answer' };
     default: {
       const _exhaustive: never = nodeType;
       void _exhaustive;
@@ -197,6 +209,17 @@ export function validateTemplate(template: TemplateWithNodes): ValidationIssue[]
 }
 
 function reachableFrom(rootId: string, byId: Map<string, TemplateNode>): Set<string> {
+  // Reachability follows nextRules + loop-body containment: when a loop is
+  // reachable, every node whose parentNodeId points at it is reachable too,
+  // and those body nodes' nextRules continue the trail (within the body).
+  const childrenByParent = new Map<string, TemplateNode[]>();
+  for (const n of byId.values()) {
+    if (!n.parentNodeId) continue;
+    const list = childrenByParent.get(n.parentNodeId) ?? [];
+    list.push(n);
+    childrenByParent.set(n.parentNodeId, list);
+  }
+
   const seen = new Set<string>();
   const stack = [rootId];
   while (stack.length > 0) {
@@ -208,6 +231,11 @@ function reachableFrom(rootId: string, byId: Map<string, TemplateNode>): Set<str
     for (const rule of node.nextRules) {
       if (rule.goto !== END_NODE && !seen.has(rule.goto)) {
         stack.push(rule.goto);
+      }
+    }
+    if (node.nodeType === 'loop') {
+      for (const child of childrenByParent.get(node.id) ?? []) {
+        if (!seen.has(child.id)) stack.push(child.id);
       }
     }
   }

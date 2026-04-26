@@ -19,8 +19,12 @@ import { ThreadService } from '../src/thread/thread.service.js';
 import { S3Service } from '../src/storage/s3.service.js';
 import { EngagementsService } from '../src/engagements/engagements.service.js';
 import { GatheringService } from '../src/gathering/gathering.service.js';
+import { PricingService } from '../src/pricing/pricing.service.js';
+import { QuoteService } from '../src/pricing/quote.service.js';
 import { ConsoleEmailTransport } from '../src/notifications/email.transport.js';
 import { NotificationsService } from '../src/notifications/notifications.service.js';
+import { MlClient } from '../src/ml/ml-client.service.js';
+import { MlService } from '../src/ml/ml.service.js';
 
 const TENANT_A = '00000000-0000-0000-0000-0000000000a3';
 const TENANT_B = '00000000-0000-0000-0000-0000000000b3';
@@ -56,8 +60,17 @@ describe('Gathering / engagement flow (sprint 3)', () => {
   const notifications = new NotificationsService(tenantDb, emailTransport);
   const thread = new ThreadService(tenantDb, notifications);
   const s3 = new S3Service();
+  // Stub the ML client so the gathering test doesn't require a running
+  // FastAPI service. Returns null (= "no model") for every predict call,
+  // which is the same path tenants without a trained model take in prod.
+  const mlClient = new MlClient();
+  mlClient.predict = async () => null;
+  mlClient.train = async () => null;
+  const mlSvc = new MlService(tenantDb, thread, mlClient);
   const engagementsSvc = new EngagementsService(tenantDb, thread);
-  const gatheringSvc = new GatheringService(unscoped, tenantDb, thread, s3);
+  const pricingSvc = new PricingService(tenantDb);
+  const quoteSvc = new QuoteService(tenantDb, pricingSvc, thread);
+  const gatheringSvc = new GatheringService(unscoped, tenantDb, thread, s3, mlSvc, quoteSvc);
 
   // Seeded template ids per tenant (4 nodes A→B→C→END for clarity).
   const TMPL_A = '99999999-9999-9999-9999-9999999999a3';
@@ -188,6 +201,277 @@ describe('Gathering / engagement flow (sprint 3)', () => {
     await expect(engagementsSvc.getById(TENANT_B, issued.engagementId)).rejects.toThrow(
       /engagement_not_found/,
     );
+  });
+
+  it('a section node advances on null and an optional question accepts a skip', async () => {
+    // Drop a fresh template in tenant A: section → optional number → END.
+    const tmplId = '99999999-9999-9999-9999-9999999999c3';
+    const sec = 'aaaaaaaa-aaaa-aaaa-aaaa-cccc00000001';
+    const opt = 'aaaaaaaa-aaaa-aaaa-aaaa-cccc00000002';
+    await root.template.create({
+      data: { id: tmplId, tenantId: TENANT_A, serviceLine: 'opt', name: 'opt-section', version: 1, status: 'published' },
+    });
+    await root.templateNode.createMany({
+      data: [
+        {
+          id: sec, tenantId: TENANT_A, templateId: tmplId,
+          question: 'Engagement Details', nodeType: 'section',
+          helpText: 'Tell us a bit', required: true, position: 0,
+          nextRules: [{ when: { op: 'always' }, goto: opt }] as unknown as object,
+        },
+        {
+          id: opt, tenantId: TENANT_A, templateId: tmplId,
+          question: 'Approximate budget?', nodeType: 'number',
+          required: false, position: 1,
+          nextRules: [{ when: { op: 'always' }, goto: 'END' }] as unknown as object,
+        },
+      ],
+    });
+    await root.template.update({ where: { id: tmplId }, data: { rootNodeId: sec } });
+
+    const issued = await engagementsSvc.issue({
+      tenantId: TENANT_A,
+      salesEmployeeId: USER_A,
+      dto: { templateId: tmplId, clientEmail: 'opt-section@gather.test' },
+      publicBaseUrl: 'https://app.test',
+    });
+
+    const s = await gatheringSvc.getState(issued.token, REQ_CTX);
+    expect(s.currentNode?.nodeType).toBe('section');
+    expect(s.currentNode?.helpText).toBe('Tell us a bit');
+
+    const past = await gatheringSvc.submitAnswer(issued.token, REQ_CTX, {
+      nodeId: s.currentNode!.id,
+      answer: null,
+    });
+    if (past.next.kind !== 'node') throw new Error('expected node after section');
+    expect(past.next.node.nodeType).toBe('number');
+    expect(past.next.node.required).toBe(false);
+
+    const skipped = await gatheringSvc.submitAnswer(issued.token, REQ_CTX, {
+      nodeId: past.next.node.id,
+      answer: null,
+    });
+    expect(skipped.next.kind).toBe('end');
+  });
+
+  it('walks a loop body across multiple iterations with body END = "Add another?"', async () => {
+    // Template:
+    //   • root (short_text "Project name?")
+    //     → loop (label "Application")
+    //         body[0]: short_text  "Name of the application"
+    //         body[1]: single_select "Type" (Dynamic / Static)
+    //   • tail: short_text "Anything else?"
+    const tmplId = '99999999-9999-9999-9999-9999999999d3';
+    const rootId = 'aaaaaaaa-aaaa-aaaa-aaaa-dddd00000001';
+    const loopId = 'aaaaaaaa-aaaa-aaaa-aaaa-dddd00000002';
+    const body0  = 'aaaaaaaa-aaaa-aaaa-aaaa-dddd00000003';
+    const body1  = 'aaaaaaaa-aaaa-aaaa-aaaa-dddd00000004';
+    const tailId = 'aaaaaaaa-aaaa-aaaa-aaaa-dddd00000005';
+
+    await root.template.create({
+      data: { id: tmplId, tenantId: TENANT_A, serviceLine: 'loop', name: 'loop test', version: 1, status: 'published' },
+    });
+    await root.templateNode.createMany({
+      data: [
+        {
+          id: rootId, tenantId: TENANT_A, templateId: tmplId,
+          question: 'Project name?', nodeType: 'short_text', position: 0,
+          nextRules: [{ when: { op: 'always' }, goto: loopId }] as unknown as object,
+        },
+        {
+          id: loopId, tenantId: TENANT_A, templateId: tmplId,
+          question: 'Applications', nodeType: 'loop', position: 1,
+          loopConfig: { mode: 'open_ended', label: 'Application' } as unknown as object,
+          nextRules: [{ when: { op: 'always' }, goto: tailId }] as unknown as object,
+        },
+        {
+          id: body0, tenantId: TENANT_A, templateId: tmplId, parentNodeId: loopId,
+          question: 'Name of the application', nodeType: 'short_text', position: 0,
+          nextRules: [{ when: { op: 'always' }, goto: body1 }] as unknown as object,
+        },
+        {
+          id: body1, tenantId: TENANT_A, templateId: tmplId, parentNodeId: loopId,
+          question: 'Type', nodeType: 'single_select', position: 1,
+          options: [
+            { value: 'dynamic', label: 'Dynamic' },
+            { value: 'static', label: 'Static' },
+          ] as unknown as object,
+          // body END means end-of-body — the runtime translates this into
+          // an "Add another?" prompt rather than ending the template.
+          nextRules: [{ when: { op: 'always' }, goto: 'END' }] as unknown as object,
+        },
+        {
+          id: tailId, tenantId: TENANT_A, templateId: tmplId,
+          question: 'Anything else?', nodeType: 'short_text', position: 2,
+          required: false,
+          nextRules: [{ when: { op: 'always' }, goto: 'END' }] as unknown as object,
+        },
+      ],
+    });
+    await root.template.update({ where: { id: tmplId }, data: { rootNodeId: rootId } });
+
+    const issued = await engagementsSvc.issue({
+      tenantId: TENANT_A,
+      salesEmployeeId: USER_A,
+      dto: { templateId: tmplId, clientEmail: 'loop-walk@gather.test' },
+      publicBaseUrl: 'https://app.test',
+    });
+
+    // 1) State at start: root short_text.
+    const s0 = await gatheringSvc.getState(issued.token, REQ_CTX);
+    expect(s0.currentNode?.id).toBe(rootId);
+    expect(s0.loopContext).toBeNull();
+
+    // 2) Answer root → into the loop body, iter 0, with loopContext.
+    const a1 = await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: rootId, answer: 'Project Apollo' });
+    if (a1.next.kind !== 'node') throw new Error('expected node');
+    expect(a1.next.node.id).toBe(body0);
+    expect(a1.next.loopContext?.iter).toBe(0);
+    expect(a1.next.loopContext?.label).toBe('Application');
+
+    // 3) Answer body[0] iter 0 → body[1] iter 0, same loopContext.
+    const a2 = await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: body0, answer: 'app.example.com' });
+    if (a2.next.kind !== 'node') throw new Error('expected node');
+    expect(a2.next.node.id).toBe(body1);
+    expect(a2.next.loopContext?.iter).toBe(0);
+
+    // 4) Answer body[1] iter 0 → loop_step (Add another?).
+    const a3 = await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: body1, answer: 'dynamic' });
+    expect(a3.next.kind).toBe('loop_step');
+    if (a3.next.kind !== 'loop_step') throw new Error('unreachable');
+    expect(a3.next.loopId).toBe(loopId);
+    expect(a3.next.iter).toBe(0);
+
+    // 5) Continue → bumps iter to 1, returns body[0] for the new iter.
+    const a4 = await gatheringSvc.submitLoopStep(issued.token, REQ_CTX, { loopId, action: 'continue' });
+    if (a4.next.kind !== 'node') throw new Error('expected node after continue');
+    expect(a4.next.node.id).toBe(body0);
+    expect(a4.next.loopContext?.iter).toBe(1);
+
+    // 6) Walk iter 1 to end-of-body.
+    await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: body0, answer: 'admin.example.com' });
+    const a6 = await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: body1, answer: 'static' });
+    if (a6.next.kind !== 'loop_step') throw new Error('expected loop_step');
+    expect(a6.next.iter).toBe(1);
+
+    // 7) Continue once more → iter 2.
+    await gatheringSvc.submitLoopStep(issued.token, REQ_CTX, { loopId, action: 'continue' });
+    await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: body0, answer: 'api.example.com' });
+    const a8 = await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: body1, answer: 'dynamic' });
+    if (a8.next.kind !== 'loop_step') throw new Error('expected loop_step');
+    expect(a8.next.iter).toBe(2);
+
+    // 8) Done → walks past the loop into the tail.
+    const a9 = await gatheringSvc.submitLoopStep(issued.token, REQ_CTX, { loopId, action: 'done' });
+    if (a9.next.kind !== 'node') throw new Error('expected node after done');
+    expect(a9.next.node.id).toBe(tailId);
+    expect(a9.next.loopContext).toBeNull();
+
+    // 9) State at this point: cursor at tailId, loopAnswers[loopId] has 3 iterations.
+    const sMid = await gatheringSvc.getState(issued.token, REQ_CTX);
+    expect(sMid.currentNode?.id).toBe(tailId);
+    expect(sMid.loopAnswers[loopId]).toHaveLength(3);
+    expect(sMid.loopAnswers[loopId]?.[0]?.[body0]).toBe('app.example.com');
+    expect(sMid.loopAnswers[loopId]?.[2]?.[body1]).toBe('dynamic');
+
+    // 10) Skip the optional tail and submit.
+    const a10 = await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: tailId, answer: null });
+    expect(a10.next.kind).toBe('end');
+    const done = await gatheringSvc.submit(issued.token, REQ_CTX);
+    expect(done.status).toBe('submitted');
+  });
+
+  it('end-to-end: gathering loop + bindings produce a base-priced quote on submit', async () => {
+    // Stand up the canonical CSaaS rate card for tenant A.
+    const card = await pricingSvc.seedCsaasSample(TENANT_A);
+
+    // Build a template with one loop bound to vapt_web_app + a body of
+    // bound questions. Two iterations → matches PDF §3.3 "wa_1 + wa_2".
+    const tmplId = '99999999-9999-9999-9999-9999999999e3';
+    const loopId = 'aaaaaaaa-aaaa-aaaa-aaaa-eeee00000001';
+    const bMethod = 'aaaaaaaa-aaaa-aaaa-aaaa-eeee00000002';
+    const bPages  = 'aaaaaaaa-aaaa-aaaa-aaaa-eeee00000003';
+
+    await root.template.create({
+      data: {
+        id: tmplId, tenantId: TENANT_A, serviceLine: 'webapp',
+        name: 'webapp scoping', version: 1, status: 'published',
+        rateCardId: card.id,
+      },
+    });
+    await root.templateNode.createMany({
+      data: [
+        {
+          id: loopId, tenantId: TENANT_A, templateId: tmplId,
+          question: 'Web Applications', nodeType: 'loop', position: 0,
+          loopConfig: {
+            mode: 'open_ended',
+            label: 'Web App',
+            serviceLineSlug: 'vapt_web_app',
+          } as unknown as object,
+          nextRules: [{ when: { op: 'always' }, goto: 'END' }] as unknown as object,
+        },
+        {
+          id: bMethod, tenantId: TENANT_A, templateId: tmplId, parentNodeId: loopId,
+          question: 'Test type', nodeType: 'single_select', position: 0,
+          options: [
+            { value: 'grey_box', label: 'Grey Box' },
+            { value: 'black_box', label: 'Black Box' },
+          ] as unknown as object,
+          binding: { field: 'methodology' } as unknown as object,
+          nextRules: [{ when: { op: 'always' }, goto: bPages }] as unknown as object,
+        },
+        {
+          id: bPages, tenantId: TENANT_A, templateId: tmplId, parentNodeId: loopId,
+          question: 'Number of pages', nodeType: 'number', position: 1,
+          binding: { field: 'scope_value' } as unknown as object,
+          nextRules: [{ when: { op: 'always' }, goto: 'END' }] as unknown as object,
+        },
+      ],
+    });
+    await root.template.update({ where: { id: tmplId }, data: { rootNodeId: loopId } });
+
+    // Issue + walk: 75 pages grey, then 22 pages black → continue / done.
+    const issued = await engagementsSvc.issue({
+      tenantId: TENANT_A,
+      salesEmployeeId: USER_A,
+      dto: { templateId: tmplId, clientEmail: 'quote-e2e@gather.test' },
+      publicBaseUrl: 'https://app.test',
+    });
+
+    await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: bMethod, answer: 'grey_box' });
+    await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: bPages,  answer: 75 });
+    await gatheringSvc.submitLoopStep(issued.token, REQ_CTX, { loopId, action: 'continue' });
+    await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: bMethod, answer: 'black_box' });
+    await gatheringSvc.submitAnswer(issued.token, REQ_CTX, { nodeId: bPages,  answer: 22 });
+    await gatheringSvc.submitLoopStep(issued.token, REQ_CTX, { loopId, action: 'done' });
+
+    // submit triggers compute-and-persist. Inline-await it via the service
+    // so we're not racing the fire-and-forget ML path.
+    const subm = await gatheringSvc.submit(issued.token, REQ_CTX);
+    expect(subm.status).toBe('submitted');
+
+    // 75 pages, grey, external = 25,000 ; 22 pages, black, external = 7,000 → 32,000.
+    const quote = await quoteSvc.getForEngagement(TENANT_A, issued.engagementId);
+    expect(quote).not.toBeNull();
+    expect(quote!.currency).toBe('INR');
+    expect(quote!.baseTotalCents).toBe(32_000_00);
+    expect(quote!.baseBreakdown).toHaveLength(2);
+    const [first, second] = quote!.baseBreakdown;
+    expect(first!.serviceLineSlug).toBe('vapt_web_app');
+    expect(first!.scopeValue).toBe(75);
+    expect(first!.priceCents).toBe(25_000_00);
+    expect(second!.scopeValue).toBe(22);
+    expect(second!.priceCents).toBe(7_000_00);
+
+    // Manager approves a final price; mirrored onto the engagement.
+    const approved = await quoteSvc.approve(TENANT_A, issued.engagementId, {
+      approvedPriceCents: 30_000_00,
+      approvedBy: USER_A,
+    });
+    expect(approved.approvedPriceCents).toBe(30_000_00);
+    expect(approved.approvedBy).toBe(USER_A);
   });
 
   it('list is tenant-scoped', async () => {

@@ -8,7 +8,13 @@
  */
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
-import { gathering, type GatheringStateResponse } from '@/lib/api';
+import {
+  gathering,
+  type GatheringLoopContext,
+  type GatheringLoopStep,
+  type GatheringNext,
+  type GatheringStateResponse,
+} from '@/lib/api';
 import type { TemplateNode, NodeOption } from '@rhud/shared';
 import { Icon } from '@/components/icon';
 
@@ -24,16 +30,36 @@ export default function GatheringFlowPage() {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [stepIdx, setStepIdx] = useState(0);
+  // Local override for the cursor returned by the server. Lets us advance
+  // the UI immediately after submitAnswer / loopStep without re-fetching
+  // /state every step (which is more polite to the API + smoother UX).
+  const [cursor, setCursor] = useState<{
+    node: TemplateNode | null;
+    loopContext: GatheringLoopContext | null;
+    loopStep: GatheringLoopStep | null;
+  }>({ node: null, loopContext: null, loopStep: null });
 
   const reload = useCallback(async () => {
     setErr(null);
     try {
       const s = await gathering.state(token);
       setState(s);
+      setCursor({ node: s.currentNode, loopContext: s.loopContext, loopStep: s.loopStep });
       if (s.currentNode) {
-        const existing = s.answers[s.currentNode.id];
+        // For body nodes, prefill from the current iter's answers; for
+        // top-level nodes, from the flat answers map.
+        const iter = s.loopContext?.iter ?? 0;
+        const fromLoop = s.currentNode.parentNodeId
+          ? s.loopAnswers[s.currentNode.parentNodeId]?.[iter]?.[s.currentNode.id]
+          : undefined;
+        const existing = fromLoop ?? s.answers[s.currentNode.id];
         setAnswer((existing as Answer) ?? null);
-        setStepIdx(Object.keys(s.answers).length);
+        // Progress: top-level answers + loop iterations × body size, rough.
+        const loopCount = Object.values(s.loopAnswers).reduce(
+          (sum, arr) => sum + arr.reduce((s2, dict) => s2 + Object.keys(dict).length, 0),
+          0,
+        );
+        setStepIdx(Object.keys(s.answers).length + loopCount);
       } else if (s.status === 'submitted') {
         setDone(true);
       }
@@ -44,14 +70,73 @@ export default function GatheringFlowPage() {
 
   useEffect(() => { void reload(); }, [reload]);
 
+  function applyNext(next: GatheringNext) {
+    if (next.kind === 'end') {
+      setCursor({ node: null, loopContext: null, loopStep: null });
+      return;
+    }
+    if (next.kind === 'loop_step') {
+      setCursor({
+        node: null,
+        loopContext: null,
+        loopStep: { loopId: next.loopId, label: next.label, iter: next.iter },
+      });
+      setAnswer(null);
+      return;
+    }
+    setCursor({ node: next.node, loopContext: next.loopContext, loopStep: null });
+    setAnswer(null);
+    setStepIdx((i) => i + 1);
+  }
+
+  async function submitLoopStep(action: 'continue' | 'done') {
+    if (!cursor.loopStep) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await gathering.loopStep(token, { loopId: cursor.loopStep.loopId, action });
+      if (r.next.kind === 'end') {
+        const sub = await gathering.submit(token);
+        if (sub.status === 'submitted') {
+          setDone(true);
+          return;
+        }
+      }
+      applyNext(r.next);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (err) return <ErrorView msg={err} />;
   if (!state) return <Loading />;
-  if (done || !state.currentNode) return <SubmittedView templateName={state.templateName} />;
 
-  const node = state.currentNode;
+  // Loop-step prompt — "Add another?" — preempts everything else.
+  if (cursor.loopStep) {
+    return (
+      <LoopStepView
+        templateName={state.templateName}
+        token={token}
+        step={cursor.loopStep}
+        onAction={submitLoopStep}
+        busy={busy}
+      />
+    );
+  }
+
+  if (done || !cursor.node) return <SubmittedView templateName={state.templateName} />;
+
+  const node = cursor.node;
   const allowFiles = node.allowFiles;
+  const isSection = node.nodeType === 'section';
+  const isOptional = node.required === false;
+  const loopContext = cursor.loopContext;
 
   const canAdvance = (() => {
+    if (isSection) return true;
+    if (isOptional) return true;
     if (node.nodeType === 'single_select') return typeof answer === 'string' && answer.length > 0;
     if (node.nodeType === 'multi_select') return Array.isArray(answer) && answer.length > 0;
     if (node.nodeType === 'short_text' || node.nodeType === 'long_text') return typeof answer === 'string' && answer.trim().length > 0;
@@ -64,18 +149,16 @@ export default function GatheringFlowPage() {
     setBusy(true);
     setErr(null);
     try {
-      const r = await gathering.answer(token, { nodeId: node.id, answer });
+      const payload = isSection ? null : answer;
+      const r = await gathering.answer(token, { nodeId: node.id, answer: payload });
       if (r.next.kind === 'end') {
         const sub = await gathering.submit(token);
         if (sub.status === 'submitted') {
           setDone(true);
           return;
         }
-      } else {
-        setAnswer(null);
-        setStepIdx((i) => i + 1);
-        await reload();
       }
+      applyNext(r.next);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -131,12 +214,37 @@ export default function GatheringFlowPage() {
         </div>
 
         <div className="client-body">
-          <div className="client-q">Question {stepIdx + 1}</div>
+          {loopContext && (
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: 'var(--accent-tint)',
+              color: 'var(--accent)',
+              fontSize: 11.5,
+              fontWeight: 500,
+              marginBottom: 12,
+            }}>
+              <Icon.Hash size={11} /> {loopContext.label} {loopContext.iter + 1}
+            </div>
+          )}
+          <div className="client-q">
+            {isSection ? 'Section' : `Question ${stepIdx + 1}`}
+            {isOptional && !isSection && <span style={{ marginLeft: 8, color: 'var(--fg-subtle)' }}>· optional</span>}
+          </div>
           <div className="client-title">{node.question}</div>
 
-          <NodeInput node={node as TemplateNode} value={answer} onChange={setAnswer} />
+          {node.helpText && (
+            <p style={{ marginTop: 10, fontSize: 13.5, color: 'var(--fg-muted)', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
+              {node.helpText}
+            </p>
+          )}
 
-          {allowFiles && <FileSection node={node as TemplateNode} state={state} onUpload={uploadFile} />}
+          {!isSection && <NodeInput node={node as TemplateNode} value={answer} onChange={setAnswer} />}
+
+          {allowFiles && !isSection && <FileSection node={node as TemplateNode} state={state} onUpload={uploadFile} />}
         </div>
 
         <div className="client-foot">
@@ -215,11 +323,11 @@ function NodeInput({ node, value, onChange }: { node: TemplateNode; value: Answe
   }
 
   if (node.nodeType === 'short_text') {
-    return <input className="input" style={{ marginTop: 28 }} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} placeholder="Type your answer…" />;
+    return <input className="input" style={{ marginTop: 28 }} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} placeholder={node.placeholder ?? 'Type your answer…'} />;
   }
 
   if (node.nodeType === 'long_text') {
-    return <textarea className="input" style={{ marginTop: 28 }} rows={5} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} placeholder="Type your answer…" />;
+    return <textarea className="input" style={{ marginTop: 28 }} rows={5} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)} placeholder={node.placeholder ?? 'Type your answer…'} />;
   }
 
   if (node.nodeType === 'number') {
@@ -227,7 +335,7 @@ function NodeInput({ node, value, onChange }: { node: TemplateNode; value: Answe
       <input className="input" type="number" style={{ marginTop: 28, height: 56, fontSize: 28, fontWeight: 500, padding: '0 18px' }}
         value={typeof value === 'number' ? value : ''}
         onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-        placeholder="0" />
+        placeholder={node.placeholder ?? '0'} />
     );
   }
 
@@ -295,6 +403,74 @@ function ErrorView({ msg }: { msg: string }) {
           It may have expired, been used already, or been revoked. Reach out to your sales contact for a fresh one.
         </p>
         <pre className="mono" style={{ marginTop: 14, padding: 10, background: 'var(--bg-sunk)', borderRadius: 6, fontSize: 11, color: 'var(--fg-subtle)', textAlign: 'left', overflow: 'auto' }}>{msg}</pre>
+      </div>
+    </div>
+  );
+}
+
+function LoopStepView({
+  templateName,
+  token,
+  step,
+  onAction,
+  busy,
+}: {
+  templateName: string;
+  token: string;
+  step: GatheringLoopStep;
+  onAction(action: 'continue' | 'done'): void;
+  busy: boolean;
+}) {
+  return (
+    <div className="client-shell">
+      <div className="client-hdr">
+        <div className="brand">
+          <div className="logo-mark" />
+          <div>
+            <div style={{ fontWeight: 600 }}>{templateName}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', fontWeight: 400 }}>Secure scoping · single-use link</div>
+          </div>
+        </div>
+        <span className="client-token"><Icon.Lock size={11} /> rhud.link/g/{token.slice(0, 6)}…</span>
+      </div>
+
+      <div className="client-card">
+        <div className="client-body" style={{ paddingTop: 32, paddingBottom: 32 }}>
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 10px',
+            borderRadius: 999,
+            background: 'var(--ok-tint)',
+            color: 'var(--ok)',
+            fontSize: 11.5,
+            fontWeight: 500,
+          }}>
+            <Icon.Check size={11} sw={2.2} /> {step.label} {step.iter + 1} captured
+          </div>
+          <div className="client-title" style={{ marginTop: 14 }}>
+            Add another {step.label.toLowerCase()}?
+          </div>
+          <p style={{ marginTop: 10, fontSize: 13.5, color: 'var(--fg-muted)', lineHeight: 1.55 }}>
+            We&apos;ll ask the same set of questions for the next {step.label.toLowerCase()}.
+            Pick &quot;No, I&apos;m done&quot; if {step.label} {step.iter + 1} is the last one in scope.
+          </p>
+        </div>
+
+        <div className="client-foot">
+          <span className="hint">
+            <Icon.Hash size={12} /> Iteration {step.iter + 1}
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn" disabled={busy} onClick={() => onAction('done')}>
+              {busy ? <span className="spin" /> : <>No, I&apos;m done</>}
+            </button>
+            <button className="btn accent" disabled={busy} onClick={() => onAction('continue')}>
+              {busy ? <span className="spin" /> : <><Icon.Plus size={12} /> Add another</>}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

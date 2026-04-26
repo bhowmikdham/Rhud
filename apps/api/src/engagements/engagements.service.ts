@@ -15,10 +15,16 @@ export interface EngagementSummary {
   id: string;
   templateId: string;
   templateName: string;
+  /** User-facing label ("Acme Q3 Security Assessment"). Null on legacy rows. */
+  name: string | null;
   clientEmail: string;
   status: string;
   createdAt: string;
   submittedAt: string | null;
+  /** ML predicted price (cents). Null until a price_predicted event fires. */
+  predictedPriceCents: number | null;
+  priceLowCents: number | null;
+  priceHighCents: number | null;
 }
 
 /**
@@ -75,6 +81,7 @@ export class EngagementsService {
           salesEmployeeId: args.salesEmployeeId,
           ...(args.dto.salesManagerId ? { salesManagerId: args.dto.salesManagerId } : {}),
           clientEmail: args.dto.clientEmail,
+          ...(args.dto.name ? { name: args.dto.name } : {}),
           status: 'issued',
         },
       });
@@ -123,37 +130,52 @@ export class EngagementsService {
         orderBy: { createdAt: 'desc' },
         include: { template: { select: { name: true } } },
       });
-      return rows.map((r) => ({
-        id: r.id,
-        templateId: r.templateId,
-        templateName: r.template.name,
-        clientEmail: r.clientEmail,
-        status: r.status,
-        createdAt: r.createdAt.toISOString(),
-        submittedAt: r.submittedAt ? r.submittedAt.toISOString() : null,
-      }));
+      return rows.map(rowToSummary);
     });
   }
 
-  async getById(tenantId: string, id: string): Promise<EngagementSummary & { thread: Awaited<ReturnType<ThreadService['listForEngagement']>> }> {
+  async getById(
+    tenantId: string,
+    id: string,
+  ): Promise<EngagementSummary & { thread: Awaited<ReturnType<ThreadService['listForEngagement']>> }> {
     const summary = await this.tenantDb.run(tenantId, async (db) => {
       const row = await db.engagement.findUnique({
         where: { id },
         include: { template: { select: { name: true } } },
       });
       if (!row) throw new NotFoundException('engagement_not_found');
-      return {
-        id: row.id,
-        templateId: row.templateId,
-        templateName: row.template.name,
-        clientEmail: row.clientEmail,
-        status: row.status,
-        createdAt: row.createdAt.toISOString(),
-        submittedAt: row.submittedAt ? row.submittedAt.toISOString() : null,
-      };
+      return rowToSummary(row);
     });
 
     const thread = await this.thread.listForEngagement(tenantId, id);
     return { ...summary, thread };
   }
+}
+
+function rowToSummary(r: {
+  id: string;
+  templateId: string;
+  template: { name: string };
+  name: string | null;
+  clientEmail: string;
+  status: string;
+  createdAt: Date;
+  submittedAt: Date | null;
+  predictedPriceCents: bigint | null;
+  priceLowCents: bigint | null;
+  priceHighCents: bigint | null;
+}): EngagementSummary {
+  return {
+    id: r.id,
+    templateId: r.templateId,
+    templateName: r.template.name,
+    name: r.name,
+    clientEmail: r.clientEmail,
+    status: r.status,
+    createdAt: r.createdAt.toISOString(),
+    submittedAt: r.submittedAt ? r.submittedAt.toISOString() : null,
+    predictedPriceCents: r.predictedPriceCents == null ? null : Number(r.predictedPriceCents),
+    priceLowCents: r.priceLowCents == null ? null : Number(r.priceLowCents),
+    priceHighCents: r.priceHighCents == null ? null : Number(r.priceHighCents),
+  };
 }

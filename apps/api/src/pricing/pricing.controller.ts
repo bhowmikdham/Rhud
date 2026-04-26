@@ -1,0 +1,98 @@
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import type { ScopedEntity } from '@rhud/shared';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { Roles, RolesGuard } from '../auth/roles.guard.js';
+import type { AuthedRequest } from '../auth/auth.types.js';
+import { PricingService, type CreateRateCardInput } from './pricing.service.js';
+import { CreateRateCardDto, QuoteDto } from './dto.js';
+
+/**
+ * Rate card endpoints. Authoring (create / publish / archive / seed) is
+ * admin-only — the rate card is the company's published price book and
+ * editing it has direct revenue implications. Reads + quoting are open
+ * to all authed roles within the tenant; sales reps need to be able to
+ * preview a quote against the active card before issuing an engagement.
+ */
+@Controller('rate-cards')
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class PricingController {
+  constructor(private readonly svc: PricingService) {}
+
+  @Get()
+  list(@Req() req: AuthedRequest) {
+    return this.svc.list(req.tenantId);
+  }
+
+  @Get(':id')
+  getById(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
+    return this.svc.getById(req.tenantId, id);
+  }
+
+  @Post()
+  @Roles('admin')
+  @HttpCode(201)
+  create(@Req() req: AuthedRequest, @Body() dto: CreateRateCardDto) {
+    // class-validator's transform leaves optional fields as `undefined`;
+    // strict-optional types in the service require them to be present
+    // (with `null` for "no upper bound"). Cast across the boundary —
+    // the DTO already validated everything we care about.
+    return this.svc.create(req.tenantId, dto as unknown as CreateRateCardInput);
+  }
+
+  @Patch(':id/publish')
+  @Roles('admin')
+  publish(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
+    return this.svc.publish(req.tenantId, id);
+  }
+
+  @Patch(':id/archive')
+  @Roles('admin')
+  archive(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
+    return this.svc.archive(req.tenantId, id);
+  }
+
+  @Post(':id/quote')
+  @HttpCode(200)
+  quote(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: QuoteDto,
+  ) {
+    return this.svc.quote(req.tenantId, id, dto.scope as ScopedEntity[]);
+  }
+
+  @Post('seed/csaas-sample')
+  @Roles('admin')
+  @HttpCode(201)
+  seed(@Req() req: AuthedRequest) {
+    return this.svc.seedCsaasSample(req.tenantId);
+  }
+
+  /**
+   * Phase 2 ingestion entrypoint — caller posts the parsed sheet matrix
+   * (string[][]) plus an optional name. Web side runs SheetJS in the
+   * browser and uploads only the matrix; saves a round trip uploading
+   * binary + having the API parse, and reuses the same matrix shape the
+   * sheet-import modal already produces.
+   */
+  @Post('parse')
+  @Roles('admin')
+  @HttpCode(201)
+  parse(
+    @Req() req: AuthedRequest,
+    @Body() body: { matrix: string[][]; name?: string },
+  ) {
+    return this.svc.parseAndSave(req.tenantId, body.matrix, body.name ? { name: body.name } : {});
+  }
+}
