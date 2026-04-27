@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
@@ -60,6 +61,24 @@ export class PricingController {
   @Roles('admin')
   archive(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
     return this.svc.archive(req.tenantId, id);
+  }
+
+  /** Pre-delete probe: how many templates would be unbound if we
+   *  hard-deleted this card. Surfaces in the delete-confirm modal. */
+  @Get(':id/usage')
+  @Roles('admin')
+  async usage(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
+    return { templateBindings: await this.svc.countTemplateBindings(req.tenantId, id) };
+  }
+
+  @Delete(':id')
+  @Roles('admin')
+  @HttpCode(204)
+  async remove(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<void> {
+    await this.svc.remove(req.tenantId, id);
   }
 
   @Post(':id/quote')

@@ -7,6 +7,8 @@ import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
 import { StageChip } from '@/components/stage-chip';
+import { RowActions } from '@/components/row-actions';
+import { DeleteConfirmModal } from '@/components/delete-confirm-modal';
 
 type FilterId = 'all' | 'open' | 'pending_approval' | 'drafting' | 'sent';
 
@@ -16,10 +18,17 @@ export default function OpportunitiesListPage() {
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterId>('all');
   const [query, setQuery] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<EngagementSummary | null>(null);
+
+  const canDelete = user?.role === 'admin' || user?.role === 'sales_manager';
+
+  function refresh() {
+    opportunities.list().then(setItems).catch((e) => setErr(String(e)));
+  }
 
   useEffect(() => {
     if (!user) return;
-    opportunities.list().then(setItems).catch((e) => setErr(String(e)));
+    refresh();
   }, [user]);
 
   const tabs: Array<{ id: FilterId; label: string; count: number }> = useMemo(() => {
@@ -108,6 +117,27 @@ export default function OpportunitiesListPage() {
           </div>
         </div>
 
+        {pendingDelete && (
+          <DeleteConfirmModal
+            title="Delete opportunity"
+            subject={pendingDelete.name ?? pendingDelete.clientEmail}
+            description={
+              <>
+                Removes the opportunity and everything attached: scope answers, files,
+                thread events, the quote, predictions, and the gathering token. The client&apos;s
+                gathering link will stop working.
+              </>
+            }
+            confirmPhrase="delete"
+            onCancel={() => setPendingDelete(null)}
+            onConfirm={async () => {
+              await opportunities.remove(pendingDelete.id);
+              setPendingDelete(null);
+              refresh();
+            }}
+          />
+        )}
+
         <div className="card" style={{ overflow: 'hidden' }}>
           <table className="table">
             <thead>
@@ -137,7 +167,28 @@ export default function OpportunitiesListPage() {
                   </td>
                   <td><StageChip stage={e.status} /></td>
                   <td className="cell-muted" style={{ fontSize: 12 }}>{relativeTime(e.submittedAt ?? e.createdAt)}</td>
-                  <td><Icon.ChevronRight size={14} style={{ color: 'var(--fg-faint)' }} /></td>
+                  <td onClick={(ev) => ev.stopPropagation()}>
+                    <RowActions
+                      size="sm"
+                      stopPropagation
+                      items={[
+                        {
+                          label: 'Open',
+                          icon: 'ArrowUpRight',
+                          onClick: () => location.assign(`/opportunities/${e.id}`),
+                        },
+                        { divider: true },
+                        {
+                          label: 'Delete opportunity',
+                          icon: 'X',
+                          danger: true,
+                          disabled: !canDelete,
+                          title: canDelete ? undefined : 'Manager or admin only',
+                          onClick: () => setPendingDelete(e),
+                        },
+                      ]}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>

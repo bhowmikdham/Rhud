@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type {
   LoopConfig,
@@ -93,6 +93,12 @@ export class TemplatesService {
           ...(dto.rootNodeId !== undefined ? { rootNodeId: dto.rootNodeId } : {}),
           ...(dto.status !== undefined ? { status: dto.status } : {}),
           ...(dto.rateCardId !== undefined ? { rateCardId: dto.rateCardId } : {}),
+          ...(dto.gammaTemplateId !== undefined
+            ? { gammaTemplateId: dto.gammaTemplateId?.trim() ? dto.gammaTemplateId.trim() : null }
+            : {}),
+          ...(dto.proposalScaffold !== undefined
+            ? { proposalScaffold: dto.proposalScaffold?.trim() ? dto.proposalScaffold : null }
+            : {}),
         },
       });
       return dbTemplateToDomain(row);
@@ -102,7 +108,25 @@ export class TemplatesService {
   async remove(tenantId: string, id: string): Promise<void> {
     await this.tenantDb.run(tenantId, async (db) => {
       await this.assertExists(db, id);
+      // engagements.templateId references templates without ON DELETE
+      // CASCADE — a delete with active opportunities would explode as
+      // a Postgres P2003 FK error. Pre-check + return a clean 409.
+      const engagementCount = await db.engagement.count({ where: { templateId: id } });
+      if (engagementCount > 0) {
+        throw new ConflictException(
+          `template_in_use_by_${engagementCount}_opportunit${engagementCount === 1 ? 'y' : 'ies'}`,
+        );
+      }
       await db.template.delete({ where: { id } });
+    });
+  }
+
+  /** Pre-delete probe — count of opportunities currently using this
+   *  template. Surfaces in the delete-confirm modal so the admin sees
+   *  why deletion is blocked before clicking. */
+  async countEngagements(tenantId: string, id: string): Promise<number> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      return db.engagement.count({ where: { templateId: id } });
     });
   }
 
@@ -385,6 +409,8 @@ function dbTemplateToDomain(t: {
   status: string;
   rootNodeId: string | null;
   rateCardId?: string | null;
+  gammaTemplateId?: string | null;
+  proposalScaffold?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): Template {
@@ -397,6 +423,8 @@ function dbTemplateToDomain(t: {
     status: (isTemplateStatus(t.status) ? t.status : 'draft') as TemplateStatus,
     rootNodeId: t.rootNodeId,
     rateCardId: t.rateCardId ?? null,
+    gammaTemplateId: t.gammaTemplateId ?? null,
+    proposalScaffold: t.proposalScaffold ?? null,
     createdAt: t.createdAt.toISOString(),
     updatedAt: t.updatedAt.toISOString(),
   };

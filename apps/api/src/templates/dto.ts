@@ -54,6 +54,22 @@ export class UpdateTemplateDto {
   @IsOptional()
   @IsUUID()
   rateCardId?: string | null;
+
+  /** Gamma template id forwarded to Gamma when proposal drafting is
+   *  routed through the Gamma driver. Free-form string — Gamma's id
+   *  format isn't a UUID and varies by API revision. Empty string or
+   *  null clears the binding. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  gammaTemplateId?: string | null;
+
+  /** Markdown proposal scaffold with `{{token}}` merge fields. Empty
+   *  string or null clears it (reverts to AI-generates-everything). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(50_000)
+  proposalScaffold?: string | null;
 }
 
 // ── Nodes ───────────────────────────────────────────────────────────────────

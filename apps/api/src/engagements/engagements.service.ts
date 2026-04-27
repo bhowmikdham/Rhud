@@ -150,6 +150,25 @@ export class EngagementsService {
     const thread = await this.thread.listForEngagement(tenantId, id);
     return { ...summary, thread };
   }
+
+  /**
+   * Hard delete the engagement. Postgres cascades take care of children
+   * (answers, files, events, predictions, quote, gathering tokens).
+   * Audit-chain links also cascade.
+   *
+   * Tenant-scoped via TenantDb so an attacker who knows the id can't
+   * delete an opportunity in another tenant.
+   */
+  async remove(tenantId: string, id: string): Promise<void> {
+    await this.tenantDb.run(tenantId, async (db) => {
+      const exists = await db.engagement.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+      if (!exists) throw new NotFoundException('engagement_not_found');
+      await db.engagement.delete({ where: { id } });
+    });
+  }
 }
 
 function rowToSummary(r: {

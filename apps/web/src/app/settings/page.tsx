@@ -1,16 +1,30 @@
 'use client';
 
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Suspense, useEffect, useState } from 'react';
-import { useRequireAuth } from '@/lib/auth-context';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { useAuth, useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
 import { Toggle } from '@/components/toggle';
+import { Portal } from '@/components/portal';
+import { useConfirm } from '@/components/confirm';
+import {
+  tenant as tenantApi,
+  team,
+  llm,
+  describeError,
+  type InviteSummary,
+  type LlmConfig,
+  type LlmProviderName,
+  type Role,
+  type UserSummary,
+} from '@/lib/api';
 
 const TABS = [
   { id: 'account',       label: 'Account',        icon: 'User' as const },
   { id: 'workspace',     label: 'Workspace',      icon: 'Globe' as const },
   { id: 'team',          label: 'Team',           icon: 'Users' as const },
+  { id: 'ai',            label: 'AI',             icon: 'Sparkles' as const },
   { id: 'notifications', label: 'Notifications',  icon: 'Bell' as const },
   { id: 'security',      label: 'Security',       icon: 'Shield' as const },
   { id: 'billing',       label: 'Billing',        icon: 'CreditCard' as const },
@@ -29,6 +43,7 @@ export default function SettingsPage() {
 
 function SettingsInner() {
   const user = useRequireAuth();
+  const { tenant } = useAuth();
   const search = useSearchParams();
   const router = useRouter();
   const initialTab = (search.get('tab') as TabId | null) ?? 'account';
@@ -53,7 +68,10 @@ function SettingsInner() {
         <div className="page-header">
           <div>
             <h1 className="page-title">Settings</h1>
-            <p className="page-subtitle">Manage your account, workspace, and how Rhud works for Everlane.</p>
+            <p className="page-subtitle">
+              Manage your account, workspace, and how Rhud works
+              {tenant?.name ? ` for ${tenant.name}` : ''}.
+            </p>
           </div>
         </div>
 
@@ -90,8 +108,9 @@ function SettingsInner() {
 
           <div style={{ minWidth: 0 }}>
             {tab === 'account' && <AccountPanel email={user.email} role={user.role} />}
-            {tab === 'workspace' && <WorkspacePanel />}
-            {tab === 'team' && <TeamPanel />}
+            {tab === 'workspace' && <WorkspacePanel isAdmin={user.role === 'admin'} />}
+            {tab === 'team' && <TeamPanel currentUserId={user.sub} isAdmin={user.role === 'admin'} />}
+            {tab === 'ai' && <AiPanel isAdmin={user.role === 'admin'} />}
             {tab === 'notifications' && <NotificationsPanel />}
             {tab === 'security' && <SecurityPanel />}
             {tab === 'billing' && <BillingPanel />}
@@ -218,133 +237,778 @@ function AccountPanel({ email, role }: { email: string; role: string }) {
 
 // ─── Workspace ─────────────────────────────
 
-function WorkspacePanel() {
+function WorkspacePanel({ isAdmin }: { isAdmin: boolean }) {
+  const { tenant, refreshTenant } = useAuth();
+  // Local form state mirrors the cached tenant; on Save we PATCH and
+  // the auth context refresh broadcasts the new name to AppShell.
+  const [name, setName] = useState(tenant?.name ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setName(tenant?.name ?? '');
+  }, [tenant?.name]);
+
+  const dirty = name.trim() !== (tenant?.name ?? '').trim();
+
+  async function save() {
+    if (!dirty || busy) return;
+    setBusy(true); setErr(null); setSaved(false);
+    try {
+      await tenantApi.update({ name: name.trim() });
+      await refreshTenant();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const initial = (tenant?.name ?? 'W').slice(0, 1).toUpperCase();
+
   return (
     <>
-      <SectionCard title="Workspace" desc="Visible to everyone in Everlane.">
-        <Row label="Logo">
+      {!isAdmin && (
+        <div className="card" style={{
+          padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+          marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          background: 'var(--bg-sunk)',
+        }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — only admins can edit workspace settings.
+        </div>
+      )}
+
+      <SectionCard
+        title="Workspace"
+        desc={tenant?.name ? `Visible to everyone in ${tenant.name}.` : 'Visible to everyone in this workspace.'}
+      >
+        <Row label="Logo" sub="Coming soon — file uploads aren't wired yet.">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div className="workspace-avatar" style={{ width: 48, height: 48, fontSize: 18, borderRadius: 10 }}>E</div>
-            <button className="btn sm">Upload</button>
+            <div className="workspace-avatar" style={{ width: 48, height: 48, fontSize: 18, borderRadius: 10 }}>{initial}</div>
+            <button className="btn sm" disabled>Upload</button>
           </div>
         </Row>
-        <Row label="Workspace name">
-          <input className="input" defaultValue="Everlane Consulting" style={{ maxWidth: 360 }} />
+        <Row label="Workspace name" sub="Shown in the sidebar, on invites, and on client-facing links.">
+          <input
+            className="input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={!isAdmin || busy}
+            maxLength={120}
+            style={{ maxWidth: 360 }}
+          />
         </Row>
-        <Row label="Primary domain" sub="Clients will see this in email signatures.">
-          <input className="input" defaultValue="everlane.test" style={{ maxWidth: 360 }} />
+        <Row label="Plan" sub="Contact sales to change.">
+          <span className="chip outline" style={{ fontSize: 11 }}>{tenant?.plan ?? '—'}</span>
         </Row>
-        <Row label="Default currency">
-          <select className="input" defaultValue="USD" style={{ maxWidth: 160 }}>
-            <option>USD — US Dollar</option>
-            <option>EUR — Euro</option>
-            <option>GBP — British Pound</option>
-            <option>AUD — Australian Dollar</option>
-          </select>
-        </Row>
-        <Row label="Fiscal year start" last>
-          <select className="input" defaultValue="January" style={{ maxWidth: 160 }}>
-            <option>January</option><option>April</option><option>July</option><option>October</option>
-          </select>
+        <Row label="Workspace id" sub="Reference this if you ever need to contact support." last>
+          <code style={{ fontSize: 12, padding: '6px 10px', background: 'var(--bg-sunk)', borderRadius: 6 }}>
+            {tenant?.id ?? '—'}
+          </code>
         </Row>
       </SectionCard>
 
-      <SectionCard title="Branding" desc="Applied to client-facing links and proposal documents.">
-        <Row label="Accent color">
-          <div style={{ display: 'flex', gap: 8 }}>
-            {['oklch(0.52 0.14 265)', 'oklch(0.56 0.18 155)', 'oklch(0.58 0.2 30)', 'oklch(0.58 0.2 350)', '#111'].map((c, i) => (
-              <button
-                key={i}
-                type="button"
-                style={{
-                  width: 28, height: 28, borderRadius: 999,
-                  background: c,
-                  border: i === 0 ? '2px solid var(--fg)' : '2px solid transparent',
-                  outline: '1px solid var(--border)',
-                  cursor: 'pointer',
-                }}
-              />
-            ))}
-          </div>
-        </Row>
-        <Row label="Proposal footer" sub="Appears on every generated proposal.">
-          <textarea className="input" defaultValue="Everlane Consulting · Confidential · www.everlane.test" style={{ maxWidth: 480, minHeight: 60 }} />
-        </Row>
-        <Row label="Link preview domain" sub="Tokenised scope-gathering links are served from this host." last>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <code style={{ fontSize: 12, padding: '6px 10px', background: 'var(--bg-sunk)', borderRadius: 6 }}>
-              scope.everlane.test
-            </code>
-            <button className="btn sm ghost">Change</button>
-          </div>
-        </Row>
-      </SectionCard>
+      {err && (
+        <div className="card" style={{
+          padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16,
+          background: 'var(--danger-tint)',
+          borderColor: 'color-mix(in oklch, var(--danger) 22%, transparent)',
+        }}>{err}</div>
+      )}
+
+      {isAdmin && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, alignItems: 'center' }}>
+          {saved && <span style={{ fontSize: 12, color: 'var(--ok)' }}><Icon.Check size={12} /> Saved</span>}
+          <button className="btn ghost" disabled={!dirty || busy} onClick={() => setName(tenant?.name ?? '')}>
+            Reset
+          </button>
+          <button className="btn accent" disabled={!dirty || busy || !name.trim()} onClick={save}>
+            {busy ? <span className="spin" /> : <><Icon.Check size={12} /> Save changes</>}
+          </button>
+        </div>
+      )}
     </>
   );
 }
 
 // ─── Team ─────────────────────────────
 
-function TeamPanel() {
-  const members = [
-    { name: 'Maya Bernal',    role: 'Sales employee', email: 'maya@everlane.test',  initials: 'MB', color: 'oklch(0.62 0.14 250)', last: 'Active now' },
-    { name: 'Oren Takeda',    role: 'Sales manager',  email: 'oren@everlane.test',  initials: 'OT', color: 'oklch(0.58 0.12 50)',  last: '8m ago' },
-    { name: 'Priya Shah',     role: 'Sales employee', email: 'priya@everlane.test', initials: 'PS', color: 'oklch(0.62 0.16 180)', last: '1h ago' },
-    { name: 'Jens Larsson',   role: 'Sales employee', email: 'jens@everlane.test',  initials: 'JL', color: 'oklch(0.6 0.14 90)',   last: 'Yesterday' },
-    { name: 'Chloe Nakamura', role: 'Admin',          email: 'chloe@everlane.test', initials: 'CN', color: 'oklch(0.58 0.14 310)', last: '2 days ago' },
-  ];
+const ROLE_LABELS: Record<Role, string> = {
+  admin: 'Admin',
+  sales_manager: 'Sales manager',
+  sales_employee: 'Sales rep',
+};
+
+function TeamPanel({ currentUserId, isAdmin }: { currentUserId: string; isAdmin: boolean }) {
+  const confirm = useConfirm();
+  const [users, setUsers] = useState<UserSummary[] | null>(null);
+  const [invites, setInvites] = useState<InviteSummary[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [showInvite, setShowInvite] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [devLink, setDevLink] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    setErr(null);
+    Promise.all([team.listUsers(), team.listInvites()])
+      .then(([u, i]) => { setUsers(u); setInvites(i); })
+      .catch((e) => setErr(describeError(e)));
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setUsers([]);
+      setInvites([]);
+      return;
+    }
+    refresh();
+  }, [isAdmin, refresh]);
+
+  async function changeRole(id: string, role: Role) {
+    setBusyId(id);
+    setErr(null);
+    try {
+      await team.updateUserRole(id, role);
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function removeUser(id: string, email: string) {
+    const ok = await confirm({
+      title: `Remove ${email}?`,
+      body: `They lose access immediately. If they have open engagements assigned, the removal will fail and you'll need to reassign first.`,
+      tone: 'danger',
+      confirmLabel: 'Remove user',
+    });
+    if (!ok) return;
+    setBusyId(id);
+    setErr(null);
+    try {
+      await team.removeUser(id);
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function resendInvite(id: string) {
+    setBusyId(id);
+    setErr(null);
+    try {
+      const res = await team.resendInvite(id);
+      if (res.devToken) {
+        setDevLink(`${window.location.origin}/accept-invite?token=${res.devToken}`);
+      }
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function revokeInvite(id: string, email: string) {
+    const ok = await confirm({
+      title: `Revoke pending invite?`,
+      body: <>The invite link sent to <b>{email}</b> will stop working. You can re-invite them later.</>,
+      tone: 'warn',
+      confirmLabel: 'Revoke invite',
+    });
+    if (!ok) return;
+    setBusyId(id);
+    setErr(null);
+    try {
+      await team.revokeInvite(id);
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const pending = invites?.filter((i) => i.status === 'pending') ?? [];
+
   return (
     <>
+      {!isAdmin && (
+        <div className="card" style={{ padding: '12px 16px', marginBottom: 16, fontSize: 12.5, color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--bg-sunk)' }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — only admins can manage the team.
+        </div>
+      )}
+
+      {err && (
+        <div className="card" style={{
+          padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16,
+          background: 'var(--danger-tint)',
+          borderColor: 'color-mix(in oklch, var(--danger) 22%, transparent)',
+        }}>{err}</div>
+      )}
+
+      {devLink && (
+        <div className="card" style={{
+          padding: 12, fontSize: 12, marginBottom: 16,
+          background: 'var(--accent-tint)',
+          borderColor: 'color-mix(in oklch, var(--accent) 22%, transparent)',
+          display: 'flex', flexDirection: 'column', gap: 6,
+        }}>
+          <div style={{ fontWeight: 600 }}>Dev mode — invite link (email transport is console)</div>
+          <code style={{ fontSize: 11.5, padding: '6px 8px', background: 'var(--bg)', borderRadius: 6, wordBreak: 'break-all' }}>{devLink}</code>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn sm" onClick={() => navigator.clipboard.writeText(devLink)}>
+              <Icon.Copy size={11} /> Copy
+            </button>
+            <button className="btn sm ghost" onClick={() => setDevLink(null)}>Dismiss</button>
+          </div>
+        </div>
+      )}
+
       <SectionCard
         title="Members"
-        desc="5 of 15 seats used on the Business plan."
-        actions={<button className="btn accent"><Icon.Plus size={12} />Invite</button>}
+        desc={users === null ? 'Loading…' : `${users.length} member${users.length === 1 ? '' : 's'} in this workspace.`}
+        actions={isAdmin ? <button className="btn accent" onClick={() => setShowInvite(true)}><Icon.Plus size={12} />Invite</button> : null}
       >
         <div style={{ padding: '4px 0 0' }}>
-          {members.map((m, i) => (
-            <div
-              key={m.email}
-              style={{
-                display: 'grid', gridTemplateColumns: '32px 1fr 140px 140px 24px', gap: 14,
-                padding: '14px 0', alignItems: 'center',
-                borderBottom: i === members.length - 1 ? 'none' : '1px solid var(--divider)',
-              }}
-            >
-              <div className="avatar" style={{ background: m.color }}>{m.initials}</div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{m.name}</div>
-                <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.email}</div>
-              </div>
-              <div>
-                <span className={'chip ' + (m.role === 'Admin' ? 'accent' : m.role === 'Sales manager' ? 'warn' : 'outline')}>
-                  {m.role}
-                </span>
-              </div>
-              <div style={{ fontSize: 11.5, color: 'var(--fg-subtle)' }}>{m.last}</div>
-              <button
-                type="button"
-                style={{ appearance: 'none', border: 0, background: 'transparent', cursor: 'pointer', color: 'var(--fg-subtle)', padding: 4 }}
+          {users === null ? (
+            <div className="empty" style={{ padding: 24 }}>Loading…</div>
+          ) : users.length === 0 ? (
+            <div className="empty" style={{ padding: 24 }}>No members yet.</div>
+          ) : users.map((u, i) => {
+            const initials = u.email.slice(0, 2).toUpperCase();
+            const isSelf = u.id === currentUserId;
+            return (
+              <div
+                key={u.id}
+                style={{
+                  display: 'grid', gridTemplateColumns: '32px 1fr 200px 32px', gap: 14,
+                  padding: '12px 0', alignItems: 'center',
+                  borderBottom: i === users.length - 1 ? 'none' : '1px solid var(--divider)',
+                  opacity: busyId === u.id ? 0.5 : 1,
+                }}
               >
-                <Icon.MoreHorizontal size={14} />
-              </button>
-            </div>
-          ))}
+                <div className="avatar" style={{ background: roleColor(u.role) }}>{initials}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {u.email.split('@')[0]}
+                    {isSelf && <span className="chip outline" style={{ fontSize: 10 }}>You</span>}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.email}</div>
+                </div>
+                {isAdmin ? (
+                  <select
+                    className="input"
+                    value={u.role}
+                    disabled={busyId === u.id}
+                    onChange={(e) => changeRole(u.id, e.target.value as Role)}
+                    style={{ height: 28, fontSize: 12, padding: '0 8px' }}
+                  >
+                    {(['admin', 'sales_manager', 'sales_employee'] as Role[]).map((r) => (
+                      <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className={'chip ' + (u.role === 'admin' ? 'accent' : u.role === 'sales_manager' ? 'warn' : 'outline')}>
+                    {ROLE_LABELS[u.role]}
+                  </span>
+                )}
+                {isAdmin && !isSelf ? (
+                  <button
+                    type="button"
+                    onClick={() => removeUser(u.id, u.email)}
+                    disabled={busyId === u.id}
+                    title="Remove user"
+                    style={{ appearance: 'none', border: 0, background: 'transparent', cursor: 'pointer', color: 'var(--fg-subtle)', padding: 4 }}
+                  >
+                    <Icon.X size={14} />
+                  </button>
+                ) : <span />}
+              </div>
+            );
+          })}
         </div>
       </SectionCard>
 
-      <SectionCard title="Pending invites" desc="These people haven't accepted yet.">
-        {[
-          { email: 'olivia@everlane.test', sent: 'Yesterday', role: 'Sales employee' },
-          { email: 'marco@everlane.test', sent: '3 days ago', role: 'Sales employee' },
-        ].map((p, i, arr) => (
-          <Row key={p.email} label={p.email} sub={`Invited ${p.sent} · ${p.role}`} last={i === arr.length - 1}>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button className="btn sm ghost">Resend</button>
-              <button className="btn sm ghost">Revoke</button>
+      {isAdmin && (
+        <SectionCard title="Pending invites" desc={pending.length === 0 ? 'No invites awaiting acceptance.' : `${pending.length} awaiting acceptance.`}>
+          {pending.length === 0 ? (
+            <div style={{ padding: 18, fontSize: 12, color: 'var(--fg-subtle)' }}>
+              When you invite someone, they appear here until they sign up.
+            </div>
+          ) : pending.map((p, i, arr) => (
+            <Row
+              key={p.id}
+              label={p.email}
+              sub={`Invited ${new Date(p.createdAt).toLocaleDateString()} · ${ROLE_LABELS[p.role]} · expires ${new Date(p.expiresAt).toLocaleDateString()}`}
+              last={i === arr.length - 1}
+            >
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn sm ghost" disabled={busyId === p.id} onClick={() => resendInvite(p.id)}>
+                  Resend
+                </button>
+                <button className="btn sm ghost" disabled={busyId === p.id} onClick={() => revokeInvite(p.id, p.email)}>
+                  Revoke
+                </button>
+              </div>
+            </Row>
+          ))}
+        </SectionCard>
+      )}
+
+      {showInvite && (
+        <InviteModal
+          onClose={() => setShowInvite(false)}
+          onCreated={(devToken) => {
+            if (devToken) setDevLink(`${window.location.origin}/accept-invite?token=${devToken}`);
+            refresh();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function InviteModal({ onClose, onCreated }: { onClose(): void; onCreated(devToken?: string): void }) {
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<Role>('sales_employee');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await team.createInvite({ email, role });
+      onCreated(res.devToken);
+      onClose();
+    } catch (e) {
+      setErr(describeError(e));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Portal>
+    <div
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'color-mix(in oklch, black 40%, transparent)',
+        display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
+    >
+      <div className="card" style={{ width: '100%', maxWidth: 440, background: 'var(--bg)' }}>
+        <header style={{ padding: '14px 18px', borderBottom: '1px solid var(--divider)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Invite a teammate</div>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 2 }}>
+              They&apos;ll get an email with a link to set a password.
+            </div>
+          </div>
+          <button onClick={onClose} disabled={busy} className="btn sm ghost"><Icon.X size={11} /></button>
+        </header>
+        <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 500 }}>Email</span>
+            <input
+              className="input"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="teammate@yourcompany.com"
+              autoFocus
+              style={{ height: 32, padding: '0 10px', fontSize: 13 }}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 500 }}>Role</span>
+            <select
+              className="input"
+              value={role}
+              onChange={(e) => setRole(e.target.value as Role)}
+              style={{ height: 32, padding: '0 10px', fontSize: 13 }}
+            >
+              <option value="sales_employee">Sales rep — can issue links and create opportunities</option>
+              <option value="sales_manager">Sales manager — adds approvals, edits templates</option>
+              <option value="admin">Admin — manages team, rate cards, integrations</option>
+            </select>
+          </label>
+          {err && (
+            <div style={{
+              padding: 10,
+              background: 'var(--danger-tint)', color: 'var(--danger)',
+              border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
+              borderRadius: 8, fontSize: 12,
+            }}>{err}</div>
+          )}
+        </div>
+        <footer style={{ padding: '12px 18px', borderTop: '1px solid var(--divider)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={onClose} disabled={busy} className="btn sm ghost">Cancel</button>
+          <button onClick={submit} disabled={busy || !email} className="btn sm accent">
+            {busy ? <span className="spin" /> : <><Icon.Send size={11} /> Send invite</>}
+          </button>
+        </footer>
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
+// ─── AI ─────────────────────────────
+
+interface ProviderPreset {
+  value: LlmProviderName;
+  label: string;
+  blurb: string;
+  defaultModel: string;
+  /** When false, baseUrl input is hidden (provider has a fixed default). */
+  baseUrlEditable: boolean;
+  baseUrlPlaceholder?: string;
+  /** False for self-hosted (Ollama) — no key needed. */
+  apiKeyRequired: boolean;
+}
+
+const PROVIDER_PRESETS: ProviderPreset[] = [
+  {
+    value: 'manual',
+    label: 'Manual — use any AI you already have',
+    blurb: 'No API, no setup. We compose the prompt, you paste it into ChatGPT / Claude / Gemini, paste the answer back. Works with any subscription you already pay for.',
+    defaultModel: 'manual',
+    baseUrlEditable: false,
+    apiKeyRequired: false,
+  },
+  {
+    value: 'anthropic',
+    label: 'Anthropic — Claude',
+    blurb: 'Highest narrative quality, best tool use. Bring an Anthropic API key.',
+    defaultModel: 'claude-sonnet-4-6',
+    baseUrlEditable: false,
+    apiKeyRequired: true,
+  },
+  {
+    value: 'openai',
+    label: 'OpenAI — GPT',
+    blurb: 'GPT-4o family. Bring an OpenAI API key.',
+    defaultModel: 'gpt-4o-mini',
+    baseUrlEditable: false,
+    apiKeyRequired: true,
+  },
+  {
+    value: 'ollama',
+    label: 'Ollama (self-hosted)',
+    blurb: 'Run a local model on your own machine. No API key — your data never leaves the host.',
+    defaultModel: 'llama3.1:8b',
+    baseUrlEditable: true,
+    baseUrlPlaceholder: 'http://localhost:11434/v1',
+    apiKeyRequired: false,
+  },
+  {
+    value: 'openai_compat',
+    label: 'OpenAI-compatible (BYO endpoint)',
+    blurb: 'Azure OpenAI, Together, OpenRouter, vLLM, llama.cpp — anything that speaks the OpenAI chat API.',
+    defaultModel: '',
+    baseUrlEditable: true,
+    baseUrlPlaceholder: 'https://your-endpoint.example.com/v1',
+    apiKeyRequired: true,
+  },
+];
+
+function AiPanel({ isAdmin }: { isAdmin: boolean }) {
+  const confirm = useConfirm();
+  const [config, setConfig] = useState<LlmConfig | null | 'unset'>(null);
+  const [provider, setProvider] = useState<LlmProviderName>('anthropic');
+  const [model, setModel] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [enabled, setEnabled] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const preset = PROVIDER_PRESETS.find((p) => p.value === provider)!;
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setConfig('unset');
+      return;
+    }
+    llm.get()
+      .then((c) => {
+        if (c) {
+          setConfig(c);
+          setProvider(c.provider);
+          setModel(c.model);
+          setBaseUrl(c.baseUrl ?? '');
+          setEnabled(c.enabled);
+        } else {
+          setConfig('unset');
+        }
+      })
+      .catch((e) => {
+        setErr(describeError(e));
+        // Don't strand the panel on "Loading…" if the read itself failed —
+        // surface the form so the admin can still try to set a config.
+        setConfig('unset');
+      });
+  }, [isAdmin]);
+
+  function selectProvider(next: LlmProviderName) {
+    setProvider(next);
+    setTestResult(null);
+    const p = PROVIDER_PRESETS.find((x) => x.value === next)!;
+    // Only seed defaults when the form is fresh (no model chosen) or when
+    // the previous provider wasn't this one — avoids stomping a user's
+    // typed model when they switch back and forth.
+    if (!model || model === '') setModel(p.defaultModel);
+    if (!p.baseUrlEditable) setBaseUrl('');
+  }
+
+  async function save() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    setTestResult(null);
+    try {
+      const dto = {
+        provider,
+        model: model.trim(),
+        baseUrl: preset.baseUrlEditable ? (baseUrl.trim() || null) : null,
+        enabled,
+        // undefined = leave existing key alone; non-empty = update
+        ...(apiKey.trim().length > 0 && { apiKey: apiKey.trim() }),
+      };
+      const updated = await llm.upsert(dto);
+      setConfig(updated);
+      setApiKey('');
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function test() {
+    if (busy) return;
+    setBusy(true);
+    setTestResult(null);
+    try {
+      const r = await llm.test();
+      if (r.ok) setTestResult({ ok: true, message: `Reply: "${r.sample ?? ''}"` });
+      else setTestResult({ ok: false, message: r.error ?? 'unknown error' });
+    } catch (e) {
+      const msg = describeError(e);
+      if (msg.includes('llm_key_decryption_failed')) {
+        setTestResult({
+          ok: false,
+          message: 'The stored API key can\'t be decrypted (the server\'s master key changed). Paste the key in the API key field above and click Save.',
+        });
+      } else {
+        setTestResult({ ok: false, message: msg });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearKey() {
+    const ok = await confirm({
+      title: 'Clear the stored API key?',
+      body: `You'll need to re-enter it before any AI feature works again. The encrypted bytes are wiped from disk.`,
+      tone: 'danger',
+      confirmLabel: 'Clear key',
+    });
+    if (!ok) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const updated = await llm.upsert({ provider, model, baseUrl: baseUrl || null, apiKey: '' });
+      setConfig(updated);
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="card" style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--bg-sunk)' }}>
+        <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+        Read-only — only admins can configure AI.
+      </div>
+    );
+  }
+
+  if (config === null) return <div className="empty" style={{ padding: 40 }}>Loading…</div>;
+
+  return (
+    <>
+      {err && (
+        <div className="card" style={{
+          padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16,
+          background: 'var(--danger-tint)',
+          borderColor: 'color-mix(in oklch, var(--danger) 22%, transparent)',
+        }}>{err}</div>
+      )}
+
+      {config === 'unset' && (
+        <div className="card" style={{
+          padding: '14px 18px', marginBottom: 16,
+          background: 'var(--accent-tint)',
+          borderColor: 'color-mix(in oklch, var(--accent) 22%, transparent)',
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+            <Icon.Sparkles size={13} /> No API? We got you.
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+            Use any AI you already pay for — ChatGPT, Claude, Gemini, Perplexity. We compose the prompt,
+            you paste it in, paste the answer back. <b>That&apos;s it.</b>{' '}
+            Want hands-off automation instead? Bring an API key (Anthropic, OpenAI, OpenRouter)
+            or run a local model with Ollama.
+          </div>
+        </div>
+      )}
+
+      <SectionCard
+        title="AI provider"
+        desc="Pick how Rhud talks to a language model. Manual mode (recommended for non-technical teams) needs nothing but the AI you already use."
+      >
+        <div style={{ padding: '14px 0', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {PROVIDER_PRESETS.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              onClick={() => selectProvider(p.value)}
+              style={{
+                appearance: 'none', cursor: 'pointer', textAlign: 'left',
+                padding: '12px 14px', borderRadius: 10,
+                border: '1.5px solid ' + (provider === p.value ? 'var(--accent)' : 'var(--border)'),
+                background: provider === p.value ? 'var(--accent-tint)' : 'var(--bg)',
+                display: 'flex', flexDirection: 'column', gap: 4,
+                transition: 'border-color .15s, background .15s',
+              }}
+            >
+              <div style={{ fontSize: 12.5, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                {provider === p.value && <Icon.Check size={11} style={{ color: 'var(--accent)' }} />}
+                {p.label}
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
+                {p.blurb}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {provider !== 'manual' && (
+          <Row label="Model" sub="Provider-specific model id.">
+            <input
+              className="input"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={preset.defaultModel || 'model-name'}
+              style={{ maxWidth: 360, fontSize: 13 }}
+            />
+          </Row>
+        )}
+
+        {preset.baseUrlEditable && (
+          <Row
+            label="Base URL"
+            sub={
+              preset.value === 'ollama'
+                ? 'Ollama\'s OpenAI-compatible endpoint. Default works if Ollama is on the same host.'
+                : 'Full base URL up to /v1, e.g. https://api.example.com/v1.'
+            }
+          >
+            <input
+              className="input"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={preset.baseUrlPlaceholder}
+              style={{ maxWidth: 480, fontSize: 13 }}
+            />
+          </Row>
+        )}
+
+        {preset.apiKeyRequired && (
+          <Row
+            label="API key"
+            sub={
+              config !== 'unset' && config?.apiKeySet
+                ? 'A key is on file (encrypted at rest). Leave blank to keep it; type a new value to replace.'
+                : 'Required for this provider. Stored encrypted at rest with envelope encryption.'
+            }
+          >
+            <div style={{ display: 'flex', gap: 6, maxWidth: 480, alignItems: 'center' }}>
+              <input
+                className="input"
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={config !== 'unset' && config?.apiKeySet ? '••••••••• (unchanged)' : 'sk-…'}
+                autoComplete="new-password"
+                style={{ flex: 1, fontSize: 13 }}
+              />
+              {config !== 'unset' && config?.apiKeySet && (
+                <button type="button" className="btn sm ghost" onClick={clearKey} disabled={busy}>
+                  Clear
+                </button>
+              )}
             </div>
           </Row>
-        ))}
+        )}
+
+        <Row label="Enabled" sub="Master switch — when off, AI features fail closed." last>
+          <Toggle value={enabled} onChange={setEnabled} />
+        </Row>
       </SectionCard>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 4 }}>
+        <div style={{ fontSize: 11.5, color: 'var(--fg-subtle)' }}>
+          {config !== 'unset' && (
+            <>Last updated {new Date(config.updatedAt).toLocaleString()}</>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {provider !== 'manual' && (
+            <button className="btn ghost" disabled={busy} onClick={test}>
+              <Icon.Zap size={12} />
+              {busy ? 'Working…' : 'Test connection'}
+            </button>
+          )}
+          <button className="btn accent" disabled={busy || !model.trim()} onClick={save}>
+            {busy ? <span className="spin" /> : <><Icon.Check size={12} /> Save</>}
+          </button>
+        </div>
+      </div>
+
+      {testResult && (
+        <div
+          className="card"
+          style={{
+            marginTop: 12, padding: 12, fontSize: 12.5,
+            background: testResult.ok ? 'var(--ok-tint)' : 'var(--danger-tint)',
+            color: testResult.ok ? 'var(--ok)' : 'var(--danger)',
+            borderColor: testResult.ok
+              ? 'color-mix(in oklch, var(--ok) 22%, transparent)'
+              : 'color-mix(in oklch, var(--danger) 22%, transparent)',
+          }}
+        >
+          <b>{testResult.ok ? 'Connection OK.' : 'Connection failed.'}</b>{' '}
+          <span style={{ wordBreak: 'break-word' }}>{testResult.message}</span>
+        </div>
+      )}
     </>
   );
 }

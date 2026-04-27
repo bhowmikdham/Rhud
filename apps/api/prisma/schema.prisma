@@ -41,8 +41,44 @@ model Tenant {
   rateCards       RateCard[]
   predictions     Prediction[]
   pricingConfig   TenantPricingConfig?
+  invites         Invite[]
+  llmConfig       TenantLlmConfig?
+  gammaConfigRow  TenantGammaConfig?
+  userIntegrations UserIntegration[]
+  outlookApp      TenantOutlookApp?
 
   @@map("tenants")
+}
+
+/// Per-tenant Microsoft Entra app credentials. One row per workspace
+/// (set up once by an admin via the UI). The app must be registered
+/// as multi-tenant + personal accounts so any user signing in can
+/// authorize it. The redirect URI is server-side derived (it's the
+/// same for all tenants — points at our /integrations/outlook/callback)
+/// so we don't store it; just display it in the setup modal.
+///
+/// The client secret is envelope-encrypted with the same DEK pattern
+/// as TenantLlmConfig.
+model TenantOutlookApp {
+  tenantId String @id @map("tenant_id") @db.Uuid
+
+  /// The Application (client) ID from Entra — public, displayed back
+  /// in the admin UI for sanity-check.
+  clientId String @map("client_id")
+
+  /// Encrypted client secret. Per-row DEK wrapped by the master key
+  /// (LLM_KEY_ENCRYPTION_KEY).
+  clientSecretCiphertext    Bytes @map("client_secret_ciphertext")
+  clientSecretIv            Bytes @map("client_secret_iv")
+  clientSecretDekCiphertext Bytes @map("client_secret_dek_ciphertext")
+  clientSecretDekIv         Bytes @map("client_secret_dek_iv")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_outlook_app")
 }
 
 model Template {
@@ -59,6 +95,17 @@ model Template {
   // Null on legacy templates; quotes are computed iff the engagement's
   // template has one set at submission time.
   rateCardId  String?  @map("rate_card_id") @db.Uuid
+  /// Optional Gamma template id. When proposal drafting routes through
+  /// Gamma, this id is forwarded so the deck inherits the template's
+  /// layout / theme. Null = let Gamma pick a default.
+  gammaTemplateId String? @map("gamma_template_id")
+  /// Optional proposal scaffold — Markdown with {{token}} merge fields.
+  /// When set, proposal generation renders this scaffold (substituting
+  /// data tokens like {{client_name}}, {{price}}, {{scope_summary}})
+  /// instead of asking the LLM to compose from scratch. Gives the
+  /// consultancy full control over boilerplate (values, terms,
+  /// signature) while only the dynamic parts vary per opportunity.
+  proposalScaffold String? @map("proposal_scaffold")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -107,6 +154,35 @@ model Engagement {
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   submittedAt         DateTime? @map("submitted_at") @db.Timestamptz
   closedAt            DateTime? @map("closed_at") @db.Timestamptz
+
+  /// Current AI-generated proposal draft. Single column (one draft at a
+  /// time) — regenerate replaces. Persists from `drafting` through `sent`
+  /// so the rep can copy it into their email client at any point.
+  proposalDraft       String?   @map("proposal_draft")
+  proposalDraftedAt   DateTime? @map("proposal_drafted_at") @db.Timestamptz
+  /// Provider that produced the current draft, e.g. 'anthropic',
+  /// 'manual', 'gamma'. Surfaced in the UI so reps know what to
+  /// expect (inline text vs link to a Gamma deck).
+  proposalDraftSource String?   @map("proposal_draft_source")
+  /// When the draft was produced by Gamma — the deck's URL + id.
+  /// For LLM drafts these stay null and the text lives in proposalDraft.
+  gammaDeckUrl        String?   @map("gamma_deck_url")
+  gammaDeckId         String?   @map("gamma_deck_id")
+  /// Gamma's generation job id — set while a Gamma deck is being
+  /// drafted, cleared once the deck is ready (or failed). Used by
+  /// getCurrent() to poll Gamma's status endpoint without re-running
+  /// the create call.
+  gammaGenerationId        String?   @map("gamma_generation_id")
+  gammaGenerationStartedAt DateTime? @map("gamma_generation_started_at") @db.Timestamptz
+
+  /// PDF export of the current proposal — surfaced as the attachment in
+  /// the Send-to-client modal. Populated for Gamma drafts via the
+  /// `exportAs: 'pdf'` flag at generation time. Gamma export URLs
+  /// expire after ~7 days (per the public docs); we cache the
+  /// approximate expiry so the UI can prompt the rep to regenerate
+  /// instead of handing them a dead link.
+  proposalPdfUrl       String?   @map("proposal_pdf_url")
+  proposalPdfExpiresAt DateTime? @map("proposal_pdf_expires_at") @db.Timestamptz
 
   tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   template    Template          @relation(fields: [templateId], references: [id])
@@ -413,14 +489,65 @@ model User {
   role         String
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  magicLinks MagicLink[]
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  magicLinks   MagicLink[]
+  integrations UserIntegration[]
 
   // Email is globally unique. Even across tenants we don't want two users
   // sharing an email — simpler mental model for the MVP.
   @@unique([email])
   @@index([tenantId])
   @@map("users")
+}
+
+/// Per-user OAuth-based email integrations (Outlook now, Gmail next).
+/// One row per (user, provider). When a rep clicks "Send via Outlook"
+/// in the proposal modal, the API uses these tokens to compose +
+/// send the email from the rep's own account, with the proposal PDF
+/// attached. Refresh tokens are persisted so we can keep working
+/// without prompting again.
+///
+/// Reuses the same envelope encryption as TenantLlmConfig — DEK per
+/// row, master key from LLM_KEY_ENCRYPTION_KEY.
+model UserIntegration {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  tenantId  String @map("tenant_id") @db.Uuid
+  /// 'outlook' | 'gmail' — CHECK constraint in migration.
+  provider  String
+  /// The address messages will be sent FROM (Microsoft `mail` claim,
+  /// or Google `email`). Surfaced in the UI: "Connected as
+  /// alex@acme.com".
+  accountEmail String @map("account_email")
+
+  /// Access token — usually short-lived (Microsoft: ~60 min).
+  accessTokenCiphertext    Bytes  @map("access_token_ciphertext")
+  accessTokenIv            Bytes  @map("access_token_iv")
+  accessTokenDekCiphertext Bytes  @map("access_token_dek_ciphertext")
+  accessTokenDekIv         Bytes  @map("access_token_dek_iv")
+  accessTokenExpiresAt     DateTime @map("access_token_expires_at") @db.Timestamptz
+
+  /// Refresh token — long-lived (Microsoft: ~90 days of inactivity).
+  /// Optional because some flows (e.g. v1 client_credentials) don't
+  /// return one, but our authcode flow always does.
+  refreshTokenCiphertext    Bytes? @map("refresh_token_ciphertext")
+  refreshTokenIv            Bytes? @map("refresh_token_iv")
+  refreshTokenDekCiphertext Bytes? @map("refresh_token_dek_ciphertext")
+  refreshTokenDekIv         Bytes? @map("refresh_token_dek_iv")
+
+  /// Space-separated scope list as returned by the provider, for
+  /// debugging "why doesn't sendMail work" tickets.
+  scopes    String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// One integration per (user, provider). Re-connecting upserts.
+  @@unique([userId, provider])
+  @@index([tenantId])
+  @@map("user_integrations")
 }
 
 model MagicLink {
@@ -491,4 +618,84 @@ model TenantPricingConfig {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("tenant_pricing_config")
+}
+
+/// Pending team invite. Token is stored hashed (argon2); plaintext only
+/// exists in the email body. CHECK constraint mirrors the User role enum.
+/// Lifecycle: created → (revoked_at | accepted_at) terminal. Expired rows
+/// remain for audit; the accept endpoint rejects them.
+model Invite {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  email        String    @db.Citext
+  role         String
+  tokenHash    String    @map("token_hash")
+  invitedById  String    @map("invited_by_id") @db.Uuid
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz
+  acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([email])
+  @@map("invites")
+}
+
+/// Per-tenant LLM provider configuration. The API key is encrypted at rest
+/// via envelope encryption — `api_key_ciphertext` holds the AES-GCM
+/// payload, `api_key_dek_ciphertext` holds the DEK wrapped by the master
+/// key (LLM_KEY_ENCRYPTION_KEY env, 32-byte base64). Decryption happens
+/// only inside the LLM client; the key never leaves the API process.
+model TenantLlmConfig {
+  tenantId             String   @id @map("tenant_id") @db.Uuid
+  /// "anthropic" | "openai" | "ollama" | "openai_compat"
+  provider             String
+  /// Provider model id, e.g. "claude-opus-4-7", "gpt-4o-mini", "llama3.1:8b"
+  model                String
+  /// Override base URL — required for ollama / openai_compat / azure;
+  /// null means "use the provider SDK's default".
+  baseUrl              String?  @map("base_url")
+  apiKeyCiphertext     Bytes?   @map("api_key_ciphertext")
+  apiKeyIv             Bytes?   @map("api_key_iv")
+  apiKeyDekCiphertext  Bytes?   @map("api_key_dek_ciphertext")
+  apiKeyDekIv          Bytes?   @map("api_key_dek_iv")
+  /// Soft cap so a runaway loop doesn't drain the tenant's quota. 0 = no cap.
+  monthlyTokenBudget   Int      @default(0) @map("monthly_token_budget")
+  enabled              Boolean  @default(true)
+  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_llm_config")
+}
+
+/// Per-tenant Gamma integration. API key encrypted via the same
+/// envelope scheme as TenantLlmConfig (master key in
+/// `LLM_KEY_ENCRYPTION_KEY` env). `proposalDriver` lets the tenant
+/// choose whether proposal drafts come from the LLM or from Gamma —
+/// both write into the same `engagements.proposal_draft` slot, so the
+/// downstream UI shape stays unified.
+model TenantGammaConfig {
+  tenantId             String   @id @map("tenant_id") @db.Uuid
+  /// Optional friendly label shown in the UI ("Acme Workspace").
+  workspaceName        String?  @map("workspace_name")
+  /// Optional Gamma workspace id when the API needs it (Gamma's
+  /// docs use this for routing decks to a specific workspace).
+  workspaceId          String?  @map("workspace_id")
+  apiKeyCiphertext     Bytes?   @map("api_key_ciphertext")
+  apiKeyIv             Bytes?   @map("api_key_iv")
+  apiKeyDekCiphertext  Bytes?   @map("api_key_dek_ciphertext")
+  apiKeyDekIv          Bytes?   @map("api_key_dek_iv")
+  /// Which engine drafts proposals for this tenant.
+  /// "llm" = use the configured LLM provider (default).
+  /// "gamma" = use Gamma's deck generator.
+  proposalDriver       String   @default("llm") @map("proposal_driver")
+  enabled              Boolean  @default(true)
+  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_gamma_config")
 }

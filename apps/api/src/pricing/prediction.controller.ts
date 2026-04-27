@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Get,
   HttpCode,
@@ -54,6 +55,20 @@ class ApproveDto {
   @IsString()
   @MaxLength(2000)
   optionalComment?: string;
+}
+
+class RejectDto {
+  /** The prediction this rejection is being recorded against. Optional —
+   *  a manager may reject before any prediction even exists (e.g. scope
+   *  is incomplete and they want it sent back to the client). */
+  @IsOptional()
+  @IsUUID()
+  predictionId?: string;
+
+  /** Why — required so the audit log + email body have substance. */
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
 }
 
 /**
@@ -183,5 +198,136 @@ export class PredictionController {
       predictionId: prediction.id,
       choice: dto.choice,
     };
+  }
+
+  /**
+   * Reject a price/scope. Status flips to 'rejected', the rejection note
+   * is captured in the thread, and the relevant parties (sales rep,
+   * client per the notification routing) are emailed.
+   *
+   * Manager+admin only — same as approve. The reverse path (un-reject /
+   * reopen) is `revert-approval` since rejecting is final-ish; if you
+   * change your mind, the engagement needs to be re-issued or
+   * re-submitted by the client.
+   */
+  @Post('reject')
+  @Roles('admin', 'sales_manager')
+  @HttpCode(200)
+  async reject(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) engagementId: string,
+    @Body() dto: RejectDto,
+  ) {
+    if (!dto.reason.trim()) throw new BadRequestException('reason_required');
+
+    const updated = await this.tenantDb.run(req.tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true, status: true },
+      });
+      if (!eng) throw new BadRequestException('engagement_not_found');
+      // Idempotent guard against double-clicks; final states stay final.
+      if (['closed', 'rejected', 'sent', 'expired'].includes(eng.status)) {
+        throw new ConflictException(`cannot_reject_from_status:${eng.status}`);
+      }
+
+      // Optional prediction reference for audit. Skip the lookup if not
+      // provided — managers can reject scope before any prediction exists.
+      let predictionPayload: Record<string, unknown> = {};
+      if (dto.predictionId) {
+        const prediction = await this.svc.findById(req.tenantId, dto.predictionId);
+        if (!prediction || prediction.engagementId !== engagementId) {
+          throw new BadRequestException('prediction_not_found_for_engagement');
+        }
+        predictionPayload = {
+          predictionId: prediction.id,
+          basePriceCents: prediction.basePriceCents,
+          predictedPriceCents: prediction.predictedPriceCents,
+          regime: prediction.regime,
+        };
+      }
+
+      const next = await db.engagement.update({
+        where: { id: engagementId },
+        data: { status: 'rejected' },
+        select: { id: true, status: true },
+      });
+
+      await this.thread.emitWithin(db, req.tenantId, {
+        engagementId,
+        eventType: 'approval_rejected',
+        actorType: 'user',
+        actorId: req.user.sub,
+        payload: {
+          ...predictionPayload,
+          comment: dto.reason.trim(),
+        },
+      });
+      return next;
+    });
+
+    void this.thread.dispatchAfterCommit(req.tenantId, {
+      engagementId,
+      eventType: 'approval_rejected',
+      actorType: 'user',
+      actorId: req.user.sub,
+      payload: { comment: dto.reason.trim() },
+    });
+
+    return { engagementId: updated.id, status: updated.status };
+  }
+
+  /**
+   * Reset an approval/rejection — used when a manager clicked the wrong
+   * button. Admin-only, deliberately friction-y: clears the approved
+   * price and pushes status back to 'pending_approval' if the engagement
+   * has a prediction, or 'submitted' otherwise. Drafting work hasn't
+   * started yet (status would be 'drafting'/later) so this is safe.
+   */
+  @Post('revert-approval')
+  @Roles('admin')
+  @HttpCode(200)
+  async revertApproval(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) engagementId: string,
+  ) {
+    return this.tenantDb.run(req.tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true, status: true },
+      });
+      if (!eng) throw new BadRequestException('engagement_not_found');
+      if (!['approved', 'rejected'].includes(eng.status)) {
+        throw new ConflictException(`cannot_revert_from_status:${eng.status}`);
+      }
+
+      // Pick the right state to roll back to: if a prediction exists,
+      // the natural waiting state is 'pending_approval'; otherwise the
+      // engagement is back to scope-collected.
+      const latestPrediction = await db.prediction.findFirst({
+        where: { engagementId },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+      const targetStatus = latestPrediction ? 'pending_approval' : 'submitted';
+
+      const updated = await db.engagement.update({
+        where: { id: engagementId },
+        data: { status: targetStatus, approvedPriceCents: null },
+        select: { id: true, status: true },
+      });
+      await db.engagementQuote.updateMany({
+        where: { engagementId },
+        data: { approvedPriceCents: null, approvedAt: null, approvedBy: null },
+      });
+      await this.thread.emitWithin(db, req.tenantId, {
+        engagementId,
+        eventType: 'approval_reverted',
+        actorType: 'user',
+        actorId: req.user.sub,
+        payload: { fromStatus: eng.status, toStatus: targetStatus },
+      });
+      return { engagementId: updated.id, status: updated.status };
+    });
   }
 }

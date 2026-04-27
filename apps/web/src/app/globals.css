@@ -366,6 +366,17 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
 }
 .thread-split.stacked { grid-template-columns: 1fr; }
 
+/* When a route renders a thread-split, the page itself must not scroll —
+   constrain the height chain so .thread-body owns the scroll. */
+.page:has(> .route-enter > .thread-split) { overflow: hidden; }
+.route-enter:has(> .thread-split) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.route-enter:has(> .thread-split) > .thread-split { flex: 1; min-height: 0; }
+
 .thread-pane {
   border-right: 1px solid var(--border);
   background: var(--bg);
@@ -593,6 +604,13 @@ button:focus-visible, a:focus-visible, .input:focus-visible {
   display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Body-swap fade used by the proposal draft card to transition between
+   idle / drafting / regenerating / ready states without snapping. */
+@keyframes draftBodyFade {
+  0%   { opacity: 0; transform: translateY(4px); filter: blur(2px); }
+  100% { opacity: 1; transform: none;            filter: none;      }
+}
 
 /* ───────── Route transitions ─────────
    Wraps the page tree in `.route-enter` keyed on pathname so the

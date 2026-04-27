@@ -36,6 +36,7 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   approval_granted:          ['sales_employee'],
   approval_adjusted:         ['sales_employee'],
   approval_rejected:         ['sales_employee'],
+  approval_reverted:         ['sales_employee', 'sales_manager'],
   proposal_draft_requested:  ['sales_employee'],
   proposal_draft_ready:      ['sales_employee'],
   proposal_sent:             ['sales_employee', 'sales_manager', 'client'],

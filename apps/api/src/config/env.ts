@@ -15,6 +15,23 @@ export const envSchema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 chars'),
   JWT_EXPIRES_IN: z.string().default('24h'),
   MAGIC_LINK_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+
+  // 32-byte master key (base64) used to wrap per-tenant DEKs that encrypt
+  // LLM API keys at rest. In dev a default is generated so envelope crypto
+  // works out of the box; in prod this MUST be set explicitly. Rotate by
+  // re-encrypting tenant_llm_config rows with the new master.
+  LLM_KEY_ENCRYPTION_KEY: z.string().optional(),
+
+  // Public URL the web app runs at — used to build the OAuth callback
+  // redirects so the user lands back on the right host. Defaults to
+  // localhost for dev convenience; set explicitly in prod.
+  WEB_PUBLIC_URL: z.string().url().default('http://localhost:3000'),
+
+  // Public URL the API runs at. Used to build the Outlook OAuth
+  // redirect URI shown in the admin setup modal (the value the admin
+  // must paste into Microsoft Entra). Defaults to localhost; set
+  // explicitly in prod so the displayed URI matches what's reachable.
+  API_PUBLIC_URL: z.string().url().default('http://localhost:8000'),
 });
 
 export type Env = z.infer<typeof envSchema>;

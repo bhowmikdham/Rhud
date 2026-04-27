@@ -160,6 +160,13 @@ export interface Template {
   rootNodeId: string | null;
   /** Default rate card the template prices engagements against. */
   rateCardId?: string | null;
+  /** Optional Gamma template id forwarded to Gamma when proposal
+   *  drafting routes through the Gamma driver. Null = generic. */
+  gammaTemplateId?: string | null;
+  /** Optional Markdown proposal scaffold with `{{token}}` merge fields.
+   *  When set, proposal generation renders this scaffold instead of
+   *  asking the LLM to compose from scratch. */
+  proposalScaffold?: string | null;
   createdAt: string; // ISO 8601
   updatedAt: string;
 }

@@ -91,6 +91,17 @@ export const EMAIL_TEMPLATES: Partial<Record<ThreadEventType, Template>> = {
       return `The price for ${c.clientEmail} was rejected.\n${note}\n\nView: ${c.portalUrl}` + sharedSig;
     },
   },
+  approval_reverted: {
+    subject: (c) => `[Rhud] Approval reverted — ${c.clientEmail}`,
+    textBody: (c) => {
+      const from = typeof c.payload.fromStatus === 'string' ? c.payload.fromStatus : 'previous state';
+      const to = typeof c.payload.toStatus === 'string' ? c.payload.toStatus : 'pending';
+      return (
+        `An admin reverted the ${from === 'rejected' ? 'rejection' : 'approval'} for ${c.clientEmail}. ` +
+        `Status is now "${to}".\n\nView: ${c.portalUrl}` + sharedSig
+      );
+    },
+  },
   proposal_draft_requested: {
     subject: (c) => `[Rhud] Drafting proposal — ${c.clientEmail}`,
     textBody: (c) =>
@@ -109,13 +120,49 @@ export const EMAIL_TEMPLATES: Partial<Record<ThreadEventType, Template>> = {
         ? `Your proposal — ${c.templateName}`
         : `[Rhud] Proposal sent to ${c.clientEmail}`,
     textBody: (c) => {
+      const proposalUrl = typeof c.payload.proposalUrl === 'string' ? c.payload.proposalUrl : null;
+      const proposalText = typeof c.payload.proposalText === 'string' ? c.payload.proposalText : null;
+      const deliveryMode = typeof c.payload.deliveryMode === 'string' ? c.payload.deliveryMode : null;
+
       if (c.recipientRole === 'client') {
+        // Self-reported sends should NOT email the client — the rep
+        // already did. Bail to a no-op subject/body that the dispatcher
+        // can surface in audit but clients won't actually receive
+        // (caller should filter, but defensive default here).
+        if (deliveryMode === 'self_reported') {
+          return (
+            `Hi,\n\nThis is a record-keeping copy of the proposal you were sent ` +
+            `directly. No action needed.` + sharedSig
+          );
+        }
+        if (proposalUrl) {
+          return (
+            `Hi,\n\nThanks for the time you spent on the scope. Here's the proposal ` +
+            `we drafted based on it:\n\n${proposalUrl}\n\n` +
+            `Let us know what you think — just reply to this email.` + sharedSig
+          );
+        }
+        if (proposalText) {
+          return (
+            `Hi,\n\nThanks for the time you spent on the scope. Here's the proposal ` +
+            `we drafted based on it:\n\n──────────────────────────────────\n` +
+            `${proposalText}\n──────────────────────────────────\n\n` +
+            `Let us know what you think — just reply to this email.` + sharedSig
+          );
+        }
+        // Neither URL nor text — shouldn't happen, but degrade gracefully.
         return (
-          `Hi,\n\nThanks for the time you spent on the scope. Here's the proposal we drafted based on it.\n\n` +
-          `Read it: ${c.portalUrl}\n\nLet us know what you think.` + sharedSig
+          `Hi,\n\nWe've prepared your proposal. We'll be in touch shortly with ` +
+          `the details.` + sharedSig
         );
       }
-      return `Proposal sent to ${c.clientEmail}.\n\nView: ${c.portalUrl}` + sharedSig;
+      // Team-side: link the deck if we have one, otherwise the portal.
+      const link = proposalUrl ?? c.portalUrl;
+      const mode =
+        deliveryMode === 'self_reported'
+          ? '(rep marked as sent manually)'
+          : '(emailed via Rhud)';
+      return `Proposal sent to ${c.clientEmail} ${mode}.\n\nView: ${link}` + sharedSig;
     },
   },
   engagement_synced: {
@@ -134,4 +181,31 @@ export function renderEmail(eventType: ThreadEventType, ctx: EmailContext): { su
   const t = EMAIL_TEMPLATES[eventType];
   if (!t) return null;
   return { subject: t.subject(ctx), textBody: t.textBody(ctx) };
+}
+
+// ── Out-of-band emails (not driven by ThreadEvent) ──────────────────────────
+
+export interface InviteEmailArgs {
+  to: string;
+  role: string;
+  inviterEmail: string;
+  acceptUrl: string;
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  admin: 'admin',
+  sales_manager: 'sales manager',
+  sales_employee: 'sales rep',
+};
+
+export function renderInviteEmail(args: InviteEmailArgs): { subject: string; textBody: string } {
+  const roleLabel = ROLE_LABEL[args.role] ?? args.role;
+  return {
+    subject: `[Rhud] You've been invited to join the workspace`,
+    textBody:
+      `${args.inviterEmail} invited you to join their Rhud workspace as ${roleLabel}.\n\n` +
+      `Click here to set a password and sign in:\n${args.acceptUrl}\n\n` +
+      `This invite expires in 7 days. If you weren't expecting it, ignore this email.` +
+      sharedSig,
+  };
 }

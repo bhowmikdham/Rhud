@@ -20,6 +20,7 @@ import { describeError } from '@/lib/api';
 import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
+import { useConfirm } from '@/components/confirm';
 import { SheetImportModal } from './sheet-import-modal';
 
 const NODE_TYPES: NodeType[] = [
@@ -71,6 +72,7 @@ export default function TemplateEditorPage() {
   const user = useRequireAuth();
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const confirm = useConfirm();
   const id = params.id;
 
   const [tmpl, setTmpl] = useState<TemplateWithNodes | null>(null);
@@ -176,7 +178,13 @@ export default function TemplateEditorPage() {
   }
 
   async function delNode(nodeId: string) {
-    if (!confirm('Delete this node?')) return;
+    const ok = await confirm({
+      title: 'Delete this node?',
+      body: `Removes the question and any branch rules pointing into it. Already-issued opportunities aren't affected — they snapshot the template version.`,
+      tone: 'danger',
+      confirmLabel: 'Delete node',
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await templates.removeNode(id, nodeId);
@@ -218,6 +226,11 @@ export default function TemplateEditorPage() {
         />
 
         {issues.length > 0 && <IssueList issues={issues} onClose={() => setIssues([])} />}
+
+        <ProposalScaffoldEditor
+          value={tmpl.proposalScaffold ?? ''}
+          onSave={(next) => void patchTemplate({ proposalScaffold: next.trim() ? next : null })}
+        />
 
         <section style={{ marginTop: 28 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -289,9 +302,11 @@ function Header({
 }) {
   const [name, setName] = useState(tmpl.name);
   const [serviceLine, setServiceLine] = useState(tmpl.serviceLine);
+  const [gammaId, setGammaId] = useState(tmpl.gammaTemplateId ?? '');
 
   useEffect(() => setName(tmpl.name), [tmpl.name]);
   useEffect(() => setServiceLine(tmpl.serviceLine), [tmpl.serviceLine]);
+  useEffect(() => setGammaId(tmpl.gammaTemplateId ?? ''), [tmpl.gammaTemplateId]);
 
   return (
     <div className="page-header">
@@ -329,7 +344,29 @@ function Header({
               </option>
             ))}
           </select>
+          <input
+            className="input"
+            value={gammaId}
+            onChange={(e) => setGammaId(e.target.value)}
+            onBlur={() => {
+              const next = gammaId.trim();
+              const current = tmpl.gammaTemplateId ?? '';
+              if (next !== current) void onPatch({ gammaTemplateId: next === '' ? null : next });
+            }}
+            placeholder="Gamma template id (optional)"
+            title="When set, proposal drafts via Gamma inherit this template's layout. Find the id in the URL of any Gamma deck or template you want to reuse."
+            style={{ width: 220, height: 24, fontSize: 12, padding: '0 8px' }}
+          />
+          {tmpl.gammaTemplateId && (
+            <span className="chip ok" title="Gamma will adapt this template for each opportunity">
+              <Icon.Check size={10} /> Gamma connected
+            </span>
+          )}
         </div>
+        <ProposalFlowHint
+          hasGammaTemplate={!!tmpl.gammaTemplateId}
+          hasScaffold={!!(tmpl.proposalScaffold && tmpl.proposalScaffold.trim())}
+        />
       </div>
       <div className="page-actions">
         <Link href={previewHref} className="btn">
@@ -692,3 +729,238 @@ function RulesEditor({
   );
 }
 
+
+// ── One-line "what happens when sales rep clicks Generate" explainer ───────
+
+function ProposalFlowHint({
+  hasGammaTemplate,
+  hasScaffold,
+}: {
+  hasGammaTemplate: boolean;
+  hasScaffold: boolean;
+}) {
+  // Mirror the backend's decision tree (proposal-draft.service.ts:generate)
+  // so admins can see the active path at a glance instead of guessing.
+  let copy: React.ReactNode;
+  if (hasScaffold) {
+    copy = (
+      <>
+        <b>Scaffold mode (advanced):</b> proposals render from the locked
+        markdown below — AI and Gamma are both bypassed.
+      </>
+    );
+  } else if (hasGammaTemplate) {
+    copy = (
+      <>
+        <b>Gamma mode:</b> each proposal will be Gamma adapting the linked
+        template with the client's data. Sales reps just click <i>Generate</i>.
+      </>
+    );
+  } else {
+    copy = (
+      <>
+        <b>AI mode:</b> proposals are written by your configured AI provider.
+        Add a Gamma template id above to inherit a polished deck design instead.
+      </>
+    );
+  }
+  return (
+    <div style={{
+      marginTop: 8,
+      fontSize: 11.5,
+      color: 'var(--fg-muted)',
+      lineHeight: 1.5,
+    }}>
+      {copy}
+    </div>
+  );
+}
+
+// ── Proposal scaffold editor ───────────────────────────────────────────────
+
+const SCAFFOLD_TOKENS: ReadonlyArray<{ token: string; description: string }> = [
+  { token: 'client_name',      description: "Recipient's name (best-guess from email)." },
+  { token: 'client_email',     description: "Recipient's email address." },
+  { token: 'opportunity_name', description: 'Opportunity label set when issuing.' },
+  { token: 'tenant_name',      description: 'Your workspace name.' },
+  { token: 'service_line',     description: "Template's service line." },
+  { token: 'template_name',    description: "Template's display name." },
+  { token: 'price',            description: 'Final price with currency, e.g. "INR 250,000".' },
+  { token: 'currency',         description: 'ISO currency code only.' },
+  { token: 'date_today',       description: 'Today\'s date, formatted "27 Apr 2026".' },
+  { token: 'scope_summary',    description: 'Bulleted client-confirmed answers.' },
+  { token: 'line_items',       description: 'Bulleted priced line items from the quote.' },
+];
+
+const SCAFFOLD_PLACEHOLDER = `# Proposal — {{client_name}}
+
+**Prepared for:** {{client_name}} ({{client_email}})
+**Date:** {{date_today}}
+**Investment:** {{price}}
+
+## About {{tenant_name}}
+We help teams ship secure software, faster. Our values: clarity over jargon,
+fixed-fee engagements, and zero last-minute surprises.
+
+## Scope of work
+{{scope_summary}}
+
+## Investment
+{{line_items}}
+
+**Total:** {{price}}
+
+## Next steps
+Reply to this email to accept and we'll kick off within 5 business days.`;
+
+function ProposalScaffoldEditor({
+  value,
+  onSave,
+}: {
+  value: string;
+  onSave(next: string): void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [open, setOpen] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Reflect external updates (e.g. another edit landed via patch) into
+  // the local draft only when we're not actively editing.
+  useEffect(() => { setDraft(value); }, [value]);
+
+  const dirty = draft !== value;
+
+  function copyToken(token: string) {
+    navigator.clipboard.writeText(`{{${token}}}`);
+  }
+
+  function save() {
+    onSave(draft);
+    setSavedAt(Date.now());
+    setTimeout(() => setSavedAt(null), 1500);
+  }
+
+  const isSet = value.trim().length > 0;
+
+  return (
+    <section className="card" style={{ marginTop: 28, padding: 0, overflow: 'hidden' }}>
+      <header
+        style={{
+          padding: '14px 18px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 10, cursor: 'pointer', userSelect: 'none',
+        }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.005em', display: 'flex', alignItems: 'center', gap: 8 }}>
+            Advanced — lock exact text
+            <span className="chip outline" style={{ fontSize: 10, padding: '0 6px' }}>Optional</span>
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.5 }}>
+            Most teams don&apos;t need this. Set a <b>Gamma template id</b> above and each
+            proposal inherits your deck&apos;s design automatically. Use this only to override
+            that and lock exact prose word-for-word.
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {isSet && <span className="chip warn"><Icon.Lock size={10} /> Overrides Gamma</span>}
+          <Icon.ChevronDown size={13} style={{
+            color: 'var(--fg-subtle)',
+            transform: open ? 'rotate(180deg)' : 'none',
+            transition: 'transform .2s',
+          }} />
+        </div>
+      </header>
+
+      {open && (
+        <div style={{ padding: '0 18px 18px', borderTop: '1px solid var(--divider)' }}>
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 240px', gap: 16, marginTop: 14, alignItems: 'start',
+          }}>
+            <div>
+              <textarea
+                className="input mono"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder={SCAFFOLD_PLACEHOLDER}
+                rows={18}
+                style={{ width: '100%', fontSize: 12.5, lineHeight: 1.55, padding: 12 }}
+                spellCheck={false}
+              />
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 8, marginTop: 8,
+              }}>
+                <span style={{ fontSize: 11, color: 'var(--fg-subtle)' }}>
+                  {savedAt
+                    ? <><Icon.Check size={10} /> Saved</>
+                    : dirty
+                      ? 'Unsaved changes'
+                      : isSet
+                        ? `${value.length.toLocaleString()} characters`
+                        : 'No scaffold — proposals are AI-generated'}
+                </span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {dirty && (
+                    <button onClick={() => setDraft(value)} className="btn sm ghost">
+                      Discard
+                    </button>
+                  )}
+                  {isSet && !dirty && (
+                    <button
+                      onClick={() => { setDraft(''); onSave(''); }}
+                      className="btn sm ghost"
+                      title="Remove the scaffold and revert to AI-generated proposals"
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <button onClick={save} disabled={!dirty} className="btn sm accent">
+                    <Icon.Check size={11} /> Save
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <aside style={{
+              padding: 12,
+              background: 'var(--bg-sunk)',
+              borderRadius: 8,
+              fontSize: 11.5,
+            }}>
+              <div style={{ fontWeight: 600, color: 'var(--fg)', marginBottom: 6 }}>
+                Available merge tokens
+              </div>
+              <div style={{ color: 'var(--fg-muted)', marginBottom: 10, lineHeight: 1.4 }}>
+                Click a token to copy it. Paste it into the scaffold; values are filled when a proposal is generated.
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {SCAFFOLD_TOKENS.map((t) => (
+                  <button
+                    key={t.token}
+                    type="button"
+                    onClick={() => copyToken(t.token)}
+                    title={t.description}
+                    style={{
+                      appearance: 'none', cursor: 'pointer', textAlign: 'left',
+                      padding: '6px 8px', background: 'var(--bg)',
+                      border: '1px solid var(--border)', borderRadius: 6,
+                      fontFamily: 'var(--font-mono)', fontSize: 11.5,
+                      color: 'var(--fg)',
+                      transition: 'background .12s, border-color .12s',
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg)'; }}
+                  >
+                    {`{{${t.token}}}`}
+                  </button>
+                ))}
+              </div>
+            </aside>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}

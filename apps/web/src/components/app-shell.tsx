@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { opportunities } from '@/lib/api';
 import { Icon } from './icon';
+import { SetupPanel } from './setup-panel';
 
 interface NavItem {
   href: string;
@@ -19,8 +20,8 @@ interface NavItem {
 const PRIMARY_NAV_BASE: NavItem[] = [
   { href: '/dashboard',     label: 'Dashboard',     icon: 'Home' },
   { href: '/opportunities', label: 'Opportunities', icon: 'Thread',   match: (p) => p.startsWith('/opportunities') || p.startsWith('/engagements') },
-  { href: '/clients',       label: 'Clients',       icon: 'Users' },
   { href: '/templates',     label: 'Templates',     icon: 'FileText', match: (p) => p.startsWith('/templates') },
+  { href: '/rate-cards',    label: 'Rate cards',    icon: 'CreditCard', match: (p) => p.startsWith('/rate-cards') },
 ];
 
 const AGENT_NAV: NavItem[] = [
@@ -45,7 +46,9 @@ interface ShellProps {
 
 export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
   const pathname = usePathname() ?? '/';
-  const { user } = useAuth();
+  const { user, tenant } = useAuth();
+  const tenantName = tenant?.name ?? 'Workspace';
+  const tenantInitial = (tenant?.name ?? 'W').slice(0, 1).toUpperCase();
 
   const initials = user ? user.email.slice(0, 2).toUpperCase() : '··';
   const firstName = user?.email.split('@')[0]?.split('.')[0] ?? '';
@@ -81,11 +84,16 @@ export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
           <div className="logo-wordmark">rhud</div>
         </div>
 
-        <div className="workspace-switcher" title="Workspace">
-          <div className="workspace-avatar">E</div>
-          <div className="workspace-name">Everlane</div>
+        <Link
+          href="/settings?tab=workspace"
+          className="workspace-switcher"
+          title={`Workspace: ${tenantName}`}
+          style={{ textDecoration: 'none', color: 'inherit' }}
+        >
+          <div className="workspace-avatar">{tenantInitial}</div>
+          <div className="workspace-name">{tenantName}</div>
           <Icon.ChevronDown size={12} />
-        </div>
+        </Link>
 
         <div className="nav-section">Workspace</div>
         {primaryNav.map((n) => <NavLink key={n.href} item={n} active={isActive(pathname, n)} />)}
@@ -121,6 +129,8 @@ export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
           <div className="route-enter">{children}</div>
         </div>
       </div>
+
+      <SetupPanel />
     </div>
   );
 }
@@ -135,7 +145,7 @@ function Topbar({
   pathname: string;
 }) {
   const router = useRouter();
-  const { user, signOut } = useAuth();
+  const { user, tenant, signOut } = useAuth();
   const [menu, setMenu] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -254,7 +264,9 @@ function Topbar({
               </div>
               <div style={{ marginTop: 8, display: 'flex', gap: 4, alignItems: 'center' }}>
                 <span className="chip outline" style={{ fontSize: 10 }}>{role}</span>
-                <span style={{ fontSize: 10.5, color: 'var(--fg-subtle)' }}>· Everlane</span>
+                {tenant?.name && (
+                  <span style={{ fontSize: 10.5, color: 'var(--fg-subtle)' }}>· {tenant.name}</span>
+                )}
               </div>
             </div>
 

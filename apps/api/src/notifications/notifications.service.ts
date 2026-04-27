@@ -115,6 +115,19 @@ export class NotificationsService {
         : [];
       const usersById = new Map(users.map((u) => [u.id, u]));
 
+      // The proposal_sent event is always rep-driven (they email the
+      // client from their own Outlook/Gmail account, with the PDF
+      // attached). Rhud must NOT also send a noreply "your proposal"
+      // email to the client — that's the path we explicitly killed
+      // when moving to the bridge flow. Team-side recipients (sales
+      // employee, sales manager) still get notified.
+      //
+      // Phase 2 (Outlook OAuth) replaces this carve-out with a real
+      // send via the rep's account; the client recipient is filtered
+      // here because *Rhud* never emails them, regardless of whether
+      // the rep used the bridge mailto path or the OAuth path.
+      const skipClient = args.eventType === 'proposal_sent';
+
       const recipients: ResolvedRecipient[] = [];
       for (const role of route) {
         if (role === 'sales_employee') {
@@ -123,7 +136,7 @@ export class NotificationsService {
         } else if (role === 'sales_manager' && engagement.salesManagerId) {
           const u = usersById.get(engagement.salesManagerId);
           if (u) recipients.push({ role, email: u.email, userId: u.id });
-        } else if (role === 'client') {
+        } else if (role === 'client' && !skipClient) {
           recipients.push({ role, email: engagement.clientEmail });
         }
       }

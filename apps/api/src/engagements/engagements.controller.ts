@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
@@ -45,5 +46,21 @@ export class EngagementsController {
   @Get(':id')
   getById(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
     return this.svc.getById(req.tenantId, id);
+  }
+
+  /**
+   * Hard delete an opportunity + everything attached (answers, files,
+   * events, quote, predictions, gathering tokens). Manager + admin only
+   * — sales reps shouldn't be able to wipe out an opportunity their
+   * teammate created.
+   */
+  @Delete(':id')
+  @Roles('admin', 'sales_manager')
+  @HttpCode(204)
+  async remove(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<void> {
+    await this.svc.remove(req.tenantId, id);
   }
 }

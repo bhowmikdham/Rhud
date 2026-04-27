@@ -8,7 +8,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { auth, ApiError } from './api';
+import { auth, tenant as tenantApi, ApiError, type TenantInfo } from './api';
 
 export interface AuthUser {
   sub: string;
@@ -19,15 +19,20 @@ export interface AuthUser {
 
 interface AuthContextValue {
   user: AuthUser | null;
+  /** Current workspace identity. `null` until /tenant/me resolves. */
+  tenant: TenantInfo | null;
   loading: boolean;
   signIn: (token: string, user: AuthUser) => void;
   signOut: () => void;
+  /** Refresh the cached tenant after an admin renames it. */
+  refreshTenant: () => Promise<void>;
 }
 
 const Ctx = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [tenant, setTenant] = useState<TenantInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
@@ -37,9 +42,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return;
     }
-    auth
-      .me()
-      .then((u) => setUser(u as AuthUser))
+    Promise.all([auth.me(), tenantApi.me().catch(() => null)])
+      .then(([u, t]) => {
+        setUser(u as AuthUser);
+        setTenant(t);
+      })
       .catch((e) => {
         if (e instanceof ApiError && e.status === 401) {
           window.localStorage.removeItem('rhud.token');
@@ -51,15 +58,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback((token: string, u: AuthUser) => {
     window.localStorage.setItem('rhud.token', token);
     setUser(u);
+    // Fetch the tenant in the background — non-blocking so the post-login
+    // redirect happens immediately.
+    tenantApi.me().then(setTenant).catch(() => setTenant(null));
   }, []);
 
   const signOut = useCallback(() => {
     window.localStorage.removeItem('rhud.token');
     setUser(null);
+    setTenant(null);
     router.push('/login');
   }, [router]);
 
-  return <Ctx.Provider value={{ user, loading, signIn, signOut }}>{children}</Ctx.Provider>;
+  const refreshTenant = useCallback(async () => {
+    try {
+      const t = await tenantApi.me();
+      setTenant(t);
+    } catch {
+      // Stale tenant beats no tenant in the UI.
+    }
+  }, []);
+
+  return (
+    <Ctx.Provider value={{ user, tenant, loading, signIn, signOut, refreshTenant }}>
+      {children}
+    </Ctx.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

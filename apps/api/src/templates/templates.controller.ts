@@ -65,6 +65,13 @@ export class TemplatesController {
     return this.svc.update(req.tenantId, id, dto);
   }
 
+  /** Pre-delete probe — counts opportunities that would block delete. */
+  @Get(':id/usage')
+  @Roles('admin', 'sales_manager')
+  async usage(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
+    return { engagementCount: await this.svc.countEngagements(req.tenantId, id) };
+  }
+
   @Delete(':id')
   @Roles('admin', 'sales_manager')
   @HttpCode(204)

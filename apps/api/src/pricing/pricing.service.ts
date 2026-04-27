@@ -166,6 +166,34 @@ export class PricingService {
     });
   }
 
+  /**
+   * Hard-delete a rate card. Service lines, tiers, and open-priced
+   * services cascade with it (FK onDelete=Cascade in the schema).
+   * Templates + engagements that reference this card get their
+   * `rateCardId` set to NULL (FK onDelete=SetNull) — they keep
+   * existing, just unbound. The caller surfaces this in the UI as a
+   * "X templates will be unbound" warning before confirm.
+   */
+  async remove(tenantId: string, id: string): Promise<void> {
+    await this.tenantDb.run(tenantId, async (db) => {
+      const exists = await db.rateCard.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+      if (!exists) throw new NotFoundException('rate_card_not_found');
+      await db.rateCard.delete({ where: { id } });
+    });
+  }
+
+  /** Count of templates currently bound to this card. Used for the
+   *  delete-confirmation modal so the admin sees the unbinding impact
+   *  before clicking Delete. */
+  async countTemplateBindings(tenantId: string, id: string): Promise<number> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      return db.template.count({ where: { rateCardId: id } });
+    });
+  }
+
   // ── Quote (Stage 2) ──────────────────────────────────────────────────────
 
   /**

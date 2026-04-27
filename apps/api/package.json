@@ -5,7 +5,7 @@
   "description": "Rhud core API — tenants, auth, engagements, threads",
   "scripts": {
     "build": "nest build",
-    "dev": "nest start --watch",
+    "dev": "dotenv -e ../../.env -- nest start --watch",
     "start": "node dist/main.js",
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",

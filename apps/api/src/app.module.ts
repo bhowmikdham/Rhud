@@ -11,6 +11,10 @@ import { GatheringModule } from './gathering/gathering.module.js';
 import { AuditModule } from './audit/audit.module.js';
 import { MlModule } from './ml/ml.module.js';
 import { PricingModule } from './pricing/pricing.module.js';
+import { TeamModule } from './team/team.module.js';
+import { LlmModule } from './llm/llm.module.js';
+import { GammaModule } from './gamma/gamma.module.js';
+import { IntegrationsModule } from './integrations/integrations.module.js';
 import { HealthController } from './health.controller.js';
 
 @Module({
@@ -32,6 +36,10 @@ import { HealthController } from './health.controller.js';
     AuditModule,
     MlModule,
     PricingModule,
+    TeamModule,
+    GammaModule,
+    LlmModule,
+    IntegrationsModule,
   ],
   controllers: [HealthController],
 })

@@ -71,6 +71,42 @@ export class UnscopedDb {
   }
 
   /**
+   * Pending invites that have not been accepted, revoked, or expired.
+   * Same shape as findFreshMagicLinks: caller argon2-verifies the token
+   * against each row to discover the tenant.
+   */
+  async findOpenInvites(limit = 100): Promise<
+    Array<{ id: string; tenantId: string; email: string; role: string; tokenHash: string }>
+  > {
+    type Row = {
+      id: string;
+      tenant_id: string;
+      email: string;
+      role: string;
+      token_hash: string;
+    };
+    const rows = await this.prisma.$queryRaw<Row[]>`SELECT id, tenant_id, email, role, token_hash
+        FROM invites
+       WHERE expires_at > now() AND accepted_at IS NULL AND revoked_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT ${limit}`;
+    return rows.map((r: Row) => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      email: r.email,
+      role: r.role,
+      tokenHash: r.token_hash,
+    }));
+  }
+
+  /** Tenant name for the invite-preview page; needs no tenant scope. */
+  async findTenantName(tenantId: string): Promise<string | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT name FROM tenants WHERE id = ${tenantId}::uuid LIMIT 1`;
+    return rows[0]?.name ?? null;
+  }
+
+  /**
    * Returns active (unexpired, unrevoked) gathering tokens. The plaintext
    * token coming in over `/g/:token` doesn't reveal a tenant, so token
    * resolution scans candidates and verifies each via argon2.

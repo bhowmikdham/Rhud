@@ -13,6 +13,7 @@ export const THREAD_EVENT_TYPES = [
   'approval_granted',
   'approval_adjusted',
   'approval_rejected',
+  'approval_reverted',
   'proposal_draft_requested',
   'proposal_draft_ready',
   'proposal_sent',
