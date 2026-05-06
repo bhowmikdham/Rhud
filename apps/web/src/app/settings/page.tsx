@@ -341,6 +341,7 @@ const ROLE_LABELS: Record<Role, string> = {
   admin: 'Admin',
   sales_manager: 'Sales manager',
   sales_employee: 'Sales rep',
+  tech_team: 'Tech team',
 };
 
 function TeamPanel({ currentUserId, isAdmin }: { currentUserId: string; isAdmin: boolean }) {
@@ -513,7 +514,7 @@ function TeamPanel({ currentUserId, isAdmin }: { currentUserId: string; isAdmin:
                     onChange={(e) => changeRole(u.id, e.target.value as Role)}
                     style={{ height: 28, fontSize: 12, padding: '0 8px' }}
                   >
-                    {(['admin', 'sales_manager', 'sales_employee'] as Role[]).map((r) => (
+                    {(['admin', 'sales_manager', 'sales_employee', 'tech_team'] as Role[]).map((r) => (
                       <option key={r} value={r}>{ROLE_LABELS[r]}</option>
                     ))}
                   </select>
@@ -640,6 +641,7 @@ function InviteModal({ onClose, onCreated }: { onClose(): void; onCreated(devTok
               style={{ height: 32, padding: '0 10px', fontSize: 13 }}
             >
               <option value="sales_employee">Sales rep — can issue links and create opportunities</option>
+              <option value="tech_team">Tech team — can adjust the predicted price before manager approval</option>
               <option value="sales_manager">Sales manager — adds approvals, edits templates</option>
               <option value="admin">Admin — manages team, rate cards, integrations</option>
             </select>
@@ -1256,6 +1258,7 @@ function roleColor(role?: string): string {
     case 'sales_employee': return 'oklch(0.62 0.14 250)';
     case 'sales_manager':  return 'oklch(0.58 0.12 50)';
     case 'admin':          return 'oklch(0.6 0.12 340)';
+    case 'tech_team':      return 'oklch(0.6 0.13 180)';
     default:               return 'var(--fg)';
   }
 }

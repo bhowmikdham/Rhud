@@ -27,8 +27,9 @@ import type { AuthedRequest } from '../auth/auth.types.js';
 import { TenantDb } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { PredictionService } from './prediction.service.js';
+import { QuoteService } from './quote.service.js';
 
-const APPROVAL_CHOICES = ['base', 'recommended', 'aggressive', 'custom'] as const;
+const APPROVAL_CHOICES = ['base', 'recommended', 'aggressive', 'tech_adjusted', 'custom'] as const;
 type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
 
 class ApproveDto {
@@ -72,6 +73,26 @@ class RejectDto {
 }
 
 /**
+ * Tech-team adjustment to the predicted price. The tech_team role is
+ * the only one that uses this endpoint; admins can also call it for
+ * support cases. The adjustment is bound to the prediction so a
+ * subsequent re-predict invalidates it.
+ */
+class TechAdjustDto {
+  @IsUUID() predictionId!: string;
+
+  @IsInt()
+  @Min(0)
+  adjustedPriceCents!: number;
+
+  /** Optional rationale — surfaced in the manager's approval card. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  note?: string;
+}
+
+/**
  * Adaptive-pricing predict + opportunity-level approve.
  *
  * Mounted at both /opportunities/:id/... and /engagements/:id/... so the
@@ -88,6 +109,7 @@ export class PredictionController {
     private readonly svc: PredictionService,
     private readonly tenantDb: TenantDb,
     private readonly thread: ThreadService,
+    private readonly quotes: QuoteService,
   ) {}
 
   @Post('predict')
@@ -116,6 +138,38 @@ export class PredictionController {
     return this.svc.latestForEngagement(req.tenantId, engagementId);
   }
 
+  /**
+   * Tech-team pre-approval price adjustment. The tech_team role's
+   * sole controlled action: edit the predicted price and lodge it for
+   * the sales manager to approve. Admins can also call this for
+   * support cases. Other roles get 403.
+   */
+  @Post('tech-adjust')
+  @Roles('admin', 'tech_team')
+  @HttpCode(200)
+  async techAdjust(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) engagementId: string,
+    @Body() dto: TechAdjustDto,
+  ) {
+    const prediction = await this.svc.findById(req.tenantId, dto.predictionId);
+    if (!prediction || prediction.engagementId !== engagementId) {
+      throw new BadRequestException('prediction_not_found_for_engagement');
+    }
+    const quote = await this.quotes.techAdjust(req.tenantId, engagementId, {
+      predictionId: dto.predictionId,
+      adjustedPriceCents: dto.adjustedPriceCents,
+      note: dto.note?.trim() || null,
+      adjustedBy: req.user.sub,
+    });
+    return {
+      engagementId,
+      techAdjustedPriceCents: quote.techAdjustedPriceCents,
+      techAdjustedAt: quote.techAdjustedAt,
+      techAdjustedPredictionId: quote.techAdjustedPredictionId,
+    };
+  }
+
   @Post('approve')
   @Roles('admin', 'sales_manager')
   @HttpCode(200)
@@ -134,6 +188,21 @@ export class PredictionController {
       case 'base':         approvedCents = prediction.basePriceCents; break;
       case 'recommended':  approvedCents = prediction.predictedPriceCents; break;
       case 'aggressive':   approvedCents = prediction.bandLowCents; break;
+      case 'tech_adjusted': {
+        // Read the tech-team adjustment off the quote row. Must be
+        // bound to THIS prediction — a stale adjustment (from before a
+        // re-predict) is not approvable.
+        const quote = await this.quotes.getForEngagement(req.tenantId, engagementId);
+        if (
+          !quote
+          || quote.techAdjustedPriceCents == null
+          || quote.techAdjustedPredictionId !== prediction.id
+        ) {
+          throw new BadRequestException('tech_adjusted_price_not_available');
+        }
+        approvedCents = quote.techAdjustedPriceCents;
+        break;
+      }
       case 'custom':
         if (dto.customPriceCents == null) throw new BadRequestException('custom_price_required');
         approvedCents = dto.customPriceCents;

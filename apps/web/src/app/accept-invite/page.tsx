@@ -18,6 +18,7 @@ const ROLE_LABELS: Record<string, string> = {
   admin: 'Admin',
   sales_manager: 'Sales manager',
   sales_employee: 'Sales rep',
+  tech_team: 'Tech team',
 };
 
 export default function AcceptInvitePage() {

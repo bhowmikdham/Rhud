@@ -32,6 +32,7 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   file_uploaded:             ['sales_employee'],
   scope_submitted:           ['sales_employee', 'sales_manager'],
   price_predicted:           ['sales_employee', 'sales_manager'],
+  price_tech_adjusted:       ['sales_employee', 'sales_manager'],
   approval_requested:        ['sales_manager'],
   approval_granted:          ['sales_employee'],
   approval_adjusted:         ['sales_employee'],

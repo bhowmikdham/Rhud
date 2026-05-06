@@ -44,6 +44,11 @@ export interface PersistedQuote {
   predictedBandHighCents: number | null;
   winProbability: number | null;
   modifierDrivers: unknown;
+  techAdjustedPriceCents: number | null;
+  techAdjustedAt: string | null;
+  techAdjustedBy: string | null;
+  techAdjustmentNote: string | null;
+  techAdjustedPredictionId: string | null;
   approvedPriceCents: number | null;
   approvedAt: string | null;
   approvedBy: string | null;
@@ -193,6 +198,68 @@ export class QuoteService {
     });
   }
 
+  /**
+   * Tech-team pre-approval price adjustment. Records the adjusted price
+   * + note on the engagement_quotes row (bound to the prediction so a
+   * later re-predict invalidates it), then emits a price_tech_adjusted
+   * thread event for audit. Does NOT change engagement status — the
+   * presence of techAdjustedPriceCents is enough signal for the manager
+   * UI to show it as an additional approval option.
+   */
+  async techAdjust(
+    tenantId: string,
+    engagementId: string,
+    args: {
+      predictionId: string;
+      adjustedPriceCents: number;
+      note: string | null;
+      adjustedBy: string;
+    },
+  ): Promise<PersistedQuote> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      const row = await db.engagementQuote.findUnique({ where: { engagementId } });
+      if (!row) throw new NotFoundException('quote_not_found');
+
+      // Sanity: the prediction must belong to this engagement so an
+      // adjustment can't be misattributed.
+      const pred = await db.prediction.findUnique({
+        where: { id: args.predictionId },
+        select: { id: true, engagementId: true, basePriceCents: true, predictedPriceCents: true },
+      });
+      if (!pred || pred.engagementId !== engagementId) {
+        throw new NotFoundException('prediction_not_found_for_engagement');
+      }
+
+      const now = new Date();
+      const updated = await db.engagementQuote.update({
+        where: { id: row.id },
+        data: {
+          techAdjustedPriceCents: BigInt(args.adjustedPriceCents),
+          techAdjustedAt: now,
+          techAdjustedBy: args.adjustedBy,
+          techAdjustmentNote: args.note,
+          techAdjustedPredictionId: args.predictionId,
+        },
+      });
+
+      await this.thread.emitWithin(db, tenantId, {
+        engagementId,
+        eventType: 'price_tech_adjusted',
+        actorType: 'user',
+        actorId: args.adjustedBy,
+        payload: {
+          predictionId: args.predictionId,
+          basePriceCents: Number(pred.basePriceCents),
+          predictedPriceCents: Number(pred.predictedPriceCents),
+          adjustedPriceCents: args.adjustedPriceCents,
+          ...(args.note ? { note: args.note } : {}),
+        },
+      });
+
+      return rowToDomain(updated);
+    });
+  }
+
   async approve(
     tenantId: string,
     engagementId: string,
@@ -257,6 +324,11 @@ interface DbQuote {
   predictedBandHighCents: bigint | null;
   winProbability: { toString(): string } | null;
   modifierDrivers: unknown;
+  techAdjustedPriceCents: bigint | null;
+  techAdjustedAt: Date | null;
+  techAdjustedBy: string | null;
+  techAdjustmentNote: string | null;
+  techAdjustedPredictionId: string | null;
   approvedPriceCents: bigint | null;
   approvedAt: Date | null;
   approvedBy: string | null;
@@ -282,6 +354,12 @@ function rowToDomain(row: DbQuote, _result?: BasePriceResult): PersistedQuote {
     winProbability:
       row.winProbability === null ? null : Number(row.winProbability.toString()),
     modifierDrivers: row.modifierDrivers ?? null,
+    techAdjustedPriceCents:
+      row.techAdjustedPriceCents === null ? null : Number(row.techAdjustedPriceCents),
+    techAdjustedAt: row.techAdjustedAt?.toISOString() ?? null,
+    techAdjustedBy: row.techAdjustedBy ?? null,
+    techAdjustmentNote: row.techAdjustmentNote ?? null,
+    techAdjustedPredictionId: row.techAdjustedPredictionId ?? null,
     approvedPriceCents:
       row.approvedPriceCents === null ? null : Number(row.approvedPriceCents),
     approvedAt: row.approvedAt?.toISOString() ?? null,
