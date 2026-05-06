@@ -15,6 +15,21 @@ import type {
   NodeOption,
   NodeType,
   TemplateStatus,
+  OdooConnectionStatus,
+  OdooConnectionTestResult,
+  OdooFieldMapping,
+  UpsertOdooConnectionInput,
+  UpsertOdooFieldMapping,
+  OdooSyncLogRow,
+  OdooEntityLinkRow,
+  OdooWebhookEventRow,
+  OdooPushRequest,
+  OdooPushResult,
+  OdooRecord,
+  OdooStageOption,
+  OdooTeamOption,
+  OdooUserOption,
+  OdooTagOption,
 } from '@rhud/shared';
 
 export type {
@@ -26,6 +41,21 @@ export type {
   Template,
   TemplateNode,
   TemplateWithNodes,
+  OdooConnectionStatus,
+  OdooConnectionTestResult,
+  OdooFieldMapping,
+  UpsertOdooConnectionInput,
+  UpsertOdooFieldMapping,
+  OdooSyncLogRow,
+  OdooEntityLinkRow,
+  OdooWebhookEventRow,
+  OdooPushRequest,
+  OdooPushResult,
+  OdooRecord,
+  OdooStageOption,
+  OdooTeamOption,
+  OdooUserOption,
+  OdooTagOption,
 };
 
 export type CreateTemplate = { serviceLine: string; name: string };
@@ -1123,6 +1153,106 @@ export const integrations = {
       }),
     clearAppConfig: () =>
       request<void>(`/integrations/outlook/app-config`, { method: 'DELETE' }),
+  },
+
+  // ── Odoo (per-tenant XML-RPC connection) ────────────────────────
+  odoo: {
+    status: () => request<OdooConnectionStatus>(`/integrations/odoo/status`),
+    upsert: (input: UpsertOdooConnectionInput) =>
+      request<OdooConnectionStatus>(`/integrations/odoo/connection`, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    disconnect: () =>
+      request<void>(`/integrations/odoo/connection`, { method: 'DELETE' }),
+    test: () =>
+      request<OdooConnectionTestResult>(`/integrations/odoo/test`, { method: 'POST' }),
+
+    // Field mappings
+    listMappings: () => request<OdooFieldMapping[]>(`/integrations/odoo/mappings`),
+    createMapping: (input: UpsertOdooFieldMapping) =>
+      request<OdooFieldMapping>(`/integrations/odoo/mappings`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    updateMapping: (id: string, input: UpsertOdooFieldMapping) =>
+      request<OdooFieldMapping>(`/integrations/odoo/mappings/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    deleteMapping: (id: string) =>
+      request<void>(`/integrations/odoo/mappings/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+
+    // Generic Odoo CRUD passthrough (admin)
+    search: (
+      model: string,
+      input: { domain?: unknown[]; fields?: string[]; limit?: number; offset?: number; order?: string },
+    ) =>
+      request<OdooRecord[]>(`/integrations/odoo/records/${encodeURIComponent(model)}/search`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    fields: (model: string) =>
+      request<Record<string, { string?: string; type?: string; help?: string; required?: boolean; readonly?: boolean }>>(
+        `/integrations/odoo/records/${encodeURIComponent(model)}/fields`,
+      ),
+    create: (model: string, values: Record<string, unknown>) =>
+      request<{ id: number }>(`/integrations/odoo/records/${encodeURIComponent(model)}`, {
+        method: 'POST',
+        body: JSON.stringify({ values }),
+      }),
+    update: (model: string, id: number, values: Record<string, unknown>) =>
+      request<{ ok: true }>(`/integrations/odoo/records/${encodeURIComponent(model)}/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ values }),
+      }),
+    remove: (model: string, id: number) =>
+      request<{ ok: true }>(`/integrations/odoo/records/${encodeURIComponent(model)}/${id}`, {
+        method: 'DELETE',
+      }),
+
+    // CRM dropdown helpers
+    stages: () => request<OdooStageOption[]>(`/integrations/odoo/stages`),
+    teams: () => request<OdooTeamOption[]>(`/integrations/odoo/teams`),
+    users: () => request<OdooUserOption[]>(`/integrations/odoo/users`),
+    tags: () => request<OdooTagOption[]>(`/integrations/odoo/tags`),
+
+    // Engagement-level sync
+    pushEngagement: (engagementId: string, opts: OdooPushRequest = {}) =>
+      request<OdooPushResult>(
+        `/integrations/odoo/engagements/${encodeURIComponent(engagementId)}/push`,
+        { method: 'POST', body: JSON.stringify(opts) },
+      ),
+    pullEngagement: (engagementId: string) =>
+      request<{ records: OdooRecord[] }>(
+        `/integrations/odoo/engagements/${encodeURIComponent(engagementId)}/pull`,
+        { method: 'POST' },
+      ),
+    setOutcome: (engagementId: string, outcome: 'won' | 'lost') =>
+      request<{ ok: true }>(
+        `/integrations/odoo/engagements/${encodeURIComponent(engagementId)}/outcome`,
+        { method: 'POST', body: JSON.stringify({ outcome }) },
+      ),
+    unlinkEngagement: (engagementId: string) =>
+      request<void>(
+        `/integrations/odoo/engagements/${encodeURIComponent(engagementId)}/link`,
+        { method: 'DELETE' },
+      ),
+
+    // Activity feeds
+    syncLogs: (limit = 100) =>
+      request<OdooSyncLogRow[]>(`/integrations/odoo/sync-logs?limit=${limit}`),
+    entityLinks: (limit = 200) =>
+      request<OdooEntityLinkRow[]>(`/integrations/odoo/entity-links?limit=${limit}`),
+    webhookEvents: (limit = 100) =>
+      request<OdooWebhookEventRow[]>(`/integrations/odoo/webhooks?limit=${limit}`),
+    processWebhooks: () =>
+      request<{ processed: number; failed: number }>(
+        `/integrations/odoo/webhooks/process`,
+        { method: 'POST' },
+      ),
   },
 };
 

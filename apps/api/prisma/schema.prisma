@@ -46,6 +46,11 @@ model Tenant {
   gammaConfigRow  TenantGammaConfig?
   userIntegrations UserIntegration[]
   outlookApp      TenantOutlookApp?
+  odooConnection   OdooConnection?
+  odooFieldMaps    OdooFieldMapping[]
+  odooSyncLogs     OdooSyncLog[]
+  odooEntityLinks  OdooEntityLink[]
+  odooWebhookEvents OdooWebhookEvent[]
 
   @@map("tenants")
 }
@@ -750,6 +755,190 @@ model TenantLlmConfig {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("tenant_llm_config")
+}
+
+/// Per-tenant Odoo (cloud) connection. Stores the URL, database, and
+/// integration login + API key so the API can call XML-RPC on the
+/// customer's behalf. The api_key is envelope-encrypted with the same
+/// DEK pattern as TenantLlmConfig — master key in LLM_KEY_ENCRYPTION_KEY.
+///
+/// Lifecycle: admin sets it up via /integrations/odoo, we test the
+/// credentials by calling `common.authenticate`, and store the
+/// returned uid for fast subsequent calls. Disconnecting wipes the
+/// row + cascades all OdooEntityLink + OdooSyncLog rows.
+model OdooConnection {
+  tenantId   String  @id @map("tenant_id") @db.Uuid
+  /// The Odoo instance URL — e.g. https://acme.odoo.com. No trailing slash.
+  url        String
+  /// Odoo database name. On odoo.com Online this is usually the
+  /// subdomain (e.g. "acme").
+  database   String
+  /// Login email of the integration user. Stored in cleartext — it's not
+  /// secret on its own; the api_key is.
+  login      String
+  /// Cached uid returned by the last successful authenticate(). Refreshed
+  /// on connection-test or first call after a 401.
+  uid        Int?
+  /// Encrypted Odoo API key (envelope-wrapped DEK + ciphertext).
+  apiKeyCiphertext    Bytes  @map("api_key_ciphertext")
+  apiKeyIv            Bytes  @map("api_key_iv")
+  apiKeyDekCiphertext Bytes  @map("api_key_dek_ciphertext")
+  apiKeyDekIv         Bytes  @map("api_key_dek_iv")
+  /// Auto-sync flag — when true, engagement lifecycle events (submitted,
+  /// approved, won, lost, abandoned) push to Odoo automatically.
+  autoSyncEnabled Boolean @default(true) @map("auto_sync_enabled")
+  /// Default crm.team to associate new opportunities with. Optional.
+  defaultTeamId   Int?    @map("default_team_id")
+  /// Default res.users (salesperson) for new opportunities. Optional.
+  defaultUserId   Int?    @map("default_user_id")
+  /// Webhook shared secret — long random string the customer pastes into
+  /// their Odoo Automation Rule URL as a query parameter. Lets us
+  /// authenticate inbound webhooks without per-request signing (which
+  /// Odoo Studio doesn't support natively).
+  webhookSecret   String  @map("webhook_secret")
+  /// Last time we successfully called Odoo; null on never.
+  lastConnectedAt DateTime? @map("last_connected_at") @db.Timestamptz
+  /// Last error string from a failed call — surfaced in the UI so the
+  /// admin can see "credentials rejected" without reading logs.
+  lastErrorMessage String?  @map("last_error_message")
+  /// Odoo server version reported on authenticate(). Display-only.
+  serverVersion   String?  @map("server_version")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("odoo_connections")
+}
+
+/// Per-tenant configurable field mapping from Rhud entities → Odoo
+/// fields. Lets each customer decide e.g. "send our `name` as Odoo
+/// `name` plus `description`", or "always set `priority='2'` on
+/// outgoing opportunities". Default mappings are applied if no row.
+///
+/// Identity:
+///   rhudEntity ∈ ('engagement', 'engagement_quote', 'engagement_thread')
+///   odooModel  = 'crm.lead' | 'res.partner' | 'crm.tag' | etc.
+model OdooFieldMapping {
+  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String  @map("tenant_id") @db.Uuid
+  /// Source Rhud entity name.
+  rhudEntity String  @map("rhud_entity")
+  /// Source field path inside that entity (e.g. "name", "clientEmail",
+  /// "approvedPriceCents", "quote.baseTotalCents", "answers.scope_value").
+  rhudField  String  @map("rhud_field")
+  /// Target Odoo model and field.
+  odooModel  String  @map("odoo_model")
+  odooField  String  @map("odoo_field")
+  /// Optional value transform expression. Recognised verbs:
+  ///   - "cents_to_currency"  → divide by 100, round to 2dp.
+  ///   - "json_stringify"     → JSON.stringify(value).
+  ///   - "uppercase" / "lowercase".
+  ///   - "constant:<value>"   → ignore source, always set <value>.
+  transform  String?
+  /// When true the mapping is enforced on writes (and a missing source
+  /// raises a sync error). When false, the field is optional and skipped
+  /// when source is null/undefined.
+  required   Boolean @default(false)
+  /// Direction: 'push' = Rhud → Odoo, 'pull' = Odoo → Rhud, 'both'.
+  direction  String  @default("push")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, rhudEntity, rhudField, odooModel, odooField, direction], map: "odoo_field_mappings_uniq")
+  @@index([tenantId])
+  @@map("odoo_field_mappings")
+}
+
+/// Mapping table linking Rhud entities to their Odoo counterparts so we
+/// can update instead of duplicating. Examples:
+///   ('engagement', '<engagement-uuid>', 'crm.lead', 12345)
+///   ('engagement', '<engagement-uuid>', 'res.partner', 678)
+///   ('client_account', 'alex@acme.com', 'res.partner', 9101)
+model OdooEntityLink {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  rhudEntity  String   @map("rhud_entity")
+  rhudId      String   @map("rhud_id")
+  odooModel   String   @map("odoo_model")
+  odooId      Int      @map("odoo_id")
+  /// Last time we successfully synced this link (push or pull).
+  lastSyncedAt DateTime? @map("last_synced_at") @db.Timestamptz
+  /// Last write_date observed from Odoo — used as the polling cursor for
+  /// inbound change detection on this record.
+  odooWriteDate DateTime? @map("odoo_write_date") @db.Timestamptz
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, rhudEntity, rhudId, odooModel], map: "odoo_entity_links_rhud_uniq")
+  @@unique([tenantId, odooModel, odooId], map: "odoo_entity_links_odoo_uniq")
+  @@index([tenantId])
+  @@map("odoo_entity_links")
+}
+
+/// Append-only log of every Odoo sync attempt. Surfaced in the
+/// /integrations/odoo dashboard so admins can see what synced when,
+/// and triage failures.
+///
+/// `direction`: 'push' = Rhud → Odoo, 'pull' = Odoo → Rhud.
+/// `status`:    'ok' | 'error' | 'skipped'.
+model OdooSyncLog {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  rhudEntity   String?  @map("rhud_entity")
+  rhudId       String?  @map("rhud_id")
+  odooModel    String?  @map("odoo_model")
+  odooId       Int?     @map("odoo_id")
+  direction    String
+  operation    String   /// 'create' | 'update' | 'unlink' | 'read' | 'webhook'
+  status       String
+  triggeredBy  String   @map("triggered_by")  /// 'auto' | 'manual' | 'webhook'
+  actorUserId  String?  @map("actor_user_id") @db.Uuid
+  errorMessage String?  @map("error_message")
+  /// Snapshot of the request payload (headers/body) — JSON for human
+  /// inspection only; never used for replay.
+  requestPayload  Json? @map("request_payload")
+  responsePayload Json? @map("response_payload")
+  durationMs   Int?     @map("duration_ms")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([tenantId, status])
+  @@map("odoo_sync_logs")
+}
+
+/// Inbound webhook events from Odoo Studio's Automation Rules. The
+/// receiver verifies the shared secret, persists the raw event here,
+/// then dispatches it to the right handler. Persistence first (before
+/// dispatch) means we can replay if dispatch fails.
+model OdooWebhookEvent {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  /// Resource that fired — 'crm.lead' | 'res.partner' | etc.
+  odooModel   String   @map("odoo_model")
+  /// Odoo record id from the payload.
+  odooId      Int?     @map("odoo_id")
+  /// 'create' | 'write' | 'unlink' (the verb the automation rule used).
+  eventType   String   @map("event_type")
+  /// Raw body posted by Odoo. Trustless — only act on it after fetching
+  /// the canonical record from Odoo.
+  payload     Json
+  /// 'pending' | 'processed' | 'failed' | 'ignored'
+  status      String   @default("pending")
+  errorMessage String? @map("error_message")
+  receivedAt  DateTime @default(now()) @map("received_at") @db.Timestamptz
+  processedAt DateTime? @map("processed_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([tenantId, receivedAt(sort: Desc)])
+  @@map("odoo_webhook_events")
 }
 
 /// Per-tenant Gamma integration. API key encrypted via the same

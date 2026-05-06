@@ -44,6 +44,7 @@ import { Portal } from '@/components/portal';
 import { RowActions } from '@/components/row-actions';
 import { DeleteConfirmModal } from '@/components/delete-confirm-modal';
 import { useConfirm } from '@/components/confirm';
+import { OdooSyncCard } from './odoo-sync-card';
 
 const EVENT_LABELS: Record<string, string> = {
   link_issued: 'Link issued to client',
@@ -441,6 +442,8 @@ export default function OpportunityDetailPage() {
                 onStatusChange={() => { void refreshAfterDecision(); }}
               />
             )}
+
+            {user && <OdooSyncCard engagementId={eng.id} status={eng.status} />}
 
             <div className="card" style={{ padding: 22, marginTop: 16 }}>
               <div className="section-label" style={{ marginBottom: 10 }}>What happens next</div>

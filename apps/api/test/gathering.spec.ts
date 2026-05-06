@@ -26,6 +26,7 @@ import { ConsoleEmailTransport } from '../src/notifications/email.transport.js';
 import { NotificationsService } from '../src/notifications/notifications.service.js';
 import { MlClient } from '../src/ml/ml-client.service.js';
 import { MlService } from '../src/ml/ml.service.js';
+import { OdooService } from '../src/integrations/odoo/odoo.service.js';
 
 const TENANT_A = '00000000-0000-0000-0000-0000000000a3';
 const TENANT_B = '00000000-0000-0000-0000-0000000000b3';
@@ -88,8 +89,11 @@ describe('Gathering / engagement flow (sprint 3)', () => {
     kickoffForEngagement: async () => 0,
     isAllSettled: async () => true,
   } as unknown as import('../src/extraction/extraction.service.js').ExtractionService;
+  // Stub OdooService — auto-sync hook is a no-op when Odoo isn't
+  // configured (which it isn't in test).
+  const odooSvc = new OdooService(tenantDb);
   const gatheringSvc = new GatheringService(
-    unscoped, tenantDb, thread, s3, mlSvc, quoteSvc, extractionStub,
+    unscoped, tenantDb, thread, s3, mlSvc, quoteSvc, extractionStub, odooSvc,
   );
 
   // Seeded template ids per tenant (4 nodes A→B→C→END for clarity).

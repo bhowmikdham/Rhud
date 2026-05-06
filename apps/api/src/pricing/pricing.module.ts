@@ -12,12 +12,15 @@ import { TenantPricingConfigService } from './tenant-pricing-config.service.js';
 import { TenantPricingConfigController } from './tenant-pricing-config.controller.js';
 import { RateCardFieldMapperService } from './rate-card-mapper.service.js';
 import { RateCardHintSynthesizerService } from './rate-card-hint-synthesizer.service.js';
+import { IntegrationsModule } from '../integrations/integrations.module.js';
 
 @Module({
   // forwardRef: LlmModule transitively imports IntegrationsModule which
   // could cycle back through pricing later. The forward-ref harmlessly
-  // breaks that risk now without forcing a module re-org.
-  imports: [AuthModule, ThreadModule, forwardRef(() => LlmModule)],
+  // breaks that risk now without forcing a module re-org. IntegrationsModule
+  // is imported eagerly because PredictionController + QuoteService inject
+  // OdooService synchronously.
+  imports: [AuthModule, ThreadModule, forwardRef(() => LlmModule), IntegrationsModule],
   controllers: [
     PricingController,
     QuoteController,

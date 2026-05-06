@@ -8,3 +8,4 @@ export * from './pricing.js';
 export * from './scope-summary.js';
 export * from './document.js';
 export * from './site-enumeration.js';
+export * from './odoo.js';
