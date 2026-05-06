@@ -41,5 +41,8 @@ Thumbs.db
 # docker volumes (if ever bind-mounted locally)
 .docker-data/
 
-# prototype — inner empty git repo from ideation phase, not ours
-prototype/.git/
+# prototype — UX reference only, not production code
+prototype/
+
+# claude code worktrees + agent state
+.claude/

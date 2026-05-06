@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { GatheringService } from './gathering.service.js';
-import { CreateUploadUrlDto, LoopStepDto, SubmitAnswerDto } from './dto.js';
+import { CreateScopingDocUploadUrlDto, CreateUploadUrlDto, LoopStepDto, SubmitAnswerDto } from './dto.js';
 
 /**
  * Client-facing gathering endpoints. NOT prefixed with /api/v1 — they live
@@ -52,6 +52,31 @@ export class GatheringController {
     @Body() dto: CreateUploadUrlDto,
   ) {
     return this.svc.createSignedUploadUrl(token, ctxFromReq(req), dto);
+  }
+
+  /** Quick-fill scoping-doc upload — engagement-level, no nodeId. */
+  @Post('scoping-doc')
+  @HttpCode(200)
+  async createScopingDocUploadUrl(
+    @Param('token') token: string,
+    @Req() req: Request,
+    @Body() dto: CreateScopingDocUploadUrlDto,
+  ) {
+    return this.svc.createScopingDocUploadUrl(token, ctxFromReq(req), dto);
+  }
+
+  /** Remove a loop iteration (e.g. delete "Web App 2"). Deletes every
+   *  answer for that loop's body nodes at the given iteration index
+   *  and shifts subsequent iterations down. Irreversible — the client
+   *  is expected to confirm before calling. */
+  @Post('iterations/remove')
+  @HttpCode(200)
+  async removeIteration(
+    @Param('token') token: string,
+    @Req() req: Request,
+    @Body() dto: { loopId: string; iterIndex: number },
+  ) {
+    return this.svc.removeLoopIteration(token, ctxFromReq(req), dto);
   }
 
   @Post('submit')

@@ -672,6 +672,10 @@ interface ProviderPreset {
   label: string;
   blurb: string;
   defaultModel: string;
+  /** Example model ids surfaced under the model field as quick-pick
+   *  chips. Reduces "unexpected model name format" errors from
+   *  cross-provider model strings. */
+  exampleModels?: string[];
   /** When false, baseUrl input is hidden (provider has a fixed default). */
   baseUrlEditable: boolean;
   baseUrlPlaceholder?: string;
@@ -693,6 +697,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     label: 'Anthropic — Claude',
     blurb: 'Highest narrative quality, best tool use. Bring an Anthropic API key.',
     defaultModel: 'claude-sonnet-4-6',
+    exampleModels: ['claude-sonnet-4-6', 'claude-opus-4-1', 'claude-haiku-4-1'],
     baseUrlEditable: false,
     apiKeyRequired: true,
   },
@@ -701,6 +706,16 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     label: 'OpenAI — GPT',
     blurb: 'GPT-4o family. Bring an OpenAI API key.',
     defaultModel: 'gpt-4o-mini',
+    exampleModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo'],
+    baseUrlEditable: false,
+    apiKeyRequired: true,
+  },
+  {
+    value: 'gemini',
+    label: 'Google — Gemini',
+    blurb: 'Gemini family via Google\'s OpenAI-compatible endpoint. Bring a Google AI Studio API key (free tier available).',
+    defaultModel: 'gemini-2.0-flash',
+    exampleModels: ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
     baseUrlEditable: false,
     apiKeyRequired: true,
   },
@@ -709,6 +724,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     label: 'Ollama (self-hosted)',
     blurb: 'Run a local model on your own machine. No API key — your data never leaves the host.',
     defaultModel: 'llama3.1:8b',
+    exampleModels: ['llama3.1:8b', 'llama3.2', 'qwen2.5'],
     baseUrlEditable: true,
     baseUrlPlaceholder: 'http://localhost:11434/v1',
     apiKeyRequired: false,
@@ -764,13 +780,18 @@ function AiPanel({ isAdmin }: { isAdmin: boolean }) {
   }, [isAdmin]);
 
   function selectProvider(next: LlmProviderName) {
+    if (next === provider) return; // no-op when re-selecting the same tile
     setProvider(next);
     setTestResult(null);
     const p = PROVIDER_PRESETS.find((x) => x.value === next)!;
-    // Only seed defaults when the form is fresh (no model chosen) or when
-    // the previous provider wasn't this one — avoids stomping a user's
-    // typed model when they switch back and forth.
-    if (!model || model === '') setModel(p.defaultModel);
+    // Always seed the new provider's default when switching. The
+    // previous behavior (preserve the typed model) caused real-world
+    // breakage: e.g. switching Anthropic → Gemini left
+    // `claude-sonnet-4-6` in the field, which Google rejects with
+    // `unexpected model name format`. Replacing the model on switch
+    // is the right tradeoff — provider-specific model strings rarely
+    // round-trip across vendors.
+    setModel(p.defaultModel);
     if (!p.baseUrlEditable) setBaseUrl('');
   }
 
@@ -911,14 +932,41 @@ function AiPanel({ isAdmin }: { isAdmin: boolean }) {
         </div>
 
         {provider !== 'manual' && (
-          <Row label="Model" sub="Provider-specific model id.">
-            <input
-              className="input"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={preset.defaultModel || 'model-name'}
-              style={{ maxWidth: 360, fontSize: 13 }}
-            />
+          <Row label="Model" sub="Provider-specific model id. Click an example to use it.">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 480 }}>
+              <input
+                className="input"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={preset.defaultModel || 'model-name'}
+                style={{ maxWidth: 360, fontSize: 13 }}
+              />
+              {preset.exampleModels && preset.exampleModels.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {preset.exampleModels.map((m) => {
+                    const active = m === model.trim();
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setModel(m)}
+                        className="chip"
+                        style={{
+                          appearance: 'none', cursor: 'pointer',
+                          fontFamily: 'var(--font-mono)', fontSize: 11,
+                          background: active ? 'var(--accent-tint)' : 'var(--bg-sunk)',
+                          color: active ? 'var(--accent)' : 'var(--fg-muted)',
+                          border: '1px solid ' + (active ? 'var(--accent)' : 'var(--border)'),
+                          padding: '3px 8px',
+                        }}
+                      >
+                        {m}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </Row>
         )}
 

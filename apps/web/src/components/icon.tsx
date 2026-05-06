@@ -41,6 +41,7 @@ export const Icon = {
   ChevronRight: makeIcon(<path d="m9 6 6 6-6 6" />),
   ChevronLeft: makeIcon(<path d="m15 6-6 6 6 6" />),
   ArrowRight: makeIcon(<path d="M5 12h14M13 5l7 7-7 7" />),
+  ArrowLeft:  makeIcon(<path d="M19 12H5M11 5l-7 7 7 7" />),
   ArrowUpRight: makeIcon(<path d="M7 17 17 7M8 7h9v9" />),
   Sparkle: makeIcon(<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8" />),
   Sparkles: makeIcon(<><path d="m12 3 1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8L5.5 9.5l4.8-1.7L12 3Z" /><path d="M19 15v4M17 17h4" /></>),

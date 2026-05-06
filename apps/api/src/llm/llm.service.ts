@@ -37,7 +37,14 @@ import type {
 import { AnthropicProvider } from './providers/anthropic.provider.js';
 import { OpenAiCompatProvider } from './providers/openai-compat.provider.js';
 
-const VALID_PROVIDERS: LlmProviderName[] = ['anthropic', 'openai', 'ollama', 'openai_compat', 'manual'];
+const VALID_PROVIDERS: LlmProviderName[] = [
+  'anthropic',
+  'openai',
+  'gemini',
+  'ollama',
+  'openai_compat',
+  'manual',
+];
 
 export interface PublicConfig {
   provider: LlmProviderName;
@@ -93,7 +100,7 @@ export class LlmService {
     // must end up with an encrypted key on disk after this call. We can't
     // judge that from `input` alone (undefined means "keep existing"); the
     // check has to run after we've fetched the prior row.
-    const keyRequired = ['anthropic', 'openai', 'openai_compat'].includes(input.provider);
+    const keyRequired = ['anthropic', 'openai', 'gemini', 'openai_compat'].includes(input.provider);
 
     return this.tenantDb.run(tenantId, async (db) => {
       const existing = await db.tenantLlmConfig.findUnique({ where: { tenantId } });
@@ -249,6 +256,7 @@ export class LlmService {
       case 'anthropic':
         return new AnthropicProvider(config);
       case 'openai':
+      case 'gemini':
       case 'ollama':
       case 'openai_compat':
         return new OpenAiCompatProvider(config);

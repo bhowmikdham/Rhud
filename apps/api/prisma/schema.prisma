@@ -184,14 +184,15 @@ model Engagement {
   proposalPdfUrl       String?   @map("proposal_pdf_url")
   proposalPdfExpiresAt DateTime? @map("proposal_pdf_expires_at") @db.Timestamptz
 
-  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template    Template          @relation(fields: [templateId], references: [id])
-  tokens      GatheringToken[]
-  answers     EngagementAnswer[]
-  files       EngagementFile[]
-  events      ThreadEvent[]
-  quote       EngagementQuote?
-  predictions Prediction[]
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template        Template           @relation(fields: [templateId], references: [id])
+  tokens          GatheringToken[]
+  answers         EngagementAnswer[]
+  files           EngagementFile[]
+  events          ThreadEvent[]
+  quote           EngagementQuote?
+  predictions     Prediction[]
+  siteEnumeration SiteEnumeration?
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -236,9 +237,14 @@ model GatheringToken {
   id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId              String    @map("tenant_id") @db.Uuid
   engagementId          String    @map("engagement_id") @db.Uuid
-  // argon2id hash of the plaintext token. Plaintext is shown to the client
-  // exactly once (in the email). Only the hash hits the DB.
+  // argon2id hash of the plaintext token. Used for verification on
+  // every /g/:token access (constant-time compare via argon2id.verify).
   tokenHash             String    @map("token_hash")
+  // Plaintext token kept so the sales rep can look the URL up later
+  // (copy back into chat, share with a teammate, etc.). Trade-off
+  // accepted in dev/sales setting: short-lived single-use tokens +
+  // revokedAt limit blast radius if the DB is compromised.
+  tokenPlain            String?   @map("token_plain")
   expiresAt             DateTime  @map("expires_at") @db.Timestamptz
   // Set on first successful access. Used to detect material device changes
   // (different fingerprint or wildly different IP) on subsequent accesses.
@@ -279,7 +285,14 @@ model EngagementFile {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId     String   @map("tenant_id") @db.Uuid
   engagementId String   @map("engagement_id") @db.Uuid
-  nodeId       String   @map("node_id") @db.Uuid
+  // NULL when the file is a scoping document uploaded at the
+  // engagement level (Quick-fill flow). Non-null when the responder
+  // attached the file to a specific template question.
+  nodeId       String?  @map("node_id") @db.Uuid
+  /// 'scoping_doc' — Quick-fill upload before answering any question.
+  /// 'node_attachment' — file attached to a specific question (file_upload
+  /// node OR a regular node with allowFiles=true). Default for legacy rows.
+  kind         String   @default("node_attachment")
   // S3 object key — `engagements/<engagementId>/<uuid>/<filename>`.
   s3Key        String   @map("s3_key")
   filename     String
@@ -287,10 +300,56 @@ model EngagementFile {
   contentType  String   @map("content_type")
   uploadedAt   DateTime @default(now()) @map("uploaded_at") @db.Timestamptz
 
+  /// Document-extraction pipeline state.
+  ///   pending      — uploaded, not yet processed
+  ///   processing   — text extraction + LLM structuring in flight
+  ///   ready        — extractedPoints + extractedText populated
+  ///   failed       — see extractionError for the human-readable cause
+  ///   skipped      — content type isn't supported (e.g. video)
+  ///   retry_queued — provider rate-limited; a cron will retry at retryAt
+  extractionStatus    String?   @map("extraction_status")
+  extractionStartedAt DateTime? @map("extraction_started_at") @db.Timestamptz
+  extractedAt         DateTime? @map("extracted_at") @db.Timestamptz
+  extractionError     String?   @map("extraction_error")
+  /// When extractionStatus = 'retry_queued', the cron picks up rows
+  /// where retryAt <= now() and re-fires kickoff. Null otherwise.
+  /// Resets to null on terminal outcome.
+  extractionRetryAt   DateTime? @map("extraction_retry_at") @db.Timestamptz
+  /// Number of retry attempts so far. Cron stops retrying after 5
+  /// and flips to `failed` so the row doesn't loop forever.
+  extractionAttempts  Int       @default(0) @map("extraction_attempts")
+  /// Raw text we pulled out of the file (PDF text layer, xlsx cells,
+  /// plain text). Capped at ~200KB on insert; longer documents get the
+  /// head + tail with a marker. Stored so re-running the LLM step
+  /// doesn't require re-fetching from S3.
+  extractedText       String?   @map("extracted_text")
+  /// Structured data points the LLM pulled out, shaped as
+  ///   [{ key, value, sourceQuote, relatedQuestion?, category? }]
+  /// JSON because the schema is per-tenant + may evolve. `category`
+  /// is added by Layer 2 (semantic classification) — see
+  /// CategoryClassifierService. Values: scope|methodology|service_type
+  /// |identity|environment|compliance|other.
+  extractedPoints     Json?     @map("extracted_points")
+  /// Cached output of the rate-card field mapper (Layer 3) for this
+  /// file. Shape:
+  ///   [{ serviceLineSlug, scopeValue, methodology, customerType,
+  ///      confidence, reasoning, sourceQuote }]
+  /// Computed once at extraction time so Re-predict doesn't re-call
+  /// the LLM. Null until the mapper has run.
+  inferredEntities    Json?     @map("inferred_entities")
+  /// Canonical Layer-1.5 RhudDocument representation: every cell from
+  /// xlsx, every page from PDF, every heading-bounded block from docx —
+  /// captured BEFORE any LLM step runs. Used by the admin-review UI to
+  /// show "this is what the parser saw" so parsing-quality issues are
+  /// debuggable separately from LLM-quality issues. See
+  /// packages/shared/src/document.ts (RhudDocument).
+  parsedDocument      Json?     @map("parsed_document")
+
   engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([engagementId])
+  @@index([engagementId, extractionStatus])
   @@map("engagement_files")
 }
 
@@ -357,6 +416,14 @@ model RateCard {
   effectiveFrom   DateTime? @map("effective_from") @db.Timestamptz
   effectiveTo     DateTime? @map("effective_to")   @db.Timestamptz
   sourceFileKey   String?   @map("source_file_key")
+  // Layer-3 mapper prompt synthesis — see migration
+  // 20260609000000_rate_card_inference_ontology and design notes in
+  // packages/shared/src/pricing.ts (RateCard.inferenceContext).
+  // The mapper composes its system prompt from these fields so it never
+  // bakes domain (cybersec, cleaning, legal, …) into code.
+  inferenceContext         String?  @map("inference_context")
+  defaultMethodologyRule   String?  @map("default_methodology_rule")
+  inferenceExamples        Json     @default("[]") @map("inference_examples")
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime  @updatedAt      @map("updated_at") @db.Timestamptz
 
@@ -386,6 +453,11 @@ model RateCardServiceLine {
   // tier_lookup | per_unit | flat | hourly — only tier_lookup is wired today.
   pricingModel  String  @default("tier_lookup") @map("pricing_model")
   position      Int     @default(0)
+  // Layer-3 mapper prompt synthesis — see migration
+  // 20260609000000_rate_card_inference_ontology and design notes in
+  // packages/shared/src/pricing.ts (RateCardServiceLine.inferenceHint).
+  inferenceHint     String?  @map("inference_hint")
+  inferenceExamples Json     @default("[]") @map("inference_examples")
 
   rateCard RateCard            @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
   tiers    RateCardTier[]
@@ -698,4 +770,86 @@ model TenantGammaConfig {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("tenant_gamma_config")
+}
+
+// ── Site enumeration: crawl a prospect's existing site → categorised scope ──
+//
+// Given a URL, the crawler discovers same-origin pages (sitemap-first, BFS
+// fallback), classifies each by category (product, blog, form, …), and the
+// aggregated counts are mapped to ScopedEntity[] against a rate card so the
+// existing pricing engine can produce a base quote without the prospect
+// filling out a questionnaire. One-to-one with engagement; the same crawl
+// can be re-mapped against multiple rate cards (cached under
+// `inferred_entities[rateCardId]`).
+//
+// Status state machine — mirrors EngagementFile.extraction_status:
+//   pending → crawling → classifying → ready
+//                                    └─→ failed
+//                                    └─→ retry_queued → crawling (cron)
+model SiteEnumeration {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  engagementId   String    @unique @map("engagement_id") @db.Uuid
+  siteUrl        String    @map("site_url")
+  /// pending | crawling | classifying | ready | failed | retry_queued — CHECK in migration.
+  status         String    @default("pending")
+  startedAt      DateTime? @map("started_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+  /// Total URLs discovered across crawl + sitemap.
+  totalUrls      Int       @default(0) @map("total_urls")
+  /// Subset already classified (heuristic or LLM). UI shows X/Y progress.
+  classifiedUrls Int       @default(0) @map("classified_urls")
+  /// Rate-card-INDEPENDENT category breakdown:
+  ///   { [category]: { count, examples: [{url, title}] } }
+  /// Persisted on `ready`. UI's primary read.
+  categoriesJson   Json?   @map("categories_json")
+  /// Per-rate-card mapping snapshot:
+  ///   { [rateCardId]: { entities: ScopedEntity[], computedAt: ISO } }
+  /// Cached so re-pricing against a different card is instant; the same
+  /// pattern as `engagement_files.inferred_entities`.
+  inferredEntities Json?   @map("inferred_entities")
+  /// Crawl options snapshot — what limits the crawl ran with. Keeps a
+  /// re-crawl reproducible without re-deriving from defaults.
+  ///   { maxPages, maxDepth, includePathRegex?, excludePathRegex? }
+  optionsJson      Json?   @map("options_json")
+  /// Retry queue (mirrors engagement_files):
+  attempts         Int       @default(0)
+  retryAt          DateTime? @map("retry_at") @db.Timestamptz
+  error            String?
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt      @map("updated_at") @db.Timestamptz
+
+  engagement Engagement              @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  pages      SiteEnumerationPage[]
+
+  @@index([tenantId])
+  @@index([status, retryAt])
+  @@map("site_enumerations")
+}
+
+model SiteEnumerationPage {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String    @map("tenant_id") @db.Uuid
+  enumerationId        String    @map("enumeration_id") @db.Uuid
+  url                  String
+  httpStatus           Int?      @map("http_status")
+  contentType          String?   @map("content_type")
+  title                String?
+  description          String?
+  /// Canonical category — see SITE_URL_CATEGORIES in @rhud/shared.
+  ///   product | ecommerce | blog | cms | form | knowledge_base | attachment
+  ///   | members | media | module | other
+  category             String?
+  classifierConfidence Float?    @map("classifier_confidence")
+  /// 'heuristic' | 'llm' — provenance for the category assignment.
+  classifierSource     String?   @map("classifier_source")
+  fetchedAt            DateTime  @map("fetched_at") @db.Timestamptz
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  enumeration SiteEnumeration @relation(fields: [enumerationId], references: [id], onDelete: Cascade)
+
+  @@unique([enumerationId, url], map: "site_enumeration_pages_enum_url_uniq")
+  @@index([enumerationId, category])
+  @@index([tenantId])
+  @@map("site_enumeration_pages")
 }

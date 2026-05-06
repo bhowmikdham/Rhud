@@ -70,9 +70,23 @@ export interface LoopConfig {
  * pricing engine sees it. Useful when the gathering form uses
  * human-friendly labels ('Public', 'Private') that differ from the
  * rate-card vocabulary ('external', 'internal').
+ *
+ * `serviceLineSlug` (optional, only meaningful when field='scope_value')
+ * lets a body node emit its own ScopedEntity for that slug, instead of
+ * contributing to the loop's main entity. This is what unblocks
+ * multi-driver intake — one "Web App" loop iteration can simultaneously
+ * fill `vapt_web_app_dynamic_pages`, `_input_fields`, `_roles`, etc.,
+ * each from a separate body node. When unset, the legacy behaviour
+ * applies: scope feeds the loop's `loopConfig.serviceLineSlug`.
+ *
+ * Also valid OUTSIDE a loop: a top-level node with `serviceLineSlug` +
+ * `field='scope_value'` emits one ScopedEntity for that slug. Used for
+ * "single occurrence" sections like Network and Cloud where the
+ * engagement has at most one set of values.
  */
 export interface NodeBinding {
   field: 'scope_value' | 'methodology' | 'customer_type';
+  serviceLineSlug?: string;
   valueMap?: Record<string, string>;
 }
 

@@ -7,6 +7,21 @@ export const THREAD_EVENT_TYPES = [
   'link_opened',
   'node_answered',
   'file_uploaded',
+  /// Document extraction completed for a previously-uploaded file —
+  /// payload carries `{ fileId, filename, pointCount }`. Emitted once
+  /// per file when the extraction pipeline lands a `ready` outcome.
+  'file_extracted',
+  /// A loop iteration the responder created (or extraction auto-created)
+  /// was removed via the gathering UI's per-iteration trash button.
+  /// Payload: `{ loopId, iterIndex }`. Used in audit + thread timeline.
+  'loop_iteration_removed',
+  /// Layer-3 mapper LLM call failed (rate-limit / timeout / parse error)
+  /// and fell back to heuristic-only inference. Payload includes the
+  /// reason ("rate_limited" | "parse_error" | "timeout" | "no_entities")
+  /// and the raw error message so the rep knows why the inferred-entity
+  /// list is heuristic-only instead of LLM-driven. Used by the opportunity
+  /// detail page to render a "Re-run mapping" hint.
+  'mapper_fallback_heuristic',
   'scope_submitted',
   'price_predicted',
   'approval_requested',
@@ -21,6 +36,14 @@ export const THREAD_EVENT_TYPES = [
   'engagement_closed',
   'quote_computed',
   'quote_approved',
+  /// Site-enumeration crawl + classification finished successfully.
+  /// Payload: `{ siteUrl, totalUrls, categories: { [cat]: count } }`.
+  /// Emitted once per enumeration when status flips to `ready`.
+  'site_enumerated',
+  /// Site enumeration ran out of retries (or hit a non-retryable error).
+  /// Payload: `{ siteUrl, error, attempts }`. Distinct from
+  /// site_enumerated so the timeline shows the failure clearly.
+  'site_enumeration_failed',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];

@@ -8,7 +8,13 @@
  * OpenAI client with a different base URL.
  */
 
-export type LlmProviderName = 'anthropic' | 'openai' | 'ollama' | 'openai_compat' | 'manual';
+export type LlmProviderName =
+  | 'anthropic'
+  | 'openai'
+  | 'gemini'
+  | 'ollama'
+  | 'openai_compat'
+  | 'manual';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';

@@ -146,4 +146,18 @@ export class TemplatesController {
     const issues = await this.svc.validate(req.tenantId, id);
     return { issues };
   }
+
+  // ── Sample install ────────────────────────────────────────────────────────
+  // One-click installer for the Prophaze gathering template, paired with the
+  // Prophaze rate card (which the admin must seed first via /rate-cards/seed).
+
+  @Post('seed/prophaze-sample')
+  @Roles('admin', 'sales_manager')
+  @HttpCode(201)
+  seedProphaze(
+    @Req() req: AuthedRequest,
+    @Body() body: { rateCardId: string },
+  ) {
+    return this.svc.seedProphazeSample(req.tenantId, body.rateCardId);
+  }
 }

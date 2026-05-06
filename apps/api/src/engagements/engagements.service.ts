@@ -91,6 +91,10 @@ export class EngagementsService {
           tenantId: args.tenantId,
           engagementId: created.id,
           tokenHash,
+          // Stored so the rep can look the URL up later from the
+          // opportunity detail page. Trade-off documented in the
+          // 20260607000000_gathering_token_plain migration.
+          tokenPlain: token,
           expiresAt,
         },
       });
@@ -137,18 +141,48 @@ export class EngagementsService {
   async getById(
     tenantId: string,
     id: string,
-  ): Promise<EngagementSummary & { thread: Awaited<ReturnType<ThreadService['listForEngagement']>> }> {
-    const summary = await this.tenantDb.run(tenantId, async (db) => {
+    opts: { publicBaseUrl?: string } = {},
+  ): Promise<EngagementSummary & {
+    thread: Awaited<ReturnType<ThreadService['listForEngagement']>>;
+    /** The currently-active gathering link, if any. Null when no token
+     *  exists, or when every token is revoked / expired. The rep uses
+     *  this to copy the URL back into chat after leaving the wizard. */
+    gatheringLink: {
+      url: string;
+      expiresAt: string;
+      isExpired: boolean;
+      isRevoked: boolean;
+      accessCount: number;
+    } | null;
+  }> {
+    const { summary, link } = await this.tenantDb.run(tenantId, async (db) => {
       const row = await db.engagement.findUnique({
         where: { id },
         include: { template: { select: { name: true } } },
       });
       if (!row) throw new NotFoundException('engagement_not_found');
-      return rowToSummary(row);
+      // Pick the most recent token. We don't pre-filter by revoked/expired
+      // because the UI surfaces those states (so the rep knows why a link
+      // they remember sending isn't usable any more).
+      const tokenRow = await db.gatheringToken.findFirst({
+        where: { engagementId: id },
+        orderBy: { createdAt: 'desc' },
+      });
+      return { summary: rowToSummary(row), link: tokenRow };
     });
 
     const thread = await this.thread.listForEngagement(tenantId, id);
-    return { ...summary, thread };
+    const baseUrl = (opts.publicBaseUrl ?? '').replace(/\/$/, '');
+    const gatheringLink = link && link.tokenPlain && baseUrl
+      ? {
+          url: `${baseUrl}/g/${link.tokenPlain}`,
+          expiresAt: link.expiresAt.toISOString(),
+          isExpired: link.expiresAt.getTime() < Date.now(),
+          isRevoked: link.revokedAt != null,
+          accessCount: link.accessCount,
+        }
+      : null;
+    return { ...summary, thread, gatheringLink };
   }
 
   /**

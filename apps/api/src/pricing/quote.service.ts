@@ -29,6 +29,10 @@ import {
 import { TenantDb, type PrismaTx } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { PricingService } from './pricing.service.js';
+import {
+  RateCardFieldMapperService,
+  type InferredEntity,
+} from './rate-card-mapper.service.js';
 
 export interface PersistedQuote {
   id: string;
@@ -58,6 +62,7 @@ export class QuoteService {
     private readonly tenantDb: TenantDb,
     private readonly pricing: PricingService,
     private readonly thread: ThreadService,
+    private readonly fieldMapper: RateCardFieldMapperService,
   ) {}
 
   /**
@@ -127,7 +132,145 @@ export class QuoteService {
         answersByIter.set(a.nodeId, inner);
       }
 
-      const scope = normaliseScope(tmpl, card, answersByIter);
+      const scopeFromAnswers = normaliseScope(tmpl, card, answersByIter);
+
+      // Supplementary input: cached Layer-3 inference from extracted
+      // documents. The mapper ran once at extraction time and stored
+      // its output on engagement_files.inferred_entities; we just
+      // read + filter to confidence-passing entries here. This is
+      // what makes Re-predict instant and rate-limit-free — no LLM
+      // call on the quote path.
+      //
+      // Conflict rule: a service line answered by the form ALWAYS
+      // wins over its extraction-derived counterpart. The mapper
+      // only fills genuine gaps. That preserves "client typed it"
+      // as ground truth and avoids surprises when an extraction
+      // misreads a value.
+      // Warn loudly when extraction is still in flight. We don't refuse
+      // to compute (the rep may have manually triggered re-predict to
+      // see partial state) but the log makes it discoverable why a
+      // quote is light. P0-5 in see-that-is-self-sunny-honey.md.
+      const inFlightFiles = await db.engagementFile.count({
+        where: {
+          engagementId,
+          extractionStatus: { in: ['pending', 'processing', 'retry_queued'] },
+        },
+      });
+      if (inFlightFiles > 0) {
+        this.logger.warn(
+          `engagement ${engagementId}: computing quote while ${inFlightFiles} file(s) ` +
+            `still extracting. Inferred entities from those files won't be in this quote — ` +
+            `re-run after extraction settles.`,
+        );
+      }
+
+      const extractedFiles = await db.engagementFile.findMany({
+        where: { engagementId, extractionStatus: 'ready' },
+        select: { inferredEntities: true },
+      });
+      const allInferred: InferredEntity[] = extractedFiles.flatMap((f) =>
+        Array.isArray(f.inferredEntities)
+          ? (f.inferredEntities as unknown as InferredEntity[])
+          : [],
+      );
+
+      // Convert + filter to confidence-passing ScopedEntity[].
+      const extractionEntities = this.fieldMapper.toScopedEntities(allInferred, card);
+
+      // Site-enumeration supplementary input: when the rep ran the site
+      // crawler against the prospect's existing site, the mapper cached
+      // a per-rate-card snapshot of the resulting ScopedEntity[]. Read
+      // it here so the same engagement quote includes whatever the site
+      // enum surfaced (API endpoints, form fields, integrations) — same
+      // merge rule as extraction (form answers always win, site-enum
+      // supplements when slug isn't covered).
+      const siteEnumRow = await db.siteEnumeration.findUnique({
+        where: { engagementId },
+        select: { inferredEntities: true },
+      });
+      const siteEnumEntities: ScopedEntity[] = readSiteEnumEntitiesFor(
+        siteEnumRow?.inferredEntities,
+        card.id,
+      );
+
+      // Merge: form answers are ground-truth for the iterations they
+      // cover. Extraction's surplus (when the doc describes more apps
+      // than the form filled out) gets folded in as additional
+      // iterations rather than dropped — so a doc describing 5 web
+      // apps still contributes apps 3-5 even if the form only walked
+      // 1 and 2.
+      //
+      // Per-slug accounting: count how many entities the form has for
+      // each slug, then keep extraction entities beyond that count.
+      const formSlugCount = new Map<string, number>();
+      for (const e of scopeFromAnswers) {
+        formSlugCount.set(e.serviceLineSlug, (formSlugCount.get(e.serviceLineSlug) ?? 0) + 1);
+      }
+      const seenExtra = new Map<string, number>();
+      const supplementary: typeof extractionEntities = [];
+      const suppressed: typeof extractionEntities = [];
+      for (const e of extractionEntities) {
+        const formN = formSlugCount.get(e.serviceLineSlug) ?? 0;
+        const seen = seenExtra.get(e.serviceLineSlug) ?? 0;
+        if (seen < formN) {
+          // The form already has an answer for this slug+iteration;
+          // form wins. Mark as suppressed for telemetry.
+          suppressed.push(e);
+        } else {
+          // Extraction adds an iteration the form didn't cover.
+          supplementary.push(e);
+        }
+        seenExtra.set(e.serviceLineSlug, seen + 1);
+      }
+      if (suppressed.length > 0) {
+        const bySlug = new Map<string, number>();
+        for (const e of suppressed) bySlug.set(e.serviceLineSlug, (bySlug.get(e.serviceLineSlug) ?? 0) + 1);
+        const summary = [...bySlug.entries()].map(([slug, n]) => `${slug}×${n}`).join(', ');
+        this.logger.warn(
+          `engagement ${engagementId}: form answers covered slugs that doc inference also produced; ` +
+            `dropped ${suppressed.length} extraction entit${suppressed.length === 1 ? 'y' : 'ies'} (${summary}). ` +
+            `If the doc described additional applications the form didn't cover, the rep should add iterations or override.`,
+        );
+      }
+      if (supplementary.length > 0) {
+        const bySlug = new Map<string, number>();
+        for (const e of supplementary) bySlug.set(e.serviceLineSlug, (bySlug.get(e.serviceLineSlug) ?? 0) + 1);
+        const summary = [...bySlug.entries()].map(([slug, n]) => `${slug}×${n}`).join(', ');
+        this.logger.log(
+          `engagement ${engagementId}: extraction supplemented ${supplementary.length} ` +
+            `additional iteration(s) the form didn't cover (${summary})`,
+        );
+      }
+      // Fold site-enum entities in too — same supplement rule applied
+      // again, but the "form" baseline now also includes anything
+      // extraction supplied (so we don't double-count between the two
+      // discovery sources).
+      const baselineForSiteEnum = [...scopeFromAnswers, ...supplementary];
+      const baselineSlugCount = new Map<string, number>();
+      for (const e of baselineForSiteEnum) {
+        baselineSlugCount.set(e.serviceLineSlug, (baselineSlugCount.get(e.serviceLineSlug) ?? 0) + 1);
+      }
+      const seenSiteEnum = new Map<string, number>();
+      const siteEnumSupplementary: ScopedEntity[] = [];
+      for (const e of siteEnumEntities) {
+        const baseN = baselineSlugCount.get(e.serviceLineSlug) ?? 0;
+        const seen = seenSiteEnum.get(e.serviceLineSlug) ?? 0;
+        if (seen >= baseN) siteEnumSupplementary.push(e);
+        seenSiteEnum.set(e.serviceLineSlug, seen + 1);
+      }
+      if (siteEnumSupplementary.length > 0) {
+        const bySlug = new Map<string, number>();
+        for (const e of siteEnumSupplementary)
+          bySlug.set(e.serviceLineSlug, (bySlug.get(e.serviceLineSlug) ?? 0) + 1);
+        const summary = [...bySlug.entries()].map(([slug, n]) => `${slug}×${n}`).join(', ');
+        this.logger.log(
+          `engagement ${engagementId}: site-enum supplemented ${siteEnumSupplementary.length} ` +
+            `entit${siteEnumSupplementary.length === 1 ? 'y' : 'ies'} the form/extraction didn't cover (${summary})`,
+        );
+      }
+
+      const scope = [...baselineForSiteEnum, ...siteEnumSupplementary];
+
       const result = computeBasePrice(card, scope);
 
       // Upsert the row. UNIQUE(engagement_id) means re-running a
@@ -292,3 +435,31 @@ function rowToDomain(row: DbQuote, _result?: BasePriceResult): PersistedQuote {
 
 // Suppress unused-import warnings for re-exports the DI graph wires up.
 void Object.create({} as { _t?: PrismaTx; _e?: ScopedEntity; _c?: CustomerType; _m?: Methodology });
+
+/** Read the cached ScopedEntity[] from `SiteEnumeration.inferredEntities`
+ *  for the supplied rate-card id.
+ *
+ *  The mapper persists snapshots keyed by rate-card id:
+ *    `{ [rateCardId]: { entities: ScopedEntity[], computedAt: string } }`
+ *
+ *  We only return the snapshot for THIS rate card — different rate
+ *  cards may map the same site differently (different slugs, different
+ *  methodologies). Returns `[]` when no snapshot exists yet (caller
+ *  must have run `mapToRateCard` once for this rate card). */
+export function readSiteEnumEntitiesFor(
+  raw: unknown,
+  rateCardId: string,
+): ScopedEntity[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const obj = raw as Record<string, unknown>;
+  const snap = obj[rateCardId];
+  if (!snap || typeof snap !== 'object') return [];
+  const entities = (snap as { entities?: unknown }).entities;
+  if (!Array.isArray(entities)) return [];
+  return entities.filter((e): e is ScopedEntity =>
+    !!e && typeof e === 'object' &&
+    typeof (e as { entityId?: unknown }).entityId === 'string' &&
+    typeof (e as { serviceLineSlug?: unknown }).serviceLineSlug === 'string' &&
+    !!(e as { dimensions?: unknown }).dimensions,
+  );
+}

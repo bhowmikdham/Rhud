@@ -444,13 +444,13 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
 .client-shell {
   min-height: 100%;
   background: var(--bg-sunk);
-  padding: 40px 24px 80px;
-  display: flex; flex-direction: column; align-items: center;
+  padding: 32px 32px 64px;
+  display: flex; flex-direction: column; align-items: stretch;
 }
 .client-hdr {
-  width: 100%; max-width: 720px;
+  width: 100%;
   display: flex; align-items: center; justify-content: space-between;
-  padding-bottom: 28px;
+  padding-bottom: 24px;
 }
 .client-hdr .brand { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
 .client-token {
@@ -461,12 +461,223 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
   background: var(--bg-elev); border: 1px solid var(--border);
 }
 .client-card {
-  width: 100%; max-width: 720px;
+  width: 100%;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: var(--shadow-md);
   overflow: hidden;
+}
+/* Split layout: sidebar outline (left) + card (right). Full-width
+ * by design — the responder gets the whole viewport. The card itself
+ * handles its own internal max-width on body content for readability. */
+.client-frame {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .client-frame { grid-template-columns: 1fr; }
+}
+.client-outline {
+  position: sticky; top: 24px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px 14px 14px;
+  box-shadow: var(--shadow-md);
+  font-size: 13px;
+}
+.client-outline-hdr {
+  font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--fg-subtle); font-weight: 600;
+  padding: 0 6px 10px;
+}
+.client-outline-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.client-outline-item {
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: 13px; font-weight: 500;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.client-outline-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.client-outline-item:disabled { cursor: default; opacity: 0.6; }
+.client-outline-item.partial { color: var(--fg); }
+.client-outline-item.done {
+  color: var(--fg-muted);
+}
+.client-outline-item.done .dot {
+  background: var(--success, #1f7a47);
+  color: white;
+  border-color: transparent;
+}
+.client-outline-item.current {
+  background: var(--accent-tint);
+  border-color: color-mix(in oklch, var(--accent) 30%, transparent);
+  color: var(--accent);
+}
+.client-outline-item .dot {
+  width: 16px; height: 16px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border-strong);
+  display: grid; place-items: center;
+  font-size: 10px; line-height: 1;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+  background: var(--bg);
+}
+.client-outline-item.current .dot {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.client-outline-item .title {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.client-outline-item .count {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+}
+.client-outline-item.current .count { color: var(--accent); }
+.client-outline-foot {
+  margin-top: 12px; padding: 10px 6px 2px;
+  border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--fg-subtle);
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+}
+.client-outline-review {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.client-outline-review:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.client-outline-review:disabled { opacity: 0.5; cursor: default; }
+/* Sub-list of loop iterations underneath their parent loop entry. */
+.client-outline-sub {
+  list-style: none; margin: 4px 0 6px 0; padding: 0 0 0 22px;
+  display: flex; flex-direction: column; gap: 2px;
+  border-left: 1.5px solid var(--border);
+  margin-left: 16px;
+}
+.client-outline-item.sub {
+  padding: 6px 8px;
+  font-size: 12.5px;
+  font-weight: 450;
+}
+.client-outline-item.sub .dot {
+  width: 13px; height: 13px;
+  border-width: 1.25px;
+}
+/* Row that combines the expand toggle + the iteration item button. */
+.client-outline-iter-row {
+  display: flex; align-items: center; gap: 2px;
+}
+.client-outline-iter-toggle {
+  width: 18px; height: 26px;
+  display: grid; place-items: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--fg-subtle);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.client-outline-iter-toggle:hover { background: var(--bg-hover); color: var(--fg); }
+.client-outline-iter-toggle .caret {
+  font-size: 14px; line-height: 1;
+  display: inline-block;
+  transition: transform .15s;
+}
+.client-outline-iter-toggle .caret.open {
+  transform: rotate(90deg);
+}
+.client-outline-iter-row > .client-outline-item.sub {
+  flex: 1; min-width: 0;
+}
+/* X button to remove an iteration. Shows on hover of the iter row, or
+ * always on touch devices. */
+.client-outline-iter-remove {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity .12s, background .12s, color .12s, border-color .12s;
+}
+.client-outline-iter-row:hover .client-outline-iter-remove,
+.client-outline-iter-row:focus-within .client-outline-iter-remove {
+  opacity: 1;
+}
+.client-outline-iter-remove:hover:not(:disabled) {
+  background: var(--danger-tint);
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger) 28%, transparent);
+}
+.client-outline-iter-remove:disabled { cursor: default; }
+@media (pointer: coarse) {
+  /* Always-visible on touch devices since hover doesn't trigger. */
+  .client-outline-iter-remove { opacity: 0.7; }
+}
+/* 3rd level: questions inside a loop iteration. Indented further with
+ * its own dimmed connector to keep the visual hierarchy clear. */
+.client-outline-questions {
+  list-style: none; margin: 2px 0 4px 0; padding: 0 0 0 18px;
+  display: flex; flex-direction: column; gap: 1px;
+  border-left: 1px dashed var(--border);
+  margin-left: 30px;
+}
+.client-outline-item.q {
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+.client-outline-item.q .dot {
+  width: 11px; height: 11px;
+  border-width: 1px;
+  font-size: 9px;
+}
+.client-outline-item.q.done {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+  text-decoration-thickness: 1px;
+}
+.client-outline-item.q.current {
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
 }
 .client-progress {
   display: flex; gap: 3px;
@@ -477,10 +688,30 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
 .client-progress .seg { flex: 1; height: 3px; border-radius: 999px; background: var(--border); transition: background .3s; }
 .client-progress .seg.done { background: var(--fg); }
 .client-progress .seg.active { background: var(--accent); }
-.client-body { padding: 36px 44px; }
+.client-body { padding: 44px 56px; }
 .client-q { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-subtle); font-weight: 600; }
-.client-title { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin-top: 8px; line-height: 1.25; max-width: 580px; }
-.client-help { color: var(--fg-muted); margin-top: 8px; font-size: 13.5px; max-width: 540px; }
+.client-title { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin-top: 14px; line-height: 1.25; max-width: 720px; }
+.client-help { color: var(--fg-muted); margin-top: 8px; font-size: 13.5px; max-width: 640px; }
+/* Breadcrumb at the top of the question card. Replaces the older
+ * iteration badge + sequential question number. Calmer typography +
+ * conveys position both *across* sections and *within* an iteration. */
+.client-crumb {
+  display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 12px; color: var(--fg-muted); font-weight: 500;
+}
+.client-crumb .sep { margin: 0 4px; color: var(--fg-subtle); }
+.client-crumb .now { color: var(--fg); font-weight: 600; }
+.client-crumb .badge {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px; font-weight: 600;
+  background: var(--accent-tint); color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.client-crumb .badge.muted {
+  background: var(--bg-sunk); color: var(--fg-subtle);
+}
 
 .choice-list { display: flex; flex-direction: column; gap: 8px; margin-top: 28px; }
 .choice {
@@ -520,19 +751,306 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
   background: var(--bg-sunk);
 }
 .client-foot .hint { color: var(--fg-subtle); font-size: 11.5px; display: inline-flex; align-items: center; gap: 6px; }
+/* ── Quick-fill kickoff (upload-first) screen ─────────────────────── */
+.client-quickfill .qf-icon {
+  width: 48px; height: 48px;
+  border-radius: 999px;
+  background: var(--accent-tint);
+  color: var(--accent);
+  display: grid; place-items: center;
+}
+.client-quickfill .qf-drop {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px;
+  margin-top: 26px;
+  padding: 36px 20px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: 12px;
+  background: var(--bg-sunk);
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.client-quickfill .qf-drop:hover, .client-quickfill .qf-drop.active {
+  border-color: var(--accent);
+  background: color-mix(in oklch, var(--accent-tint) 60%, var(--bg-sunk));
+}
+.client-quickfill .qf-drop input[type="file"] { display: none; }
+.client-quickfill .qf-drop-title {
+  font-size: 14px; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--fg);
+}
+/* Pre-fill hint with confidence chip. Surfaces "Strong / Approximate /
+ * Borderline" so the responder treats borderline matches with care. */
+.qf-hint {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 12px;
+  font-size: 12px; line-height: 1.5;
+  color: var(--fg-muted);
+  background: var(--accent-tint);
+  border: 1px solid color-mix(in oklch, var(--accent) 22%, transparent);
+  border-radius: 6px;
+}
+.qf-conf-chip {
+  display: inline-flex; align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.qf-conf-chip.strong {
+  background: color-mix(in oklch, var(--success, #1f7a47) 20%, transparent);
+  color: var(--success, #1f7a47);
+}
+.qf-conf-chip.approx {
+  background: var(--accent-tint);
+  color: var(--accent);
+  border: 1px solid color-mix(in oklch, var(--accent) 30%, transparent);
+}
+.qf-conf-chip.borderline {
+  background: color-mix(in oklch, var(--warn, #b87900) 18%, transparent);
+  color: var(--warn, #b87900);
+}
 
+/* ── Review-summary modal (one-click submit overlay) ──────────────── */
+.client-modal-backdrop {
+  position: fixed; inset: 0;
+  background: color-mix(in oklch, black 40%, transparent);
+  display: grid; place-items: center;
+  padding: 24px;
+  z-index: 100;
+  animation: fade-in .15s ease-out;
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+.client-modal {
+  width: 100%; max-width: 720px; max-height: 86vh;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg, 0 18px 48px rgba(0,0,0,0.18));
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.client-modal-hdr {
+  padding: 22px 26px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+}
+/* Summary chips strip — shows what the document contributed at a glance. */
+.rev-summary-chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 12px;
+}
+.rev-summary-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  background: var(--accent-tint);
+  color: var(--accent);
+  border: 1px solid color-mix(in oklch, var(--accent) 20%, transparent);
+  border-radius: 999px;
+  font-size: 12px; font-weight: 500;
+}
+.rev-summary-count {
+  color: color-mix(in oklch, var(--accent) 85%, var(--fg));
+  font-size: 11px;
+  font-weight: 400;
+  font-family: var(--font-mono);
+}
+.client-modal-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+.client-modal-sub { color: var(--fg-muted); font-size: 12.5px; margin-top: 4px; }
+.client-modal-body {
+  flex: 1; overflow-y: auto;
+  padding: 8px 14px 16px;
+}
+.rev-hdr {
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--fg-subtle); font-weight: 600;
+  padding: 14px 12px 6px;
+}
+.rev-hdr.depth-1 {
+  font-size: 11px; text-transform: none; letter-spacing: 0;
+  color: var(--accent); padding-left: 22px;
+}
+.rev-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: flex-start; gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+  color: var(--fg);
+}
+.rev-row:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border); }
+.rev-row:disabled { cursor: default; }
+.rev-label {
+  font-size: 13px; font-weight: 450;
+  /* Allow wrapping so multi-line questions stay readable; cap at 3 lines. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.45;
+}
+.rev-value {
+  font-size: 13px; font-weight: 500;
+  color: var(--fg);
+  text-align: right;
+  max-width: 240px;
+  display: inline-flex; align-items: center; gap: 8px; justify-content: flex-end;
+  white-space: normal;
+  word-break: break-word;
+}
+.rev-value.empty { color: var(--fg-subtle); font-style: italic; }
+
+/* ── Scope Summary block (Review modal top) ──────────────────────
+   Plain-English rendering of what the LLM mapper read from the
+   client's uploaded documents. Shown ABOVE form rows so the client
+   sees what we understood before scrolling through any blanks. */
+.rev-scope-summary {
+  margin: 14px 12px 8px;
+  padding: 14px 16px 16px;
+  border: 1px solid color-mix(in oklch, var(--accent) 22%, transparent);
+  background: color-mix(in oklch, var(--accent) 5%, transparent);
+  border-radius: 12px;
+}
+.rev-scope-hdr {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-bottom: 12px;
+}
+.rev-scope-icon {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  flex-shrink: 0;
+}
+.rev-scope-hdr-text { flex: 1; min-width: 0; }
+.rev-scope-title {
+  font-size: 13px; font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--accent);
+}
+.rev-scope-sub {
+  font-size: 12px; color: var(--fg-muted);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+.rev-scope-groups {
+  display: flex; flex-direction: column; gap: 12px;
+}
+.rev-scope-group {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.rev-scope-group-label {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+  font-weight: 600;
+}
+.rev-scope-items {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.rev-scope-item {
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.rev-scope-item-hdr {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 4px;
+}
+.rev-scope-item-title {
+  font-size: 13px; font-weight: 600;
+  color: var(--fg);
+  flex: 1; min-width: 0;
+}
+.rev-scope-item-sub {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  margin-bottom: 6px;
+}
+.rev-scope-bullets {
+  margin: 0; padding: 0 0 0 18px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.rev-scope-bullets li {
+  font-size: 12.5px;
+  color: var(--fg);
+  line-height: 1.5;
+}
+.rev-scope-unprojected {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in oklch, var(--warn, #c97a06) 35%, transparent);
+  background: color-mix(in oklch, var(--warn, #c97a06) 6%, transparent);
+  border-radius: 8px;
+}
+.rev-scope-unprojected-label {
+  font-size: 12px; font-weight: 600;
+  color: var(--warn, #c97a06);
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-bottom: 4px;
+}
+.rev-scope-unprojected-sub {
+  font-size: 11.5px; color: var(--fg-muted);
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+.rev-scope-unprojected-list {
+  margin: 0; padding: 0 0 0 18px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.rev-scope-unprojected-list li {
+  font-size: 12px; color: var(--fg);
+}
+.rev-scope-unprojected-title { font-weight: 500; }
+.rev-scope-unprojected-scope { color: var(--fg-muted); font-family: var(--font-mono); font-size: 11.5px; }
+
+.client-modal-foot {
+  padding: 14px 22px;
+  border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--bg-sunk);
+}
+.client-modal-foot .hint { color: var(--fg-subtle); font-size: 11.5px; display: inline-flex; align-items: center; gap: 6px; }
+
+/* `<label>` is inline by default — without an explicit display rule
+   the dashed border collapses around the icon while the inner text
+   <div>s flow outside it (split-label rendering). flex-column gives
+   us a single block container with the icon stacked above the text,
+   centered horizontally. */
 .attach-zone {
   margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   border: 1.25px dashed var(--border-strong);
   border-radius: 10px;
-  padding: 20px;
+  padding: 24px 20px;
   color: var(--fg-muted);
   text-align: center;
   font-size: 12.5px;
-  transition: background .15s;
+  transition: background .15s, border-color .15s;
   cursor: pointer;
 }
-.attach-zone:hover { background: var(--bg-hover); }
+.attach-zone:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--fg);
+}
 .attach-zone b { color: var(--fg); font-weight: 500; }
 .attach-list { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
 .attach-item {

@@ -16,7 +16,14 @@ import type { AuthedRequest } from '../auth/auth.types.js';
 import { LlmService, type PublicConfig } from './llm.service.js';
 import type { LlmProviderName } from './llm.types.js';
 
-const PROVIDERS: LlmProviderName[] = ['anthropic', 'openai', 'ollama', 'openai_compat', 'manual'];
+const PROVIDERS: LlmProviderName[] = [
+  'anthropic',
+  'openai',
+  'gemini',
+  'ollama',
+  'openai_compat',
+  'manual',
+];
 
 class UpsertLlmConfigDto {
   @IsIn(PROVIDERS)

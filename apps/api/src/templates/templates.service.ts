@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type {
   LoopConfig,
@@ -13,6 +13,11 @@ import type {
 import { isNodeType, isTemplateStatus } from '@rhud/shared';
 import { TenantDb, type PrismaTx } from '../db/with-tenant.js';
 import { validateTemplate, type ValidationIssue } from './engine/decision-tree.js';
+import {
+  buildProphazeTemplateNodes,
+  PROPHAZE_TEMPLATE_META,
+  type NodeKey,
+} from '../pricing/prophaze-template.fixture.js';
 import type { CreateNodeDto, UpdateNodeDto, CreateTemplateDto, UpdateTemplateDto } from './dto.js';
 
 /**
@@ -24,6 +29,8 @@ import type { CreateNodeDto, UpdateNodeDto, CreateTemplateDto, UpdateTemplateDto
  */
 @Injectable()
 export class TemplatesService {
+  private readonly logger = new Logger(TemplatesService.name);
+
   constructor(private readonly tenantDb: TenantDb) {}
 
   // ── Templates ─────────────────────────────────────────────────────────────
@@ -384,6 +391,112 @@ export class TemplatesService {
     return validateTemplate({
       ...dbTemplateToDomain(t),
       nodes: t.nodes.map(dbNodeToDomain),
+    });
+  }
+
+  // ── Seed: install the canonical Prophaze template ────────────────────────
+
+  /**
+   * Install the Prophaze gathering template + bind it to the supplied
+   * rate card. Idempotent: if a template with the same name + version=1
+   * already exists for the tenant, returns it as-is. Loads the spec from
+   * `buildProphazeTemplateNodes()`, allocates UUIDs for each spec, and
+   * rewrites every `nextRules.goto` from sentinel keys to UUIDs in one
+   * pass before insertion. Sets the template's `rootNodeId` to the first
+   * top-level node in the spec list.
+   */
+  async seedProphazeSample(tenantId: string, rateCardId: string): Promise<TemplateWithNodes> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      const existing = await db.template.findFirst({
+        where: { tenantId, name: PROPHAZE_TEMPLATE_META.name, version: 1 },
+      });
+      if (existing) {
+        const t = await db.template.findUniqueOrThrow({
+          where: { id: existing.id },
+          include: { nodes: { orderBy: { position: 'asc' } } },
+        });
+        return { ...dbTemplateToDomain(t), nodes: t.nodes.map(dbNodeToDomain) };
+      }
+
+      const specs = buildProphazeTemplateNodes();
+      // 1. Pre-allocate one UUID per spec — bindings + nextRules below
+      //    rewrite sentinel keys to these.
+      const keyToUuid = new Map<NodeKey, string>();
+      for (const s of specs) keyToUuid.set(s.key, randomUUID());
+
+      // 2. Create the template shell first; root pointer set after nodes exist.
+      const tmpl = await db.template.create({
+        data: {
+          tenantId,
+          serviceLine: PROPHAZE_TEMPLATE_META.serviceLine,
+          name: PROPHAZE_TEMPLATE_META.name,
+          status: 'draft',
+          rateCardId,
+        },
+      });
+
+      // 3. Insert nodes in order. Rewrite `nextRules.goto` and `parentNodeId`
+      //    using the key → UUID map.
+      const firstTopLevelSpec = specs.find((s) => !s.parentKey);
+      for (const spec of specs) {
+        const id = keyToUuid.get(spec.key);
+        if (!id) continue;
+        const rewrittenNextRules = spec.nextRules.map((r) => ({
+          when: r.when,
+          goto: r.goto === 'END' ? 'END' : (keyToUuid.get(r.goto as NodeKey) ?? 'END'),
+        }));
+        await db.templateNode.create({
+          data: {
+            id,
+            templateId: tmpl.id,
+            tenantId,
+            question: spec.question,
+            nodeType: spec.nodeType,
+            allowFiles: spec.allowFiles ?? false,
+            required: spec.required ?? true,
+            position: spec.position,
+            nextRules: rewrittenNextRules as unknown as object,
+            ...(spec.options ? { options: spec.options as unknown as object } : {}),
+            ...(spec.helpText !== undefined ? { helpText: spec.helpText } : {}),
+            ...(spec.placeholder !== undefined ? { placeholder: spec.placeholder } : {}),
+            ...(spec.parentKey ? { parentNodeId: keyToUuid.get(spec.parentKey)! } : {}),
+            ...(spec.loopConfig ? { loopConfig: spec.loopConfig as unknown as object } : {}),
+            ...(spec.binding ? { binding: spec.binding as unknown as object } : {}),
+          },
+        });
+      }
+
+      // 4. Set the root node — first top-level (no parent) spec.
+      if (firstTopLevelSpec) {
+        await db.template.update({
+          where: { id: tmpl.id },
+          data: { rootNodeId: keyToUuid.get(firstTopLevelSpec.key)! },
+        });
+      }
+
+      // 5. Validate + publish. The fixture is hand-authored to be valid;
+      //    if validation fails leave as draft and surface the issues so
+      //    we know to fix the fixture (rather than shipping a broken
+      //    sample). Engagement creation requires status='published', so
+      //    auto-publishing on a clean validation is the difference between
+      //    "click Install + use immediately" and "Install, then go publish".
+      const validationIssues = await this.validateLoaded(db, tmpl.id);
+      if (validationIssues.length === 0) {
+        await db.template.update({
+          where: { id: tmpl.id },
+          data: { status: 'published' },
+        });
+      } else {
+        this.logger.warn(
+          `Prophaze sample template installed but failed validation: ${JSON.stringify(validationIssues)}`,
+        );
+      }
+
+      const t = await db.template.findUniqueOrThrow({
+        where: { id: tmpl.id },
+        include: { nodes: { orderBy: { position: 'asc' } } },
+      });
+      return { ...dbTemplateToDomain(t), nodes: t.nodes.map(dbNodeToDomain) };
     });
   }
 

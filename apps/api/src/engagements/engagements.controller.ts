@@ -45,7 +45,8 @@ export class EngagementsController {
 
   @Get(':id')
   getById(@Req() req: AuthedRequest, @Param('id', new ParseUUIDPipe()) id: string) {
-    return this.svc.getById(req.tenantId, id);
+    const baseUrl = process.env.WEB_PUBLIC_URL ?? 'http://localhost:3000';
+    return this.svc.getById(req.tenantId, id, { publicBaseUrl: baseUrl });
   }
 
   /**

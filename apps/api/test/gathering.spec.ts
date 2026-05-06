@@ -20,6 +20,7 @@ import { S3Service } from '../src/storage/s3.service.js';
 import { EngagementsService } from '../src/engagements/engagements.service.js';
 import { GatheringService } from '../src/gathering/gathering.service.js';
 import { PricingService } from '../src/pricing/pricing.service.js';
+import { RateCardHintSynthesizerService } from '../src/pricing/rate-card-hint-synthesizer.service.js';
 import { QuoteService } from '../src/pricing/quote.service.js';
 import { ConsoleEmailTransport } from '../src/notifications/email.transport.js';
 import { NotificationsService } from '../src/notifications/notifications.service.js';
@@ -68,9 +69,28 @@ describe('Gathering / engagement flow (sprint 3)', () => {
   mlClient.train = async () => null;
   const mlSvc = new MlService(tenantDb, thread, mlClient);
   const engagementsSvc = new EngagementsService(tenantDb, thread);
-  const pricingSvc = new PricingService(tenantDb);
-  const quoteSvc = new QuoteService(tenantDb, pricingSvc, thread);
-  const gatheringSvc = new GatheringService(unscoped, tenantDb, thread, s3, mlSvc, quoteSvc);
+  const pricingSvc = new PricingService(tenantDb, new RateCardHintSynthesizerService());
+  // Stub the rate-card field mapper — these tests don't exercise
+  // extraction-driven pricing. Returning [] makes the quote service
+  // fall back to form-only input, matching pre-mapper behavior.
+  const fieldMapperStub = {
+    inferEntities: async () => [],
+    toScopedEntities: () => [],
+  } as unknown as import('../src/pricing/rate-card-mapper.service.js').RateCardFieldMapperService;
+  const quoteSvc = new QuoteService(tenantDb, pricingSvc, thread, fieldMapperStub);
+  // Stub ExtractionService — these tests don't exercise the
+  // document-extraction pipeline (no files involved) so we hand
+  // GatheringService a minimal shape that no-ops for both kickoff
+  // paths it calls. `isAllSettled` returning true makes submit fire
+  // predict synchronously, matching pre-extraction-feature behavior.
+  const extractionStub = {
+    kickoff: async () => undefined,
+    kickoffForEngagement: async () => 0,
+    isAllSettled: async () => true,
+  } as unknown as import('../src/extraction/extraction.service.js').ExtractionService;
+  const gatheringSvc = new GatheringService(
+    unscoped, tenantDb, thread, s3, mlSvc, quoteSvc, extractionStub,
+  );
 
   // Seeded template ids per tenant (4 nodes A→B→C→END for clarity).
   const TMPL_A = '99999999-9999-9999-9999-9999999999a3';

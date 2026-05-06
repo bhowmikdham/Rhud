@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
 import { PricingModule } from '../pricing/pricing.module.js';
 import { GammaModule } from '../gamma/gamma.module.js';
@@ -15,7 +15,11 @@ import { ProposalDraftService } from './proposal-draft.service.js';
 import { ProposalDraftController } from './proposal-draft.controller.js';
 
 @Module({
-  imports: [AuthModule, PricingModule, GammaModule, IntegrationsModule],
+  // PricingModule is forwardRef'd because PricingModule itself
+  // forwardRef-imports LlmModule (so RateCardFieldMapperService can
+  // call the per-tenant LLM). Both ends of the cycle have to use
+  // forwardRef or Nest fails to resolve module[1] = undefined at boot.
+  imports: [AuthModule, forwardRef(() => PricingModule), GammaModule, IntegrationsModule],
   controllers: [
     LlmController,
     JustificationController,

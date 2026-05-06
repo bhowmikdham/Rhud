@@ -36,3 +36,19 @@ export class CreateUploadUrlDto {
   @Min(1)
   sizeBytes!: number;
 }
+
+/** Quick-fill: scoping doc upload at the start of the form, no
+ *  associated template node. Different DTO so we can keep the
+ *  per-node uploadUrl strict on `nodeId` and not let scoping docs
+ *  sneak through that path. */
+export class CreateScopingDocUploadUrlDto {
+  @IsString()
+  filename!: string;
+
+  @IsString()
+  contentType!: string;
+
+  @IsInt()
+  @Min(1)
+  sizeBytes!: number;
+}

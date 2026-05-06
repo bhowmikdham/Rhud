@@ -60,6 +60,23 @@ export interface RateCardServiceLine {
   pricingModel: PricingModel;
   position: number;
   tiers: RateCardTier[];
+  /**
+   * Inference ontology — when (and how) the Layer-3 mapper LLM should
+   * emit this slug. Authored alongside the rate card; the mapper composes
+   * its system prompt from these fields so it never needs domain
+   * knowledge baked into code. ~200 chars, plain English.
+   *
+   * Example for `vapt_web_app_dynamic_pages`:
+   *   "Emit when the doc names a count of dynamic pages for a web app.
+   *    If only a URL list is present, count distinct paths on the same
+   *    hostname (group by hostname into separate web-app entities)."
+   *
+   * Optional. Mapper falls back to `synthesizeDefaultHint(sl)` when
+   * absent. Existing rate cards keep working without a migration step.
+   */
+  inferenceHint?: string | null;
+  /** 0–3 worked examples ("23 endpoints" → scope=23) shown to the LLM. */
+  inferenceExamples?: string[];
 }
 
 export interface RateCardOpenPricedService {
@@ -82,6 +99,41 @@ export interface RateCard {
   effectiveTo?: string | null;
   serviceLines: RateCardServiceLine[];
   openPricedServices: RateCardOpenPricedService[];
+  /**
+   * Domain framing for the whole card — the LLM mapper drops this verbatim
+   * into its system prompt as the "DOMAIN CONTEXT" block. This is what
+   * lets the mapper handle a cleaning-services rate card without any
+   * cybersec vocabulary leaking from code: the rate card describes its
+   * own world.
+   *
+   * Example (Prophaze):
+   *   "B2B cybersecurity penetration-testing engagements. Each engagement
+   *    can cover multiple applications (web apps, APIs, mobile apps) and
+   *    discrete infrastructure layers (network, cloud)."
+   */
+  inferenceContext?: string | null;
+  /**
+   * Customer-type → methodology mapping rule, again in plain English.
+   * The mapper renders this verbatim under "DEFAULT METHODOLOGY:" so the
+   * LLM can apply the rule for THIS rate card without the mapper
+   * hardcoding it.
+   *
+   * Example (Prophaze):
+   *   "If customerType is 'external' → black_box; if 'internal' → grey_box.
+   *    White-box service lines are opt-in: emit only when the doc
+   *    explicitly requests source-code review or SCA."
+   */
+  defaultMethodologyRule?: string | null;
+  /**
+   * 1–3 input/output worked examples specific to this rate card. The
+   * mapper appends them to the prompt as few-shot anchors so the LLM
+   * sees domain-specific shape before it tries to read the actual doc.
+   *
+   * Each example is a self-contained string (markdown rendered into the
+   * prompt as-is); kept simple so authors can paste real anonymised
+   * examples without us building a structured form yet.
+   */
+  inferenceExamples?: string[];
 }
 
 // ── Stage 1: scope normalisation ────────────────────────────────────────────
@@ -124,6 +176,15 @@ export interface BasePriceLine {
   tierId: string | null;
   tierLabel: string | null;
   priceCents: number;
+  /** Pricing model used for this line — same values as the service
+   *  line's `pricingModel`. Surfaced so callers (UI, justification)
+   *  can show the math correctly: `tier_lookup`/`flat` = bracket flat
+   *  fee; `per_unit` = `unitPriceCents × scopeValue`. */
+  pricingModel?: PricingModel;
+  /** When `pricingModel === 'per_unit'`: the per-unit rate from the
+   *  matched tier. Lets the UI render `49 × ₹1,300 = ₹63,700`. Null
+   *  for tier_lookup / flat lines (the line price IS the unit price). */
+  unitPriceCents?: number | null;
   /** Set when the entity hit an open-priced service slug. */
   manualQuoteRequired?: boolean;
   /** Set when a tier could not be matched. */
@@ -219,6 +280,16 @@ export function computeBasePrice(
       continue;
     }
 
+    // Pricing-model branches:
+    //   tier_lookup → tier.priceCents is the FLAT total for the bracket.
+    //   per_unit    → tier.priceCents is the PER-UNIT rate; line = rate × scope.
+    //   flat        → tier.priceCents is a single bracket-independent fee.
+    //   hourly      → reserved; falls through as flat for now.
+    const linePriceCents =
+      sl.pricingModel === 'per_unit'
+        ? Math.round(tier.priceCents * scopeValue)
+        : tier.priceCents;
+
     lines.push({
       entityId: e.entityId,
       serviceLineSlug: e.serviceLineSlug,
@@ -229,9 +300,11 @@ export function computeBasePrice(
       customerType: tier.customerType,
       tierId: tier.id,
       tierLabel: tier.displayLabel ?? formatTierLabel(tier),
-      priceCents: tier.priceCents,
+      priceCents: linePriceCents,
+      pricingModel: sl.pricingModel,
+      unitPriceCents: sl.pricingModel === 'per_unit' ? tier.priceCents : null,
     });
-    totalCents += tier.priceCents;
+    totalCents += linePriceCents;
   }
 
   return {
@@ -300,12 +373,23 @@ export interface NormaliseScopeOpts {
 }
 
 /**
- * Walk every loop in the template that has a `serviceLineSlug` set, and
- * for each fully-answered iteration emit one ScopedEntity. Top-level
- * (non-loop) nodes are ignored for scope today — single-application
- * templates can still be modelled as a one-iteration loop. That keeps
- * Stage 1 simple and removes a class of "what if the user mixed loops
- * with top-level scope?" edge cases until the demand is real.
+ * Stage 1: walk the template + answers and emit a flat list of
+ * ScopedEntities ready for `computeBasePrice`.
+ *
+ *   1. Top-level nodes with `binding.serviceLineSlug` + `field='scope_value'`
+ *      produce ONE entity each (used for "single occurrence" sections —
+ *      Network, Cloud — that are not in a loop).
+ *   2. Top-level nodes with `field='methodology'` or `field='customer_type'`
+ *      set the iteration-wide defaults the loops below inherit.
+ *   3. Each loop iteration produces:
+ *      a. ONE main entity for the loop's `loopConfig.serviceLineSlug`
+ *         (if set), filled by body bindings WITHOUT `serviceLineSlug`.
+ *      b. ADDITIONAL entities, one per body node that carries
+ *         `binding.serviceLineSlug` — each gets its own scope dimension
+ *         from that node's answer. This is what enables Prophaze-shape
+ *         multi-driver intake (one Web App loop iteration → 5 driver
+ *         entities, one each for dynamic_pages, static_pages, input_fields,
+ *         roles, login_modules).
  *
  * The function is pure: same inputs → same scope vector. No DB reads,
  * no IO. Ideal for both the API submit-on-finish path and the editor's
@@ -334,12 +418,63 @@ export function normaliseScope(
   }
   for (const list of bodyByLoop.values()) list.sort((a, b) => a.position - b.position);
 
+  // ── Pass 1: top-level methodology / customer_type defaults ──────────
+  // These set the *iteration-wide* defaults that loops inherit. We
+  // walk top-level (no parent) nodes once and look at iteration 0
+  // since there's no loop iteration concept at the top level.
+  let templateMethodology: Methodology = defaultMethod;
+  let templateCustomerType: CustomerType = defaultCustomer;
   for (const node of tmpl.nodes) {
-    if (node.nodeType !== 'loop') continue;
-    const slug = node.loopConfig?.serviceLineSlug;
+    if (node.parentNodeId) continue;
+    if (node.nodeType === 'loop' || node.nodeType === 'section') continue;
+    const binding = (node.binding ?? null) as NodeBinding | null;
+    if (!binding?.field) continue;
+    const ans = answers.get(node.id)?.get(0);
+    if (ans === undefined || ans === null || ans === '') continue;
+    const mapped = mapBoundAnswer(ans, binding);
+    if (binding.field === 'methodology') {
+      templateMethodology = String(mapped);
+    } else if (binding.field === 'customer_type') {
+      if (mapped === 'internal' || mapped === 'external') {
+        templateCustomerType = mapped;
+      }
+    }
+  }
+
+  // ── Pass 2: top-level scope_value with binding.serviceLineSlug ──────
+  // These are "single occurrence" entities — Network, Cloud, IDS/IPS/DLP,
+  // IAM. Each emits ONE ScopedEntity, no iteration concept. Useful for
+  // any intake where the engagement has at most one set of values for
+  // that driver.
+  for (const node of tmpl.nodes) {
+    if (node.parentNodeId) continue;
+    if (node.nodeType === 'loop' || node.nodeType === 'section') continue;
+    const binding = (node.binding ?? null) as NodeBinding | null;
+    if (!binding?.field || binding.field !== 'scope_value') continue;
+    const slug = binding.serviceLineSlug;
     if (!slug) continue;
     const sl = slBySlug.get(slug);
     if (!sl) continue;
+    const ans = answers.get(node.id)?.get(0);
+    if (ans === undefined || ans === null || ans === '') continue;
+    const mapped = mapBoundAnswer(ans, binding);
+    const num = typeof mapped === 'number' ? mapped : Number(mapped);
+    if (!Number.isFinite(num) || num <= 0) continue;
+    const dimensions: ScopedEntity['dimensions'] = {};
+    dimensions[sl.scopeUnit] = num;
+    out.push({
+      entityId: `top:${node.id}`,
+      serviceLineSlug: slug,
+      dimensions,
+      methodology: templateMethodology,
+      customerType: templateCustomerType,
+    });
+  }
+
+  // ── Pass 3: loops + per-iteration entities ──────────────────────────
+  for (const node of tmpl.nodes) {
+    if (node.nodeType !== 'loop') continue;
+    const loopMainSlug = node.loopConfig?.serviceLineSlug;
     const body = bodyByLoop.get(node.id) ?? [];
     if (body.length === 0) continue;
 
@@ -354,43 +489,80 @@ export function normaliseScope(
     const sortedIters = [...itersFilled].sort((a, b) => a - b);
 
     for (const iter of sortedIters) {
-      const dimensions: ScopedEntity['dimensions'] = {};
-      let methodology: Methodology = defaultMethod;
-      let customerType: CustomerType = defaultCustomer;
-
+      // Iteration-wide bindings (methodology, customer_type) override
+      // the template-wide defaults for this iteration's entities.
+      let iterMethodology: Methodology = templateMethodology;
+      let iterCustomerType: CustomerType = templateCustomerType;
       for (const child of body) {
         const ans = answers.get(child.id)?.get(iter);
         if (ans === undefined || ans === null || ans === '') continue;
         const binding = (child.binding ?? null) as NodeBinding | null;
         if (!binding?.field) continue;
         const mapped = mapBoundAnswer(ans, binding);
-
-        if (binding.field === 'scope_value') {
-          const num = typeof mapped === 'number' ? mapped : Number(mapped);
-          if (Number.isFinite(num)) {
-            dimensions[sl.scopeUnit] = num;
-          }
-          continue;
-        }
         if (binding.field === 'methodology') {
-          methodology = String(mapped);
-          continue;
-        }
-        if (binding.field === 'customer_type') {
+          iterMethodology = String(mapped);
+        } else if (binding.field === 'customer_type') {
           if (mapped === 'internal' || mapped === 'external') {
-            customerType = mapped;
+            iterCustomerType = mapped;
           }
-          continue;
         }
       }
 
-      out.push({
-        entityId: `loop:${node.id}:${iter}`,
-        serviceLineSlug: slug,
-        dimensions,
-        methodology,
-        customerType,
-      });
+      // Main entity for the loop's slug (legacy behaviour) — fills
+      // dimension from body nodes with `field='scope_value'` and NO
+      // serviceLineSlug override.
+      let mainScope: number | undefined;
+      for (const child of body) {
+        const ans = answers.get(child.id)?.get(iter);
+        if (ans === undefined || ans === null || ans === '') continue;
+        const binding = (child.binding ?? null) as NodeBinding | null;
+        if (!binding?.field || binding.field !== 'scope_value') continue;
+        if (binding.serviceLineSlug) continue;
+        const mapped = mapBoundAnswer(ans, binding);
+        const num = typeof mapped === 'number' ? mapped : Number(mapped);
+        if (Number.isFinite(num)) {
+          mainScope = num;
+          break;
+        }
+      }
+      if (loopMainSlug && mainScope !== undefined) {
+        const sl = slBySlug.get(loopMainSlug);
+        if (sl) {
+          const dimensions: ScopedEntity['dimensions'] = {};
+          dimensions[sl.scopeUnit] = mainScope;
+          out.push({
+            entityId: `loop:${node.id}:${iter}`,
+            serviceLineSlug: loopMainSlug,
+            dimensions,
+            methodology: iterMethodology,
+            customerType: iterCustomerType,
+          });
+        }
+      }
+
+      // Driver entities — one per body node with `binding.serviceLineSlug`.
+      for (const child of body) {
+        const ans = answers.get(child.id)?.get(iter);
+        if (ans === undefined || ans === null || ans === '') continue;
+        const binding = (child.binding ?? null) as NodeBinding | null;
+        if (!binding?.field || binding.field !== 'scope_value') continue;
+        const slug = binding.serviceLineSlug;
+        if (!slug) continue;
+        const sl = slBySlug.get(slug);
+        if (!sl) continue;
+        const mapped = mapBoundAnswer(ans, binding);
+        const num = typeof mapped === 'number' ? mapped : Number(mapped);
+        if (!Number.isFinite(num) || num <= 0) continue;
+        const dimensions: ScopedEntity['dimensions'] = {};
+        dimensions[sl.scopeUnit] = num;
+        out.push({
+          entityId: `loop:${node.id}:${iter}:${child.id}`,
+          serviceLineSlug: slug,
+          dimensions,
+          methodology: iterMethodology,
+          customerType: iterCustomerType,
+        });
+      }
     }
   }
   return out;

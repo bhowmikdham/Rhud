@@ -65,6 +65,57 @@ export class S3Service {
     return getSignedUrl(this.client, cmd, { expiresIn: ttl });
   }
 
+  /**
+   * Fetch the raw bytes of an object server-side. Used by the document
+   * extraction pipeline — the API needs to read the file to feed it
+   * through pdf-parse / exceljs / the LLM. Streamed via the SDK so we
+   * stay off any signed-URL detour.
+   */
+  async fetchBytes(key: string): Promise<Buffer> {
+    // Two layers of resilience around `GetObject`:
+    //   1. **Eventual-consistency races** — a client just PUT the file
+    //      and our extraction pipeline races to read it. S3 is read-
+    //      after-write consistent for new objects but proxies (MinIO,
+    //      LocalStack) sometimes lag a few hundred ms.
+    //   2. **Transient 5xx / network errors** — flake on the wire.
+    // We retry up to 3 times with exponential backoff (250ms, 500ms,
+    // 1s) on retryable errors. NoSuchKey (404) after the first attempt
+    // is still treated as retryable for the eventual-consistency case;
+    // after the third try we surface it as `not_yet_consistent` so the
+    // extraction service knows to push the file into the retry queue.
+    const RETRYABLE_NAMES = new Set(['NoSuchKey', 'NetworkingError', 'TimeoutError', 'AbortError']);
+    const RETRY_DELAYS_MS = [250, 500, 1000];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        const cmd = new GetObjectCommand({ Bucket: this.bucket, Key: key });
+        const res = await this.client.send(cmd);
+        if (!res.Body) {
+          throw new Error(`s3 fetchBytes: empty body for key=${key}`);
+        }
+        const arr = await (res.Body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray();
+        return Buffer.from(arr);
+      } catch (err) {
+        lastErr = err;
+        const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+        const httpStatus = e.$metadata?.httpStatusCode ?? 0;
+        const retryable =
+          (e.name && RETRYABLE_NAMES.has(e.name)) ||
+          httpStatus === 404 ||
+          httpStatus >= 500;
+        if (!retryable || attempt >= RETRY_DELAYS_MS.length) break;
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+      }
+    }
+    // Tag the final error so the extraction service can route to the
+    // retry queue rather than marking the file permanently `failed`.
+    const final = lastErr instanceof Error
+      ? lastErr
+      : new Error(String(lastErr));
+    (final as Error & { retryable?: boolean }).retryable = true;
+    throw final;
+  }
+
   /** Build the canonical S3 key for an engagement file. */
   static keyForEngagementFile(args: {
     tenantId: string;

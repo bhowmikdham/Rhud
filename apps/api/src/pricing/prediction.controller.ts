@@ -27,6 +27,7 @@ import type { AuthedRequest } from '../auth/auth.types.js';
 import { TenantDb } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { PredictionService } from './prediction.service.js';
+import { QuoteService } from './quote.service.js';
 
 const APPROVAL_CHOICES = ['base', 'recommended', 'aggressive', 'custom'] as const;
 type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
@@ -88,15 +89,33 @@ export class PredictionController {
     private readonly svc: PredictionService,
     private readonly tenantDb: TenantDb,
     private readonly thread: ThreadService,
+    private readonly quotes: QuoteService,
   ) {}
 
+  /**
+   * Re-predict the price.
+   *
+   * Re-evaluates the deterministic base FIRST, then runs the ML
+   * modifier on top. This matters because: extracted-document points
+   * may have been auto-promoted to engagement answers AFTER the
+   * original quote was computed (the extraction queue could land
+   * answers minutes later). Without re-eval'ing the base, the ML
+   * modifier sees a stale zero base and the prediction stays zero.
+   *
+   * The quote re-compute is best-effort — if it fails (e.g. template
+   * has no rate card), we still try ML predict so the user sees
+   * something. The error path logs but doesn't surface.
+   */
   @Post('predict')
   @Roles('admin', 'sales_manager', 'sales_employee')
   @HttpCode(200)
-  predict(
+  async predict(
     @Req() req: AuthedRequest,
     @Param('id', new ParseUUIDPipe()) engagementId: string,
   ) {
+    await this.quotes
+      .computeAndPersistForEngagement(req.tenantId, engagementId)
+      .catch(() => undefined);
     return this.svc.predictForEngagement(req.tenantId, engagementId);
   }
 

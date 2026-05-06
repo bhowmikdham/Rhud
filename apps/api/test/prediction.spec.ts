@@ -25,6 +25,7 @@ import { ConsoleEmailTransport } from '../src/notifications/email.transport.js';
 import { NotificationsService } from '../src/notifications/notifications.service.js';
 import { ThreadService } from '../src/thread/thread.service.js';
 import { PricingService } from '../src/pricing/pricing.service.js';
+import { RateCardHintSynthesizerService } from '../src/pricing/rate-card-hint-synthesizer.service.js';
 import { QuoteService } from '../src/pricing/quote.service.js';
 import { PredictionService } from '../src/pricing/prediction.service.js';
 import { TenantPricingConfigService } from '../src/pricing/tenant-pricing-config.service.js';
@@ -52,8 +53,12 @@ describe('Prediction orchestrator + approval flow', () => {
   const email = new ConsoleEmailTransport();
   const notifications = new NotificationsService(tenantDb, email);
   const thread = new ThreadService(tenantDb, notifications);
-  const pricing = new PricingService(tenantDb);
-  const quotes = new QuoteService(tenantDb, pricing, thread);
+  const pricing = new PricingService(tenantDb, new RateCardHintSynthesizerService());
+  const fieldMapperStub = {
+    inferEntities: async () => [],
+    toScopedEntities: () => [],
+  } as unknown as import('../src/pricing/rate-card-mapper.service.js').RateCardFieldMapperService;
+  const quotes = new QuoteService(tenantDb, pricing, thread, fieldMapperStub);
   const config = new TenantPricingConfigService(tenantDb);
   const predict = new PredictionService(tenantDb, thread, quotes);
 

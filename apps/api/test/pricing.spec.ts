@@ -19,6 +19,7 @@ import { PrismaClient } from '@prisma/client';
 import { AppPrismaService } from '../src/db/prisma.service.js';
 import { TenantDb } from '../src/db/with-tenant.js';
 import { PricingService } from '../src/pricing/pricing.service.js';
+import { RateCardHintSynthesizerService } from '../src/pricing/rate-card-hint-synthesizer.service.js';
 
 const TENANT_A = '00000000-0000-0000-0000-0000000000a4';
 const TENANT_B = '00000000-0000-0000-0000-0000000000b4';
@@ -40,7 +41,12 @@ describe('Pricing engine — tenant isolation + persistence', () => {
   const root = new PrismaClient({ datasources: { db: { url: rootUrl } } });
   const appRlsClient = new PrismaClient({ datasources: { db: { url: appDatabaseUrl() } } });
   const tenantDb = new TenantDb(appRlsClient as unknown as AppPrismaService);
-  const svc = new PricingService(tenantDb);
+  // Synthesiser without LlmService injected — its synthesize() returns
+  // null, so the parseAndSave path persists rate cards without hints.
+  // That's the correct test posture: hint synthesis is a runtime feature
+  // requiring a configured LLM provider, not a structural test concern.
+  const synth = new RateCardHintSynthesizerService();
+  const svc = new PricingService(tenantDb, synth);
 
   beforeAll(async () => {
     await root.$executeRaw`DELETE FROM tenants WHERE id IN (${TENANT_A}::uuid, ${TENANT_B}::uuid)`;

@@ -132,9 +132,23 @@ export interface ValidationIssue {
     | 'dangling_goto'
     | 'empty_rules'
     | 'select_without_options'
-    | 'unreachable_node';
+    | 'unreachable_node'
+    | 'loop_body_slug_collision'
+    | 'binary_toggle_missing_value_map';
   message: string;
   nodeId?: string;
+}
+
+/** Service-line slug suffixes whose pricing model is `flat` and that
+ *  expect a binary yes/no answer from the form. Templates targeting
+ *  these slugs must carry a valueMap that converts "yes" → "1" so
+ *  scope=1 unlocks the flat tier. Without the valueMap a "yes" answer
+ *  flows in as the literal string "yes" → Number("yes") = NaN → entity
+ *  silently dropped. */
+const BINARY_SLUG_SUFFIXES = ['_ids', '_ips', '_dlp', '_iam'];
+
+function isBinarySlug(slug: string): boolean {
+  return BINARY_SLUG_SUFFIXES.some((s) => slug.endsWith(s));
 }
 
 export function validateTemplate(template: TemplateWithNodes): ValidationIssue[] {
@@ -189,6 +203,56 @@ export function validateTemplate(template: TemplateWithNodes): ValidationIssue[]
           nodeId: node.id,
         });
       }
+    }
+  }
+
+  // Loop / body slug collision check: when a loop's `loopConfig.serviceLineSlug`
+  // matches a body node's `binding.serviceLineSlug`, `normaliseScope` emits the
+  // entity twice — once as the loop's "main" entity and once as the body's
+  // "driver" entity — leading to silent double-billing. P0-3 in
+  // see-that-is-self-sunny-honey.md.
+  for (const loop of template.nodes) {
+    if (loop.nodeType !== 'loop') continue;
+    const mainSlug = loop.loopConfig?.serviceLineSlug;
+    if (!mainSlug) continue;
+    for (const body of template.nodes) {
+      if (body.parentNodeId !== loop.id) continue;
+      const bodySlug = body.binding?.serviceLineSlug;
+      if (bodySlug && bodySlug === mainSlug) {
+        issues.push({
+          code: 'loop_body_slug_collision',
+          message:
+            `body node "${body.question}" overrides loopConfig.serviceLineSlug ` +
+            `with the same slug ("${mainSlug}") — pricing engine would emit the entity twice. ` +
+            `Either remove the body's binding.serviceLineSlug (so it falls back to the loop's main slug) ` +
+            `or change one of them.`,
+          nodeId: body.id,
+        });
+      }
+    }
+  }
+
+  // Binary-toggle valueMap check: any node binding to a known-binary
+  // slug (IDS/IPS/DLP/IAM) must carry a valueMap that converts "yes"
+  // to a positive integer string. Without it, the responder selecting
+  // "yes" produces the literal string "yes" which becomes NaN in
+  // normaliseScope and the entity is silently dropped — meaning the
+  // proposal won't include the IDS/IAM line at all. P1-7 in
+  // majestic-whistling-whistle.md.
+  for (const node of template.nodes) {
+    const slug = node.binding?.serviceLineSlug;
+    if (!slug || !isBinarySlug(slug)) continue;
+    const valueMap = node.binding?.valueMap;
+    const yesMaps = valueMap && typeof valueMap.yes === 'string' && Number(valueMap.yes) > 0;
+    if (!yesMaps) {
+      issues.push({
+        code: 'binary_toggle_missing_value_map',
+        message:
+          `node "${node.question}" binds to binary slug "${slug}" but has no valueMap converting ` +
+          `"yes" → a positive integer. Add binding.valueMap = { yes: "1", no: "0" } so the ` +
+          `flat tier unlocks correctly when the responder answers Yes.`,
+        nodeId: node.id,
+      });
     }
   }
 

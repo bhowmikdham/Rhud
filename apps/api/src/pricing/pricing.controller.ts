@@ -98,6 +98,13 @@ export class PricingController {
     return this.svc.seedCsaasSample(req.tenantId);
   }
 
+  @Post('seed/prophaze-sample')
+  @Roles('admin')
+  @HttpCode(201)
+  seedProphaze(@Req() req: AuthedRequest) {
+    return this.svc.seedProphazeSample(req.tenantId);
+  }
+
   /**
    * Phase 2 ingestion entrypoint — caller posts the parsed sheet matrix
    * (string[][]) plus an optional name. Web side runs SheetJS in the
@@ -113,5 +120,27 @@ export class PricingController {
     @Body() body: { matrix: string[][]; name?: string },
   ) {
     return this.svc.parseAndSave(req.tenantId, body.matrix, body.name ? { name: body.name } : {});
+  }
+
+  /**
+   * Backfill / regenerate the LLM-authored inference ontology for an
+   * existing rate card. Useful when:
+   *   - The card was created before hint-synthesis shipped (legacy data).
+   *   - The card was created while the LLM provider was unavailable.
+   *   - The admin wants fresher hints after editing slugs.
+   *
+   * Returns 200 with `{ regenerated: true }` on success, or
+   * `{ regenerated: false }` when the LLM is unavailable / parse failed.
+   * In the failure case the existing hints are unchanged.
+   */
+  @Post(':id/regenerate-hints')
+  @Roles('admin')
+  @HttpCode(200)
+  async regenerateHints(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    const ok = await this.svc.regenerateHints(req.tenantId, id);
+    return { regenerated: ok };
   }
 }

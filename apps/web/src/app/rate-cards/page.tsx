@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import {
   rateCards,
+  templates,
   describeError,
   type RateCardSummary,
 } from '@/lib/api';
@@ -56,6 +57,30 @@ export default function RateCardsListPage() {
     }
   }
 
+  /** Install both the Prophaze rate card AND its matched gathering template
+   *  in one click. The template install needs the rate card id so it has to
+   *  run after, not in parallel. */
+  async function seedProphaze() {
+    if (seeding) return;
+    setSeeding(true);
+    setErr(null);
+    try {
+      const card = await rateCards.seedProphazeSample();
+      try {
+        await templates.seedProphazeSample(card.id);
+      } catch (e) {
+        // The rate card's already in; surface the template error but don't
+        // wipe the card. Admin can re-run; the rate card seeder is idempotent.
+        setErr(`Rate card installed but template failed: ${describeError(e)}`);
+      }
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setSeeding(false);
+    }
+  }
+
   const published = items?.filter((c) => c.status === 'published') ?? [];
   const drafts = items?.filter((c) => c.status === 'draft') ?? [];
 
@@ -76,6 +101,11 @@ export default function RateCardsListPage() {
                   {seeding ? <span className="spin" /> : <><Icon.Sparkle size={12} /> Load sample</>}
                 </button>
               )}
+              {/* Always-available: installs the Prophaze rate card + matched
+                  gathering template (driver-level intake). Idempotent on both. */}
+              <button onClick={seedProphaze} className="btn sm" disabled={seeding}>
+                {seeding ? <span className="spin" /> : <><Icon.Sparkle size={12} /> Install Prophaze sample</>}
+              </button>
               <button onClick={() => setShowUpload(true)} className="btn accent">
                 <Icon.Plus size={13} />
                 Upload rate card

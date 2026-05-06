@@ -30,6 +30,17 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   link_opened:               [],  // suppressed — too noisy as 1-per-event
   node_answered:             [],  // suppressed — debounced into digest later
   file_uploaded:             ['sales_employee'],
+  // Document-extraction completion is system-internal; surfaced in the
+  // UI thread + audit chain but not emailed (otherwise reps would get
+  // 1 email per attached file, which is noisy on multi-doc engagements).
+  file_extracted:            [],
+  // Iteration removal is a client-side correction — recorded in the
+  // audit timeline but not emailed (most reps don't want the noise).
+  loop_iteration_removed:    [],
+  // Mapper fallback is a quality-of-extraction signal — silent in
+  // notifications, but the opportunity detail page surfaces it as a
+  // re-run prompt so the rep can retry once the rate limit clears.
+  mapper_fallback_heuristic: [],
   scope_submitted:           ['sales_employee', 'sales_manager'],
   price_predicted:           ['sales_employee', 'sales_manager'],
   approval_requested:        ['sales_manager'],
@@ -44,6 +55,13 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   engagement_closed:         ['sales_employee', 'sales_manager'],
   quote_computed:            [],  // background event, surfaced in the UI thread only
   quote_approved:            ['sales_employee'],
+  // Site-enumeration is a rep-driven action; success surfaces in the
+  // opportunity timeline (no email — they're already on the page).
+  // Failure routes to both rep + manager because retries are exhausted
+  // and someone has to decide what to do (try a different URL,
+  // capture scope manually, …).
+  site_enumerated:           [],
+  site_enumeration_failed:   ['sales_employee', 'sales_manager'],
 };
 
 /**

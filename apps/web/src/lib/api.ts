@@ -185,6 +185,16 @@ export const templates = {
   /** Pre-delete probe: opportunities currently using this template. */
   usage: (id: string) =>
     request<{ engagementCount: number }>(`/templates/${id}/usage`),
+
+  /** Install the Prophaze gathering template, bound to the supplied rate card.
+   *  Mirrors the rate-card seed flow — the admin first installs the rate card,
+   *  then this endpoint wires a template that maps every body answer to one of
+   *  its driver slugs. */
+  seedProphazeSample: (rateCardId: string) =>
+    request<TemplateWithNodes>('/templates/seed/prophaze-sample', {
+      method: 'POST',
+      body: JSON.stringify({ rateCardId }),
+    }),
 };
 
 // ── Opportunities (sales-facing) ────────────────────────────────────────────
@@ -226,10 +236,23 @@ export interface IssuedLink {
   expiresAt: string;
 }
 
+/** Currently-active gathering link for an opportunity. Surfaces on the
+ *  detail page so a rep can copy the URL after leaving the issue wizard. */
+export interface GatheringLinkInfo {
+  url: string;
+  expiresAt: string;
+  isExpired: boolean;
+  isRevoked: boolean;
+  accessCount: number;
+}
+
 export const opportunities = {
   list: () => request<EngagementSummary[]>('/opportunities'),
   get: (id: string) =>
-    request<EngagementSummary & { thread: ThreadEventRow[] }>(`/opportunities/${id}`),
+    request<EngagementSummary & {
+      thread: ThreadEventRow[];
+      gatheringLink: GatheringLinkInfo | null;
+    }>(`/opportunities/${id}`),
   issue: (dto: {
     templateId: string;
     clientEmail: string;
@@ -298,6 +321,11 @@ export interface BasePriceLine {
   tierId: string | null;
   tierLabel: string | null;
   priceCents: number;
+  /** 'per_unit' | 'tier_lookup' | 'flat' | 'hourly' — included when
+   *  the line is priced (not unmatched). Lets the UI render the math. */
+  pricingModel?: 'per_unit' | 'tier_lookup' | 'flat' | 'hourly';
+  /** Per-unit rate for `per_unit` lines. Null for flat/tier_lookup. */
+  unitPriceCents?: number | null;
   manualQuoteRequired?: boolean;
   unmatched?: { reason: string };
 }
@@ -348,6 +376,10 @@ export const rateCards = {
     request<RateCardFull>(`/rate-cards/${id}/archive`, { method: 'PATCH' }),
   seedSample: () =>
     request<RateCardFull>('/rate-cards/seed/csaas-sample', { method: 'POST' }),
+  /** Install the Prophaze rate card + the matching gathering template in one call.
+   *  Returns the freshly created rate card; the template is bound to it server-side. */
+  seedProphazeSample: () =>
+    request<RateCardFull>('/rate-cards/seed/prophaze-sample', { method: 'POST' }),
   /** Parse an uploaded sheet (matrix of cells) and persist as a draft card. */
   parseSheet: (matrix: string[][], name?: string) =>
     request<{ rateCardId: string; warnings: string[] }>('/rate-cards/parse', {
@@ -544,7 +576,13 @@ export const team = {
 
 // ── LLM (admin) ─────────────────────────────────────────────────────────────
 
-export type LlmProviderName = 'anthropic' | 'openai' | 'ollama' | 'openai_compat' | 'manual';
+export type LlmProviderName =
+  | 'anthropic'
+  | 'openai'
+  | 'gemini'
+  | 'ollama'
+  | 'openai_compat'
+  | 'manual';
 
 export type JustificationResult =
   | { mode: 'auto'; text: string; provider: string; model?: string }
@@ -710,6 +748,340 @@ export interface OutlookAppConfig {
   redirectUri: string;
   updatedAt: string | null;
 }
+
+// ── Document extraction (client-uploaded files → structured points) ───────
+
+export type PointCategory =
+  | 'scope'
+  | 'methodology'
+  | 'service_type'
+  | 'identity'
+  | 'environment'
+  | 'compliance'
+  | 'other';
+
+export interface ExtractedPoint {
+  key: string;
+  value: string;
+  sourceQuote: string;
+  relatedQuestion: string | null;
+  /** Sheet name the point came from (multi-sheet xlsx). Null for
+   *  PDFs / LLM-extracted points. */
+  sheet?: string | null;
+  /** Layer 2 — semantic classification surfaced as a chip in the UI. */
+  category?: PointCategory;
+}
+
+export interface InferredEntity {
+  serviceLineSlug: string;
+  scopeValue: number;
+  methodology: string | null;
+  customerType: 'internal' | 'external';
+  /** 0..1 — only ≥0.6 reach the priced quote. */
+  confidence: number;
+  reasoning: string;
+  sourceQuote: string;
+  /** Where this inference came from. `manual` means a rep override. */
+  source: 'llm' | 'heuristic' | 'manual';
+}
+
+export interface FileExtraction {
+  id: string;
+  filename: string;
+  contentType: string;
+  status: 'pending' | 'processing' | 'ready' | 'failed' | 'skipped' | 'retry_queued' | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** When status === 'retry_queued', the ISO timestamp the cron will
+   *  re-fire the extraction. The UI uses this to render a countdown
+   *  ("Retrying in 1m 23s…"). Null otherwise. */
+  retryAt: string | null;
+  /** Number of attempts made so far. Surfaced in the UI as
+   *  "attempt 2/5" so the rep knows we're not infinitely looping. */
+  attempts: number;
+  error: string | null;
+  points: ExtractedPoint[];
+  /** Layer 3 — service-line entities the mapper produced from this
+   *  file. The rep can edit these inline to override the LLM. */
+  inferredEntities: InferredEntity[];
+  emptyResult: boolean;
+  /** Engagement-wide pipeline counters — diagnose chain breaks
+   *  without needing log access. */
+  diagnostics: {
+    extracted: number;
+    matchedToQuestion: number;
+    /** Layer 3 — service-line entities the field mapper produced
+     *  with confidence ≥0.6 (LLM-first, heuristic safety net). */
+    inferredHighConfidence: number;
+    answeredQuestions: number;
+    mappedToRateCard: number;
+    quoteLineItems: number;
+    rateCardBound: boolean;
+  };
+}
+
+/**
+ * Canonical RhudDocument shape on the wire. Mirrors
+ * `packages/shared/src/document.ts` so the web client doesn't import
+ * @rhud/shared directly (web has its own minimal type surface for
+ * Layer-3 contracts). Keep these in sync — the backend test suite
+ * locks the server-side shape; this type is what the UI renders.
+ */
+export interface ParsedDocument {
+  id: string;
+  filename: string;
+  contentType: string;
+  parsedAt: string;
+  sheets: Array<{
+    name: string;
+    index: number;
+    rowCount: number;
+    columnCount: number;
+    rows: Array<{
+      index: number;
+      cells: Array<{
+        column: number;
+        value: string;
+        mergeAnchor?: boolean;
+        mergedFromAnchor?: boolean;
+      }>;
+    }>;
+    detectedShape: 'qa' | 'asset_list' | 'pricing_table' | null;
+  }>;
+  textBlocks: Array<{
+    heading: string | null;
+    headingDepth: number | null;
+    body: string;
+    page: number | null;
+  }>;
+  warnings: string[];
+}
+
+export const extraction = {
+  list: (engagementId: string) =>
+    request<FileExtraction[]>(`/opportunities/${engagementId}/extraction`),
+  reExtract: (engagementId: string, fileId: string) =>
+    request<{ status: 'kicked_off' }>(
+      `/opportunities/${engagementId}/files/${fileId}/extract`,
+      { method: 'POST' },
+    ),
+  /** Re-run JUST the Layer-3 mapper LLM using the file's cached
+   *  extracted points. Use this after a 429 / mapper failure — much
+   *  faster than `reExtract` because S3 + text extraction are skipped. */
+  rerunInference: (engagementId: string, fileId: string) =>
+    request<{ rerun: 'mapper_only' | 'full_extract' }>(
+      `/opportunities/${engagementId}/files/${fileId}/rerun-inference`,
+      { method: 'POST' },
+    ),
+  /** Read the canonical RhudDocument the parser captured for a file —
+   *  the structured representation BEFORE any LLM step ran. Used by the
+   *  "Parsed structure" admin panel to debug parsing-quality issues
+   *  separately from extraction-quality issues. Returns `document: null`
+   *  when the file has no Document representation (legacy row, plain
+   *  text, or LLM-fallback xlsx path). */
+  parsedDocument: (engagementId: string, fileId: string) =>
+    request<{ filename: string; document: ParsedDocument | null }>(
+      `/opportunities/${engagementId}/files/${fileId}/parsed-document`,
+    ),
+  /** Override an inferred entity's pricing inputs (scope value,
+   *  methodology, customer type). Slug is the rate-card service-line
+   *  slug. Triggers a quote re-compute on the server. */
+  overrideEntity: (
+    engagementId: string,
+    fileId: string,
+    slug: string,
+    patch: {
+      scopeValue?: number;
+      methodology?: string | null;
+      customerType?: 'internal' | 'external';
+    },
+  ) =>
+    request<{ status: 'updated' }>(
+      `/opportunities/${engagementId}/files/${fileId}/inferred-entities/${encodeURIComponent(slug)}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+};
+
+// ── Site enumeration (crawl prospect site → categorised scope → quote) ──────
+
+export type SiteEnumerationStatus =
+  | 'pending'
+  | 'crawling'
+  | 'classifying'
+  | 'ready'
+  | 'failed'
+  | 'retry_queued';
+
+export type SiteUrlCategory =
+  | 'product'
+  | 'ecommerce'
+  | 'blog'
+  | 'cms'
+  | 'form'
+  | 'knowledge_base'
+  | 'attachment'
+  | 'members'
+  | 'media'
+  | 'module'
+  | 'api'
+  | 'integration'
+  | 'other';
+
+export interface SiteEnumerationCategorySummary {
+  category: SiteUrlCategory;
+  count: number;
+  examples: Array<{ url: string; title: string | null }>;
+}
+
+export interface SiteEnumerationOptions {
+  maxPages?: number;
+  maxDepth?: number;
+  includePathRegex?: string;
+  excludePathRegex?: string;
+  /** Render every page in headless Chromium before extracting links.
+   *  Required for JavaScript SPAs whose link graph isn't in the static
+   *  HTML. Slower; tighter budget caps apply. */
+  useJsRendering?: boolean;
+}
+
+export interface ScopedEntity {
+  entityId: string;
+  serviceLineSlug: string;
+  dimensions: {
+    pages?: number;
+    screens?: number;
+    apis?: number;
+    loc?: number;
+    devices?: number;
+    hours?: number;
+    other?: number;
+  };
+  methodology: string | null;
+  customerType: 'internal' | 'external';
+}
+
+export interface SiteEnumerationMappedSnapshot {
+  rateCardId: string;
+  rateCardVersion: number;
+  computedAt: string;
+  entities: ScopedEntity[];
+}
+
+export interface SiteEnumerationStateView {
+  id: string;
+  engagementId: string;
+  siteUrl: string;
+  status: SiteEnumerationStatus;
+  totalUrls: number;
+  classifiedUrls: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  retryAt: string | null;
+  attempts: number;
+  error: string | null;
+  categories: SiteEnumerationCategorySummary[];
+  mappedRateCards: SiteEnumerationMappedSnapshot[];
+  options: SiteEnumerationOptions | null;
+  /** Set when the root looked like a JS SPA (no static anchors).
+   *  Coverage is inherently incomplete in that case. */
+  looksLikeSpa: boolean;
+  /** Set when every probe path returned the same body as the root —
+   *  textbook SPA catch-all. There's exactly one distinct page at the
+   *  static layer; price as a single SPA-rewrite. */
+  spaCatchAll: boolean;
+  /** Distinct same-origin JS bundles loaded during the crawl. */
+  jsBundleCount: number;
+  /** Distinct same-origin CSS files loaded during the crawl. */
+  cssFileCount: number;
+  /** Sum of input/select/textarea elements across rendered pages —
+   *  each is a potential VAPT injection point. */
+  totalFormFields: number;
+  techFingerprint: { platform: string; signals: string[]; generator?: string } | null;
+  manifest: { name?: string; startUrl?: string; scope?: string; shortcuts: string[] } | null;
+  specsFound: string[];
+  serviceWorkersFound: string[];
+}
+
+/** BasePriceResult shape returned by the quote endpoint. Mirrors the
+ *  server's `@rhud/shared` BasePriceResult. */
+export interface SiteEnumQuoteResult {
+  rateCardId: string;
+  entities: ScopedEntity[];
+  quote: {
+    rateCardId: string;
+    rateCardVersion: number;
+    currency: string;
+    lines: BasePriceLine[];
+    totalCents: number;
+    hasManualQuoteRequired: boolean;
+    hasUnmatched: boolean;
+  };
+}
+
+export interface DiscoveredPageRow {
+  url: string;
+  category: string | null;
+  title: string | null;
+  description: string | null;
+  httpStatus: number | null;
+  contentType: string | null;
+  classifierSource: string | null;
+  classifierConfidence: number | null;
+  fetchedAt: string;
+}
+
+export const siteEnumeration = {
+  get: (engagementId: string) =>
+    request<SiteEnumerationStateView | null>(
+      `/opportunities/${engagementId}/site-enumeration`,
+    ),
+  kickoff: (
+    engagementId: string,
+    body: { siteUrl: string; options?: SiteEnumerationOptions },
+  ) =>
+    request<{ enumerationId: string; status: SiteEnumerationStatus }>(
+      `/opportunities/${engagementId}/site-enumeration`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  map: (engagementId: string, rateCardId: string) =>
+    request<{ entities: ScopedEntity[] }>(
+      `/opportunities/${engagementId}/site-enumeration/map`,
+      { method: 'POST', body: JSON.stringify({ rateCardId }) },
+    ),
+  quote: (engagementId: string) =>
+    request<SiteEnumQuoteResult>(
+      `/opportunities/${engagementId}/site-enumeration/quote`,
+      { method: 'POST' },
+    ),
+  retry: (enumerationId: string) =>
+    request<{ enumerationId: string; status: SiteEnumerationStatus }>(
+      `/site-enumerations/${enumerationId}/retry`,
+      { method: 'POST' },
+    ),
+  /** Full list of every discovered page (URL, category, classifier
+   *  confidence, etc.). Backs the "view all" modal. */
+  listPages: (engagementId: string) =>
+    request<DiscoveredPageRow[]>(
+      `/opportunities/${engagementId}/site-enumeration/pages`,
+    ),
+  /** CSV download URL — used by the download button to trigger a
+   *  browser-native save. The bearer token is appended via
+   *  fetchCsvBlob below since the browser's `<a download>` can't
+   *  attach Authorization headers. */
+  csvUrl: (engagementId: string) =>
+    `${BASE}/api/v1/opportunities/${engagementId}/site-enumeration/pages.csv`,
+  /** Fetch the CSV body so the caller can wrap it in a Blob and
+   *  trigger a download via createObjectURL. */
+  fetchCsv: async (engagementId: string): Promise<string> => {
+    const t = token();
+    const res = await fetch(
+      `${BASE}/api/v1/opportunities/${engagementId}/site-enumeration/pages.csv`,
+      { headers: t ? { authorization: `Bearer ${t}` } : {} },
+    );
+    if (!res.ok) throw new ApiError(res.status, null, `${res.status} csv export`);
+    return res.text();
+  },
+};
 
 export const integrations = {
   outlook: {
@@ -889,12 +1261,69 @@ export interface GatheringStateResponse {
   engagementId: string;
   templateName: string;
   status: string;
+  /** Full template node list — used to build the outline sidebar and
+   *  for back / jump-to navigation. Optional for backwards compat. */
+  templateNodes?: TemplateNode[];
+  templateRootNodeId?: string | null;
   currentNode: TemplateNode | null;
   loopContext: GatheringLoopContext | null;
   loopStep: GatheringLoopStep | null;
   answers: Record<string, unknown>;
   loopAnswers: Record<string, Array<Record<string, unknown>>>;
   files: Record<string, Array<{ id: string; filename: string; sizeBytes: number }>>;
+  /** Pre-populated values from cached document extraction. Surfaced as
+   *  placeholders / initial values for unanswered nodes so the rep or
+   *  client can confirm/edit instead of re-typing. Optional for
+   *  backwards compatibility — older API builds don't return it. */
+  suggestedAnswers?: Record<string, unknown>;
+  /** Per-suggestion confidence in [0..1] — keys mirror suggestedAnswers.
+   *  Used by the gathering UI to render a "Strong / Approximate / Borderline"
+   *  chip so the responder treats borderline inferences with care. */
+  suggestionConfidence?: Record<string, number>;
+  /** Extraction status counts. The Quick-fill kickoff flow polls /state
+   *  while files are still being parsed and shows progress ("Parsing
+   *  your scoping sheet…") until everything settles. */
+  extraction?: {
+    totalFiles: number;
+    readyFiles: number;
+    inFlightFiles: number;
+    failedFiles: number;
+  };
+  /**
+   * Plain-English summary of what the LLM mapper read from uploaded
+   * documents. Rendered in the Review modal ABOVE the form questions
+   * so the client sees "we read 1 web app + 1 API + 2 roles" instead
+   * of a confusingly half-empty form. Empty when no entities cleared
+   * the priced threshold (≥0.6) — UI falls back to a "we couldn't
+   * read your document" message.
+   *
+   * Optional for backwards compat — older API builds don't return it.
+   */
+  scopeSummary?: {
+    groups: Array<{
+      label: string;
+      domain: 'web_app' | 'api' | 'mobile_ios' | 'mobile_android' | 'network' | 'cloud' | 'other';
+      items: Array<{
+        title: string;
+        subtitle?: string;
+        bullets: string[];
+        confidence: number;
+        sourceFiles: string[];
+      }>;
+    }>;
+    totalItems: number;
+    isEmpty: boolean;
+  };
+  /** Inferred entities that the engagement's template can't auto-fill
+   *  because no node binds to their slug. The Review modal lists them
+   *  so the rep / client knows what was understood but isn't in the
+   *  form (still priced server-side, but invisible without this). */
+  unprojectedEntities?: Array<{
+    serviceLineSlug: string;
+    displayName: string;
+    scopeValue: number;
+    confidence: number;
+  }>;
 }
 
 export type GatheringNext =
@@ -922,6 +1351,23 @@ export const gathering = {
       '/files',
       { method: 'POST', body: JSON.stringify(dto) },
     ),
+  /** Quick-fill scoping doc upload — engagement-level, no nodeId. The
+   *  uploaded file lands with `kind='scoping_doc'` and doesn't appear
+   *  in any per-question files list. Extraction kicks off automatically. */
+  scopingDocUploadUrl: (token: string, dto: { filename: string; contentType: string; sizeBytes: number }) =>
+    gFetch<{ uploadUrl: string; fileId: string; key: string; expiresAt: string }>(
+      token,
+      '/scoping-doc',
+      { method: 'POST', body: JSON.stringify(dto) },
+    ),
+  /** Remove a loop iteration — deletes all body answers at iter N and
+   *  shifts subsequent iterations down. Used by the sidebar's per-
+   *  iteration trash icon. */
+  removeIteration: (token: string, dto: { loopId: string; iterIndex: number }) =>
+    gFetch<{ ok: true }>(token, '/iterations/remove', {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
   submit: (token: string) =>
     gFetch<{ status: string }>(token, '/submit', { method: 'POST' }),
 };

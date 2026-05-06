@@ -99,6 +99,56 @@ export class UnscopedDb {
     }));
   }
 
+  /**
+   * Cross-tenant pull of engagement_files due for an extraction
+   * retry. The retry sweeper has no tenant scope (it runs on a
+   * timer, not a request), so we look across the whole platform and
+   * dispatch each row's re-kickoff via the tenant-scoped path.
+   * Capped at 50 rows per sweep so a backed-up queue can't pin the
+   * cron tick.
+   */
+  async findDueExtractionRetries(limit = 50): Promise<
+    Array<{ id: string; tenantId: string; attempts: number }>
+  > {
+    type Row = { id: string; tenant_id: string; extraction_attempts: number };
+    const rows = await this.prisma.$queryRaw<Row[]>`SELECT id, tenant_id, extraction_attempts
+        FROM engagement_files
+       WHERE extraction_status = 'retry_queued'
+         AND extraction_retry_at <= now()
+       ORDER BY extraction_retry_at ASC
+       LIMIT ${limit}`;
+    return rows.map((r: Row) => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      attempts: r.extraction_attempts,
+    }));
+  }
+
+  /**
+   * Cross-tenant pull of site_enumerations due for a retry. Same shape
+   * as findDueExtractionRetries — the retry sweeper has no tenant
+   * scope, so it looks across the platform and dispatches each row's
+   * re-run via the tenant-scoped path inside SiteEnumService.
+   * Capped at 50 rows per sweep so a backed-up queue can't pin the
+   * cron tick.
+   */
+  async findDueSiteEnumerationRetries(limit = 50): Promise<
+    Array<{ id: string; tenantId: string; attempts: number }>
+  > {
+    type Row = { id: string; tenant_id: string; attempts: number };
+    const rows = await this.prisma.$queryRaw<Row[]>`SELECT id, tenant_id, attempts
+        FROM site_enumerations
+       WHERE status = 'retry_queued'
+         AND retry_at <= now()
+       ORDER BY retry_at ASC
+       LIMIT ${limit}`;
+    return rows.map((r: Row) => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      attempts: r.attempts,
+    }));
+  }
+
   /** Tenant name for the invite-preview page; needs no tenant scope. */
   async findTenantName(tenantId: string): Promise<string | null> {
     const rows = await this.prisma.$queryRaw<Array<{ name: string }>>`

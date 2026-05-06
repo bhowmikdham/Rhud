@@ -7,11 +7,17 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
+  buildScopeSummary,
   resolveNext,
   validateAnswerShape,
   type Answer,
+  type CustomerType,
   type LoopConfig,
   type LoopState,
+  type Methodology,
+  type RateCard,
+  type ScopeSummary,
+  type ScopeSummaryEntityInput,
   type TemplateNode,
   type TemplateWithNodes,
 } from '@rhud/shared';
@@ -20,6 +26,7 @@ import { UnscopedDb } from '../db/unscoped-db.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { S3Service } from '../storage/s3.service.js';
 import { MlService } from '../ml/ml.service.js';
+import { ExtractionService } from '../extraction/extraction.service.js';
 import { QuoteService } from '../pricing/quote.service.js';
 import { deviceFingerprint, fingerprintsEqual, verifyToken } from './token.util.js';
 
@@ -51,6 +58,12 @@ export interface GatheringState {
   engagementId: string;
   templateName: string;
   status: string;
+  // Full ordered list of template nodes — client uses it to build the
+  // section outline + allow back / jump-to navigation. The gathering
+  // token already grants access to this engagement's template, so
+  // exposing the structure adds no new attack surface.
+  templateNodes: TemplateNode[];
+  templateRootNodeId: string | null;
   // Current node to render next, or null if there isn't one (submitted, or
   // sitting at a loop_step prompt).
   currentNode: TemplateNode | null;
@@ -67,6 +80,54 @@ export interface GatheringState {
   loopAnswers: Record<string, Array<Record<string, Answer>>>;
   // Files already uploaded (filenames) per node.
   files: Record<string, Array<{ id: string; filename: string; sizeBytes: number }>>;
+  // Suggested answers from cached inferred entities — { nodeId: answer }.
+  // Populated by matching `binding.serviceLineSlug` to extraction-cached
+  // entities on engagement_files.inferred_entities. The UI shows these
+  // as placeholders / pre-fill values; the responder confirms or edits
+  // before submit. Only populated for nodes the responder hasn't already
+  // answered (so an actual answer always overrides a suggestion).
+  suggestedAnswers: Record<string, Answer>;
+  /** Per-suggested-answer confidence in [0..1]. Mirrors `suggestedAnswers`
+   *  keys. Lets the UI render a visible chip ("Strong", "Approximate")
+   *  so the responder treats borderline inferences with appropriate care. */
+  suggestionConfidence: Record<string, number>;
+  /** Extraction pipeline status across all uploaded files. The Quick-fill
+   *  flow polls /state during extraction and uses these counts to render
+   *  a "Parsing your document…" progress indicator. */
+  extraction: {
+    totalFiles: number;
+    readyFiles: number;
+    inFlightFiles: number;
+    failedFiles: number;
+  };
+  /**
+   * Plain-English summary of what the LLM mapper extracted from uploaded
+   * documents. The Review modal renders this ABOVE the form questions so
+   * the client sees "we read 1 web app + 1 API + 2 roles" instead of a
+   * half-empty form. Empty when no entities cleared the confidence floor
+   * (≥0.6) — UI falls back to a "we couldn't read your document" message.
+   *
+   * Built server-side from cached `inferred_entities` + the engagement's
+   * rate card; pure render of data the client already has access to.
+   * See packages/shared/src/scope-summary.ts.
+   */
+  scopeSummary: ScopeSummary;
+  /**
+   * Inferred entities the client's template has no place to put. When
+   * the mapper finds (e.g.) `vapt_cloud_iam=1` but the template has no
+   * loop or section bound to that slug, the entity is priced server-side
+   * but never auto-fills the form. We surface them here so the Review
+   * UI can say "we found these but your form has no place for them".
+   *
+   * Each entry is the slug + its display name + the count — enough for
+   * the rep to know what was missed without exposing internal structure.
+   */
+  unprojectedEntities: Array<{
+    serviceLineSlug: string;
+    displayName: string;
+    scopeValue: number;
+    confidence: number;
+  }>;
 }
 
 // Internal cursor from findCursor(): the same union the public response
@@ -94,6 +155,7 @@ export class GatheringService {
     private readonly s3: S3Service,
     private readonly ml: MlService,
     private readonly quotes: QuoteService,
+    private readonly extraction: ExtractionService,
   ) {}
 
   // ── Token resolution ─────────────────────────────────────────────────────
@@ -216,6 +278,11 @@ export class GatheringService {
 
       const filesMap: Record<string, Array<{ id: string; filename: string; sizeBytes: number }>> = {};
       for (const f of engagement.files) {
+        // Scoping docs (Quick-fill uploads) live at the engagement level
+        // and don't belong under any specific question's files list.
+        // The Quick-fill UI surfaces them separately via the extraction
+        // status counters returned below.
+        if (!f.nodeId) continue;
         if (!filesMap[f.nodeId]) filesMap[f.nodeId] = [];
         filesMap[f.nodeId]!.push({
           id: f.id,
@@ -229,10 +296,167 @@ export class GatheringService {
         ? ({ kind: 'end' } satisfies Cursor)
         : findCursor(tmpl, answersByIter, loopState);
 
+      // Pre-populate body answers from cached inferred entities. We
+      // pull `inferred_entities` off every engagement file, build a
+      // `slug → scope` map (highest-confidence entity wins per slug),
+      // then walk the template nodes looking for any `binding.serviceLineSlug`
+      // we have a suggestion for. Suggestions are skipped where the
+      // responder has already answered — actual answers always win.
+      const fileRows = await db.engagementFile.findMany({
+        where: { engagementId: t.engagementId, extractionStatus: 'ready' },
+        select: { inferredEntities: true, filename: true },
+      });
+      // For each slug, keep the highest-confidence entity (and its
+      // confidence) so the suggestion + confidence chip stay aligned.
+      const bestBySlug = new Map<string, { scope: number; confidence: number }>();
+      // Flat list of ALL entities for the scope-summary builder.
+      // Includes everything ≥0.6 — the builder's own floor is the canonical
+      // place that filters; we capture file provenance here so summary
+      // items can show "from acme-questionnaire.xlsx".
+      const summaryEntities: ScopeSummaryEntityInput[] = [];
+      for (const row of fileRows) {
+        const arr = Array.isArray(row.inferredEntities)
+          ? (row.inferredEntities as Array<{
+              serviceLineSlug?: string;
+              scopeValue?: number;
+              confidence?: number;
+              methodology?: string | null;
+              customerType?: 'internal' | 'external';
+              appId?: string;
+              sourceQuote?: string;
+            }>)
+          : [];
+        for (const e of arr) {
+          if (typeof e.serviceLineSlug !== 'string') continue;
+          if (typeof e.scopeValue !== 'number' || e.scopeValue <= 0) continue;
+          const conf = typeof e.confidence === 'number' ? e.confidence : 0;
+          if (conf < 0.6) continue;
+          const prev = bestBySlug.get(e.serviceLineSlug);
+          if (prev === undefined || conf > prev.confidence) {
+            bestBySlug.set(e.serviceLineSlug, { scope: e.scopeValue, confidence: conf });
+          }
+          summaryEntities.push({
+            serviceLineSlug: e.serviceLineSlug,
+            scopeValue: e.scopeValue,
+            methodology: (e.methodology ?? null) as Methodology,
+            customerType: (e.customerType === 'internal' ? 'internal' : 'external') as CustomerType,
+            confidence: conf,
+            ...(e.appId ? { appId: e.appId } : {}),
+            ...(e.sourceQuote ? { sourceQuote: e.sourceQuote } : {}),
+            sourceFile: row.filename,
+          });
+        }
+      }
+      const suggestedAnswers: Record<string, Answer> = {};
+      const suggestionConfidence: Record<string, number> = {};
+      if (bestBySlug.size > 0) {
+        for (const node of tmpl.nodes) {
+          const slug = node.binding?.serviceLineSlug;
+          if (!slug) continue;
+          const hit = bestBySlug.get(slug);
+          if (!hit) continue;
+          // Don't overwrite an existing answer — actual answers win.
+          if (answersByIter.get(node.id)?.has(0)) continue;
+          suggestedAnswers[node.id] = hit.scope;
+          suggestionConfidence[node.id] = hit.confidence;
+        }
+      }
+
+      // ── Scope summary + unprojected entities ────────────────────────
+      // The Review UI shows clients what we read from their doc BEFORE
+      // the form opens. Without this surface, a 3-entity inference
+      // looks like a half-empty form (since the form only auto-fills
+      // when the template's bindings line up with rate-card slugs).
+      //
+      // Build a minimal RateCard view (just the slugs + displayNames the
+      // builder needs) by querying the template's rate-card. We don't
+      // load tier rows — the summary doesn't price; it describes.
+      let scopeSummary: ScopeSummary = { groups: [], totalItems: 0, isEmpty: true };
+      const unprojectedEntities: GatheringState['unprojectedEntities'] = [];
+      const rateCardId = engagement.template.rateCardId;
+      if (rateCardId && summaryEntities.length > 0) {
+        const slRows = await db.rateCardServiceLine.findMany({
+          where: { rateCardId },
+          select: { id: true, slug: true, displayName: true, scopeUnit: true, pricingModel: true, position: true },
+        });
+        // Minimal RateCard shape — buildScopeSummary only reads slug +
+        // displayName off serviceLines; tiers are unused for grouping.
+        const slimRateCard: RateCard = {
+          id: rateCardId,
+          tenantId: t.tenantId,
+          name: '',
+          version: 1,
+          status: 'published',
+          currency: 'INR',
+          serviceLines: slRows.map((sl) => ({
+            id: sl.id,
+            slug: sl.slug,
+            displayName: sl.displayName,
+            scopeUnit: sl.scopeUnit as RateCard['serviceLines'][number]['scopeUnit'],
+            pricingModel: sl.pricingModel as RateCard['serviceLines'][number]['pricingModel'],
+            position: sl.position,
+            tiers: [],
+          })),
+          openPricedServices: [],
+        };
+        scopeSummary = buildScopeSummary(summaryEntities, slimRateCard);
+
+        // Unprojected = entities the LLM produced but the template has
+        // no binding for. This is the silent-data-loss surface: pricing
+        // happens server-side but the rep / client never sees it in the
+        // form. Surfacing here lets the Review UI flag the gap.
+        const boundSlugs = new Set(
+          tmpl.nodes
+            .map((n) => n.binding?.serviceLineSlug)
+            .filter((s): s is string => typeof s === 'string'),
+        );
+        // Also include the loop's main slug so a loop without a body-node
+        // binding for the slug is still considered "projected".
+        for (const n of tmpl.nodes) {
+          if (n.nodeType === 'loop' && n.loopConfig?.serviceLineSlug) {
+            boundSlugs.add(n.loopConfig.serviceLineSlug);
+          }
+        }
+        const slBySlug = new Map(slRows.map((sl) => [sl.slug, sl.displayName]));
+        for (const e of summaryEntities) {
+          if (boundSlugs.has(e.serviceLineSlug)) continue;
+          unprojectedEntities.push({
+            serviceLineSlug: e.serviceLineSlug,
+            displayName: slBySlug.get(e.serviceLineSlug) ?? e.serviceLineSlug,
+            scopeValue: e.scopeValue,
+            confidence: e.confidence,
+          });
+        }
+      }
+
+      // Extraction status counters across all uploaded files.
+      // Used by the gathering page to show "Parsing your document…"
+      // progress and trigger a /state re-poll until everything settles.
+      const extractionGroups = await db.engagementFile.groupBy({
+        by: ['extractionStatus'],
+        where: { engagementId: t.engagementId },
+        _count: { _all: true },
+      });
+      const extractionStatusCounts = {
+        totalFiles: 0,
+        readyFiles: 0,
+        inFlightFiles: 0,
+        failedFiles: 0,
+      };
+      for (const g of extractionGroups) {
+        const n = (g._count?._all as number) ?? 0;
+        extractionStatusCounts.totalFiles += n;
+        if (g.extractionStatus === 'ready') extractionStatusCounts.readyFiles += n;
+        else if (g.extractionStatus === 'failed') extractionStatusCounts.failedFiles += n;
+        else extractionStatusCounts.inFlightFiles += n;
+      }
+
       return {
         engagementId: engagement.id,
         templateName: tmpl.name,
         status: engagement.status,
+        templateNodes: tmpl.nodes,
+        templateRootNodeId: tmpl.rootNodeId,
         currentNode: cursor.kind === 'node' ? cursor.node : null,
         loopContext: cursor.kind === 'node' ? cursor.loopContext : null,
         loopStep: cursor.kind === 'loop_step'
@@ -241,6 +465,11 @@ export class GatheringService {
         answers: topLevelAnswers,
         loopAnswers,
         files: filesMap,
+        suggestedAnswers,
+        suggestionConfidence,
+        extraction: extractionStatusCounts,
+        scopeSummary,
+        unprojectedEntities,
       };
     });
   }
@@ -470,6 +699,91 @@ export class GatheringService {
     });
   }
 
+  /**
+   * Remove a single loop iteration. Deletes every engagement_answer
+   * for that loop's body nodes at iteration N, then shifts down
+   * iteration indices > N so the iteration sequence stays dense.
+   * Updates loopState's cursor accordingly.
+   *
+   * Used when extraction auto-creates an iteration the responder
+   * doesn't actually want, OR when they manually added one and
+   * realised it shouldn't be there. Confirmation lives client-side
+   * (window.confirm) — irreversible by design.
+   */
+  async removeLoopIteration(
+    plaintext: string,
+    ctx: RequestContext,
+    args: { loopId: string; iterIndex: number },
+  ): Promise<{ ok: true }> {
+    const t = await this.resolveToken(plaintext, ctx);
+    if (args.iterIndex < 0) {
+      throw new BadRequestException('iter_index_must_be_non_negative');
+    }
+    return this.tenantDb.run(t.tenantId, async (db) => {
+      const loopRow = await db.templateNode.findUnique({ where: { id: args.loopId } });
+      if (!loopRow) throw new NotFoundException('loop_not_found');
+      if (loopRow.nodeType !== 'loop') throw new BadRequestException('not_a_loop_node');
+
+      const bodyNodes = await db.templateNode.findMany({
+        where: { parentNodeId: args.loopId },
+        select: { id: true },
+      });
+      const bodyIds = bodyNodes.map((n) => n.id);
+      if (bodyIds.length === 0) return { ok: true as const };
+
+      // 1. Delete answers for the iteration being removed.
+      await db.engagementAnswer.deleteMany({
+        where: {
+          engagementId: t.engagementId,
+          nodeId: { in: bodyIds },
+          iterationIndex: args.iterIndex,
+        },
+      });
+
+      // 2. Shift any remaining iterations down by 1 so the index
+      //    sequence stays gap-free.
+      await db.engagementAnswer.updateMany({
+        where: {
+          engagementId: t.engagementId,
+          nodeId: { in: bodyIds },
+          iterationIndex: { gt: args.iterIndex },
+        },
+        data: {
+          iterationIndex: { decrement: 1 },
+        },
+      });
+
+      // 3. Update loopState — if cursor.iter > removed, decrement;
+      //    if equal, keep at the same index so the responder lands
+      //    on what's now the new iteration N (the previous N+1).
+      const engagementRow = await db.engagement.findUniqueOrThrow({
+        where: { id: t.engagementId },
+        select: { loopState: true },
+      });
+      const loopState = ((engagementRow.loopState as LoopState | null) ?? {}) as LoopState;
+      const cursor = loopState[args.loopId];
+      if (cursor && cursor.iter > args.iterIndex) {
+        const updated: LoopState = {
+          ...loopState,
+          [args.loopId]: { ...cursor, iter: cursor.iter - 1 },
+        };
+        await db.engagement.update({
+          where: { id: t.engagementId },
+          data: { loopState: updated as unknown as object },
+        });
+      }
+
+      await this.thread.emitWithin(db, t.tenantId, {
+        engagementId: t.engagementId,
+        eventType: 'loop_iteration_removed',
+        actorType: 'client',
+        payload: { loopId: args.loopId, iterIndex: args.iterIndex },
+      });
+
+      return { ok: true as const };
+    });
+  }
+
   // ── Files: signed PUT URL ─────────────────────────────────────────────────
 
   async createSignedUploadUrl(
@@ -528,6 +842,87 @@ export class GatheringService {
       payload: fileUploadedPayload,
     });
 
+    // Speculative kick-off — when the client PUTs to S3 and then keeps
+    // answering questions, we use the gap to start text extraction so
+    // by the time they hit Submit, most documents are already
+    // structured. The kickoff is fire-and-forget; if S3 doesn't have
+    // the bytes yet (rare race) the row will end in `failed` and the
+    // submit-time pass below re-runs it. Both paths ultimately land
+    // the file in a terminal state before predict runs.
+    setTimeout(() => {
+      void this.extraction.kickoff(t.tenantId, fileId).catch(() => undefined);
+    }, 1500);
+
+    return { uploadUrl: url, fileId, key, expiresAt };
+  }
+
+  /**
+   * Quick-fill flow: the client uploads a scoping document at the very
+   * start of the form, before answering any specific question. The file
+   * is recorded with `kind='scoping_doc'` and `node_id=null` so the
+   * gathering UI can keep these files separate from per-question
+   * attachments. Extraction kicks off the same way, and the auto-promote
+   * step downstream pre-creates loop iterations from the inferred
+   * entities so the form starts pre-walked.
+   */
+  async createScopingDocUploadUrl(
+    plaintext: string,
+    ctx: RequestContext,
+    args: { filename: string; contentType: string; sizeBytes: number },
+  ): Promise<{ uploadUrl: string; fileId: string; key: string; expiresAt: string }> {
+    const t = await this.resolveToken(plaintext, ctx);
+
+    if (args.sizeBytes > 50 * 1024 * 1024) {
+      throw new BadRequestException('file_too_large');
+    }
+
+    const fileId = randomUUID();
+    const key = S3Service.keyForEngagementFile({
+      tenantId: t.tenantId,
+      engagementId: t.engagementId,
+      fileId,
+      filename: args.filename,
+    });
+    const { url, expiresAt } = await this.s3.presignPut({ key, contentType: args.contentType });
+
+    const fileUploadedPayload = {
+      kind: 'scoping_doc',
+      filename: args.filename,
+      sizeBytes: args.sizeBytes,
+    };
+    await this.tenantDb.run(t.tenantId, async (db) => {
+      await db.engagementFile.create({
+        data: {
+          id: fileId,
+          tenantId: t.tenantId,
+          engagementId: t.engagementId,
+          // node_id stays null — scoping docs don't belong to a question.
+          kind: 'scoping_doc',
+          s3Key: key,
+          filename: args.filename,
+          sizeBytes: BigInt(args.sizeBytes),
+          contentType: args.contentType,
+        },
+      });
+      await this.thread.emitWithin(db, t.tenantId, {
+        engagementId: t.engagementId,
+        eventType: 'file_uploaded',
+        actorType: 'client',
+        payload: fileUploadedPayload,
+      });
+    });
+
+    void this.thread.dispatchAfterCommit(t.tenantId, {
+      engagementId: t.engagementId,
+      eventType: 'file_uploaded',
+      actorType: 'client',
+      payload: fileUploadedPayload,
+    });
+
+    setTimeout(() => {
+      void this.extraction.kickoff(t.tenantId, fileId).catch(() => undefined);
+    }, 1500);
+
     return { uploadUrl: url, fileId, key, expiresAt };
   }
 
@@ -570,10 +965,31 @@ export class GatheringService {
       );
     }
 
-    // Stage 3: fire-and-forget ML modifier prediction. Falls back to
-    // base-only quoting (per PDF §3.4 cold-start handling) when the
-    // tenant lacks the historical contracts the model needs.
-    void this.ml.predictForEngagement(t.tenantId, t.engagementId);
+    // Stage 3 — document extraction gating. The user explicitly wants
+    // every uploaded document processed BEFORE the price predict
+    // fires, so the model + manager see the full signal set. Two
+    // paths converge:
+    //
+    //   a) Files were already speculatively-kicked off during upload
+    //      (see createSignedUploadUrl). Most should be `ready` by
+    //      submit time. We re-kick failed/pending stragglers below
+    //      to resume any that lost the upload race.
+    //
+    //   b) When every file lands in a terminal state, ExtractionService
+    //      itself fires `predictForEngagement` (see settleAndMaybePredict
+    //      in extraction.service). That keeps the gating logic in one
+    //      place and avoids racing two predictors.
+    //
+    // If there are no files at all OR all files are already settled
+    // (the common case for scope forms with zero attachments), fire
+    // predict immediately — there's nothing to wait for.
+    const enqueued = await this.extraction.kickoffForEngagement(t.tenantId, t.engagementId);
+    const settled = await this.extraction.isAllSettled(t.tenantId, t.engagementId);
+    if (enqueued === 0 && settled) {
+      void this.ml.predictForEngagement(t.tenantId, t.engagementId);
+    }
+    // Otherwise: ExtractionService.settleAndMaybePredict triggers it
+    // once the last file finishes.
 
     return result;
   }
