@@ -52,6 +52,7 @@ const EVENT_LABELS: Record<string, string> = {
   file_uploaded: 'File uploaded',
   scope_submitted: 'Scope submitted',
   price_predicted: 'Price predicted',
+  price_tech_adjusted: 'Tech team adjusted price',
   approval_requested: 'Approval requested',
   approval_granted: 'Approved',
   approval_adjusted: 'Approved with adjustment',
@@ -76,6 +77,7 @@ const EVENT_ICONS: Partial<Record<string, keyof typeof Icon>> = {
   file_uploaded: 'Paperclip',
   scope_submitted: 'Send',
   price_predicted: 'Sparkle',
+  price_tech_adjusted: 'Edit',
   approval_requested: 'Clock',
   approval_granted: 'Check',
   approval_adjusted: 'Edit',
@@ -186,6 +188,21 @@ export default function OpportunityDetailPage() {
       void proposalDraft.generate(id).catch(() => undefined);
     } catch (e) {
       setErr(describeError(e));
+    }
+  }
+
+  async function techAdjustPrediction(adjustedPriceCents: number, note: string) {
+    if (!prediction) return;
+    try {
+      await predictions.techAdjust(id, {
+        predictionId: prediction.id,
+        adjustedPriceCents,
+        ...(note.trim() ? { note: note.trim() } : {}),
+      });
+      await refreshAfterDecision();
+    } catch (e) {
+      setErr(describeError(e));
+      throw e;
     }
   }
 
@@ -332,6 +349,7 @@ export default function OpportunityDetailPage() {
                 onReject={rejectPrediction}
                 onRevert={revertApproval}
                 onRepredict={runPredict}
+                onTechAdjust={techAdjustPrediction}
                 repredicting={predicting}
                 rejectionReason={lastRejectionReason(eng.thread)}
                 thread={eng.thread}
@@ -488,6 +506,7 @@ function ApprovalCard({
   onReject,
   onRevert,
   onRepredict,
+  onTechAdjust,
   repredicting,
   rejectionReason,
   thread,
@@ -505,6 +524,7 @@ function ApprovalCard({
   onReject(reason: string): Promise<void>;
   onRevert(): Promise<void>;
   onRepredict(): Promise<void>;
+  onTechAdjust(adjustedPriceCents: number, note: string): Promise<void>;
   repredicting: boolean;
   rejectionReason: string | null;
   /** Thread events — used to surface model confidence + comparable
@@ -513,6 +533,12 @@ function ApprovalCard({
 }) {
   const canApprove = approverRole === 'admin' || approverRole === 'sales_manager';
   const isAdmin = approverRole === 'admin';
+  const isTechTeam = approverRole === 'tech_team';
+  // Tech adjustment is only meaningful when bound to the CURRENT prediction.
+  // After a re-predict, the prior adjustment is stale and we hide it.
+  const techAdjustedFresh =
+    quote?.techAdjustedPriceCents != null
+    && quote.techAdjustedPredictionId === prediction.id;
   // Approve/reject are mutually exclusive — once a decision is recorded,
   // hide both action surfaces. Admin gets a "Revert" escape hatch instead.
   const decisionMade = approved || rejected;
@@ -556,6 +582,17 @@ function ApprovalCard({
         choice: 'aggressive',
       });
     }
+  }
+  if (techAdjustedFresh && quote?.techAdjustedPriceCents != null) {
+    offers.push({
+      label: 'Tech team',
+      cents: quote.techAdjustedPriceCents,
+      sub: quote.techAdjustmentNote
+        ? `Note: ${quote.techAdjustmentNote}`
+        : 'Lodged by tech team',
+      tone: 'accent',
+      choice: 'tech_adjusted',
+    });
   }
 
   const [override, setOverride] = useState<number | null>(null);
@@ -672,6 +709,41 @@ function ApprovalCard({
         </div>
       )}
 
+      {/* Tech team adjustment panel */}
+      {isTechTeam && !decisionMade && (
+        <TechAdjustPanel
+          currency={currency}
+          predictedCents={prediction.predictedPriceCents}
+          existingAdjustedCents={
+            techAdjustedFresh ? quote?.techAdjustedPriceCents ?? null : null
+          }
+          existingNote={
+            techAdjustedFresh ? quote?.techAdjustmentNote ?? null : null
+          }
+          onSubmit={onTechAdjust}
+        />
+      )}
+
+      {/* Lodged-adjustment summary visible to managers + the tech team itself.
+          When approved, the existing approved chip at the top is enough. */}
+      {techAdjustedFresh && !decisionMade && !isTechTeam && quote?.techAdjustedPriceCents != null && (
+        <div
+          style={{
+            marginTop: 12, padding: 10,
+            background: 'var(--accent-tint)',
+            border: '1px solid color-mix(in oklch, var(--accent) 22%, transparent)',
+            borderRadius: 8, fontSize: 12, lineHeight: 1.5,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>
+            <Icon.Edit size={11} /> Tech team lodged {fmt(quote.techAdjustedPriceCents)}
+          </div>
+          {quote.techAdjustmentNote && (
+            <div style={{ color: 'var(--fg-muted)' }}>“{quote.techAdjustmentNote}”</div>
+          )}
+        </div>
+      )}
+
       {/* Custom override */}
       {canApprove && !decisionMade && (
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--divider)' }}>
@@ -737,14 +809,16 @@ function ApprovalCard({
             </div>
           )}
         </details>
-        <button
-          className="btn sm ghost"
-          disabled={repredicting}
-          onClick={() => void onRepredict()}
-          title="Recompute with the latest rate card + config"
-        >
-          {repredicting ? <><span className="spin" />Predicting…</> : <><Icon.Sparkle size={11} />Re-predict</>}
-        </button>
+        {!isTechTeam && (
+          <button
+            className="btn sm ghost"
+            disabled={repredicting}
+            onClick={() => void onRepredict()}
+            title="Recompute with the latest rate card + config"
+          >
+            {repredicting ? <><span className="spin" />Predicting…</> : <><Icon.Sparkle size={11} />Re-predict</>}
+          </button>
+        )}
       </div>
 
       {/* Decision controls — reject before any decision; revert after one. */}
@@ -948,6 +1022,107 @@ function NoPredictionCta({
       <button className="btn accent" disabled={running || !canPredict} onClick={() => void onRun()}>
         {running ? <><span className="spin" />Predicting…</> : <><Icon.Sparkle size={12} />Run prediction</>}
       </button>
+    </div>
+  );
+}
+
+function TechAdjustPanel({
+  currency,
+  predictedCents,
+  existingAdjustedCents,
+  existingNote,
+  onSubmit,
+}: {
+  currency: string;
+  predictedCents: number;
+  existingAdjustedCents: number | null;
+  existingNote: string | null;
+  onSubmit(adjustedPriceCents: number, note: string): Promise<void>;
+}) {
+  const start = existingAdjustedCents ?? predictedCents;
+  const [amount, setAmount] = useState<number | ''>(start / 100);
+  const [note, setNote] = useState(existingNote ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  const numeric = typeof amount === 'number' && Number.isFinite(amount) ? amount : null;
+  const cents = numeric == null ? null : Math.round(numeric * 100);
+  const dirty = cents != null && cents !== existingAdjustedCents;
+  const valid = cents != null && cents >= 0 && dirty;
+
+  async function submit() {
+    if (!valid || cents == null) return;
+    setBusy(true); setErr(null);
+    try {
+      await onSubmit(cents, note);
+      setSavedAt(Date.now());
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--divider)',
+      }}
+    >
+      <div className="section-label" style={{ marginBottom: 6 }}>
+        <Icon.Edit size={11} /> Adjust the predicted price
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 10px', lineHeight: 1.55 }}>
+        Lodge an adjusted price and the sales manager will review it for approval. This is the
+        only action your role has — you can&apos;t approve, reject, or send.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', width: 200 }}>
+          <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: 'var(--fg-subtle)' }}>
+            {currencySymbol(currency)}
+          </span>
+          <input
+            className="input"
+            type="number"
+            min={0}
+            step={1}
+            placeholder="Adjusted price"
+            style={{ paddingLeft: 22, fontVariantNumeric: 'tabular-nums' }}
+            value={amount}
+            onChange={(e) => setAmount(e.target.value === '' ? '' : Number(e.target.value))}
+          />
+        </div>
+        <input
+          className="input"
+          placeholder="Optional note for the manager"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          style={{ flex: 1, minWidth: 180, fontSize: 12 }}
+        />
+        <button
+          className="btn sm accent"
+          disabled={busy || !valid}
+          onClick={() => void submit()}
+        >
+          {busy
+            ? <span className="spin" />
+            : <>{existingAdjustedCents != null ? 'Update lodged price' : 'Lodge adjustment'}</>}
+        </button>
+      </div>
+      {err && (
+        <div style={{
+          marginTop: 10, padding: 10, fontSize: 12.5,
+          background: 'var(--danger-tint)', color: 'var(--danger)',
+          border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
+          borderRadius: 8,
+        }}>{err}</div>
+      )}
+      {savedAt != null && !dirty && !err && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--ok)' }}>
+          <Icon.Check size={11} sw={2.2} /> Lodged — the sales manager will see your adjustment.
+        </div>
+      )}
     </div>
   );
 }

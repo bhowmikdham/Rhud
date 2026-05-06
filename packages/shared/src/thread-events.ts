@@ -24,6 +24,7 @@ export const THREAD_EVENT_TYPES = [
   'mapper_fallback_heuristic',
   'scope_submitted',
   'price_predicted',
+  'price_tech_adjusted',
   'approval_requested',
   'approval_granted',
   'approval_adjusted',

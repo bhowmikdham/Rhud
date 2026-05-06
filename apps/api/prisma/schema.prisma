@@ -219,6 +219,15 @@ model EngagementQuote {
   predictedBandHighCents   BigInt?   @map("predicted_band_high_cents")
   winProbability           Decimal?  @map("win_probability") @db.Decimal
   modifierDrivers          Json?     @map("modifier_drivers")
+  // Tech-team pre-approval adjustment — null until a tech_team user
+  // edits the predicted price. Bound to a specific prediction so a
+  // re-predict stales the adjustment (UI ignores it when
+  // techAdjustedPredictionId != latest prediction.id).
+  techAdjustedPriceCents   BigInt?   @map("tech_adjusted_price_cents")
+  techAdjustedAt           DateTime? @map("tech_adjusted_at") @db.Timestamptz
+  techAdjustedBy           String?   @map("tech_adjusted_by") @db.Uuid
+  techAdjustmentNote       String?   @map("tech_adjustment_note")
+  techAdjustedPredictionId String?   @map("tech_adjusted_prediction_id") @db.Uuid
   // Manager approval / override — null until used.
   approvedPriceCents       BigInt?   @map("approved_price_cents")
   approvedAt               DateTime? @map("approved_at") @db.Timestamptz

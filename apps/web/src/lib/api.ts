@@ -343,6 +343,11 @@ export interface EngagementQuote {
   predictedBandLowCents: number | null;
   predictedBandHighCents: number | null;
   winProbability: number | null;
+  techAdjustedPriceCents: number | null;
+  techAdjustedAt: string | null;
+  techAdjustedBy: string | null;
+  techAdjustmentNote: string | null;
+  techAdjustedPredictionId: string | null;
   approvedPriceCents: number | null;
   approvedAt: string | null;
   approvedBy: string | null;
@@ -448,7 +453,7 @@ export interface Prediction {
   createdAt: string;
 }
 
-export type ApprovalChoice = 'base' | 'recommended' | 'aggressive' | 'custom';
+export type ApprovalChoice = 'base' | 'recommended' | 'aggressive' | 'tech_adjusted' | 'custom';
 
 export interface ApprovalResult {
   engagementId: string;
@@ -492,6 +497,20 @@ export const predictions = {
       `/opportunities/${engagementId}/revert-approval`,
       { method: 'POST' },
     ),
+  /** Tech-team only: lodge an adjusted price for the manager to review. */
+  techAdjust: (
+    engagementId: string,
+    body: { predictionId: string; adjustedPriceCents: number; note?: string },
+  ) =>
+    request<{
+      engagementId: string;
+      techAdjustedPriceCents: number | null;
+      techAdjustedAt: string | null;
+      techAdjustedPredictionId: string | null;
+    }>(`/opportunities/${engagementId}/tech-adjust`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // ── Tenant pricing config (regime thresholds + loyalty rules) ───────────────
@@ -522,7 +541,7 @@ export interface TenantPricingConfig {
 
 // ── Team management (admin) ─────────────────────────────────────────────────
 
-export type Role = 'admin' | 'sales_manager' | 'sales_employee';
+export type Role = 'admin' | 'sales_manager' | 'sales_employee' | 'tech_team';
 
 export interface UserSummary {
   id: string;

@@ -338,6 +338,7 @@ function roleColor(role?: string): string {
     case 'sales_employee': return 'oklch(0.62 0.14 250)';
     case 'sales_manager':  return 'oklch(0.58 0.12 50)';
     case 'admin':          return 'oklch(0.6 0.12 340)';
+    case 'tech_team':      return 'oklch(0.6 0.13 180)';
     default:               return 'var(--fg)';
   }
 }
