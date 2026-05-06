@@ -25,6 +25,7 @@ import { ConsoleEmailTransport } from '../src/notifications/email.transport.js';
 import { NotificationsService } from '../src/notifications/notifications.service.js';
 import { MlClient } from '../src/ml/ml-client.service.js';
 import { MlService } from '../src/ml/ml.service.js';
+import { OdooService } from '../src/integrations/odoo/odoo.service.js';
 
 const TENANT_A = '00000000-0000-0000-0000-0000000000a3';
 const TENANT_B = '00000000-0000-0000-0000-0000000000b3';
@@ -70,7 +71,11 @@ describe('Gathering / engagement flow (sprint 3)', () => {
   const engagementsSvc = new EngagementsService(tenantDb, thread);
   const pricingSvc = new PricingService(tenantDb);
   const quoteSvc = new QuoteService(tenantDb, pricingSvc, thread);
-  const gatheringSvc = new GatheringService(unscoped, tenantDb, thread, s3, mlSvc, quoteSvc);
+  // Stub OdooService — auto-sync hook is a no-op when Odoo isn't
+  // configured (which it isn't in test). We never actually call the
+  // pushEngagement path, so a minimal stub is fine.
+  const odooSvc = new OdooService(tenantDb);
+  const gatheringSvc = new GatheringService(unscoped, tenantDb, thread, s3, mlSvc, quoteSvc, odooSvc);
 
   // Seeded template ids per tenant (4 nodes A→B→C→END for clarity).
   const TMPL_A = '99999999-9999-9999-9999-9999999999a3';

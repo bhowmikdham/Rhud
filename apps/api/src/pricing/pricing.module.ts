@@ -9,9 +9,10 @@ import { PredictionService } from './prediction.service.js';
 import { PredictionController } from './prediction.controller.js';
 import { TenantPricingConfigService } from './tenant-pricing-config.service.js';
 import { TenantPricingConfigController } from './tenant-pricing-config.controller.js';
+import { IntegrationsModule } from '../integrations/integrations.module.js';
 
 @Module({
-  imports: [AuthModule, ThreadModule],
+  imports: [AuthModule, ThreadModule, IntegrationsModule],
   controllers: [
     PricingController,
     QuoteController,

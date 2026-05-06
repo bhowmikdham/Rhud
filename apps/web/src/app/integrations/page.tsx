@@ -12,9 +12,11 @@ import {
   integrations,
   type GammaConfig,
   type OutlookConnectionStatus,
+  type OdooConnectionStatus,
 } from '@/lib/api';
 import { GammaConnectModal } from './gamma-modal';
 import { OutlookSetupModal } from './outlook-modal';
+import { OdooConnectModal } from './odoo-modal';
 
 const INTEGRATIONS = [
   {
@@ -97,6 +99,8 @@ function IntegrationsInner() {
   const [outlook, setOutlook] = useState<OutlookConnectionStatus | null>(null);
   const [outlookBusy, setOutlookBusy] = useState(false);
   const [showOutlookSetup, setShowOutlookSetup] = useState(false);
+  const [odoo, setOdoo] = useState<OdooConnectionStatus | null>(null);
+  const [showOdooSetup, setShowOdooSetup] = useState(false);
   const [banner, setBanner] = useState<{ tone: 'ok' | 'danger'; text: string } | null>(null);
 
   // Pick up the OAuth round-trip result.
@@ -123,11 +127,16 @@ function IntegrationsInner() {
     integrations.outlook.status().then(setOutlook).catch(() => setOutlook(null));
   }, []);
 
+  const refreshOdoo = useCallback(() => {
+    integrations.odoo.status().then(setOdoo).catch(() => setOdoo(null));
+  }, []);
+
   useEffect(() => {
     if (!user) return;
     gamma.get().then((c) => setGammaCfg(c ?? 'unset')).catch(() => setGammaCfg('unset'));
     refreshOutlook();
-  }, [user, refreshOutlook]);
+    refreshOdoo();
+  }, [user, refreshOutlook, refreshOdoo]);
 
   if (!user) return null;
   const isAdmin = user.role === 'admin';
@@ -189,6 +198,17 @@ function IntegrationsInner() {
       }
       return { tone: 'pending', label: 'Not connected' };
     }
+    if (key === 'odoo') {
+      if (odoo == null) return { tone: 'pending', label: '…' };
+      if (!odoo.configured) return { tone: 'pending', label: 'Not connected' };
+      if (odoo.connected) {
+        return {
+          tone: 'connected',
+          label: odoo.host ? `Connected — ${odoo.host}` : 'Connected',
+        };
+      }
+      return { tone: 'pending', label: odoo.lastErrorMessage ? 'Connection error' : 'Configured' };
+    }
     if (key === 'postmark') return { tone: 'configured', label: 'Console transport (dev)' };
     if (key === 's3') return { tone: 'connected', label: 'Connected' };
     return { tone: 'pending', label: 'Coming soon' };
@@ -246,6 +266,36 @@ function IntegrationsInner() {
             >
               <Icon.Settings size={11} />
             </button>
+          )}
+        </div>
+      );
+    }
+    if (key === 'odoo') {
+      if (odoo == null) return <button className="btn sm" disabled style={{ opacity: 0.6 }}>…</button>;
+      if (!isAdmin) {
+        if (!odoo.configured) {
+          return <button className="btn sm" disabled style={{ opacity: 0.6 }}>Admin only</button>;
+        }
+        return (
+          <a className="btn sm ghost" href="/integrations/odoo">
+            <Icon.Settings size={11} /> View
+          </a>
+        );
+      }
+      return (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            className={odoo.configured ? 'btn sm ghost' : 'btn sm accent'}
+            onClick={() => setShowOdooSetup(true)}
+          >
+            {odoo.configured
+              ? <><Icon.Settings size={11} /> Manage</>
+              : <><Icon.ArrowUpRight size={11} /> Connect</>}
+          </button>
+          {odoo.configured && (
+            <a className="btn sm ghost" href="/integrations/odoo" title="Field mapping + Odoo browser">
+              <Icon.ArrowUpRight size={11} />
+            </a>
           )}
         </div>
       );
@@ -322,6 +372,13 @@ function IntegrationsInner() {
           <OutlookSetupModal
             onClose={() => setShowOutlookSetup(false)}
             onChanged={refreshOutlook}
+          />
+        )}
+
+        {showOdooSetup && (
+          <OdooConnectModal
+            onClose={() => setShowOdooSetup(false)}
+            onChanged={refreshOdoo}
           />
         )}
       </div>

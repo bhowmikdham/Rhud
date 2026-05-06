@@ -1,15 +1,33 @@
 -- Init migration — sprint 1 schema + RLS foundation.
 --
 -- What this does:
---   1. Creates tenants, users, magic_links.
---   2. Enables Row-Level Security on every tenant-scoped table.
---   3. Defines a single policy per table keyed on
+--   1. Ensures Postgres extensions + the `rhud_app` runtime role exist
+--      (idempotent — also installed at container init via infra/postgres/init).
+--   2. Creates tenants, users, magic_links.
+--   3. Enables Row-Level Security on every tenant-scoped table.
+--   4. Defines a single policy per table keyed on
 --      current_setting('app.tenant_id')::uuid, which the `withTenant` wrapper
 --      sets as a transaction-local value before every query.
---   4. Grants the runtime `rhud_app` role table access, explicitly NOBYPASSRLS.
+--   5. Grants the runtime `rhud_app` role table access, explicitly NOBYPASSRLS.
 --
 -- If you regenerate from schema.prisma (prisma migrate dev), preserve the RLS
 -- and grant blocks at the bottom of this file — Prisma won't emit them.
+
+-- ── Prerequisites (extensions + runtime role) ────────────────────────────────
+-- These also live in infra/postgres/init so the dev container has them on
+-- first boot. Embedding them here makes the migration self-contained, which
+-- is what Prisma's shadow database needs to validate the migration cleanly.
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "citext";
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rhud_app') THEN
+    CREATE ROLE rhud_app LOGIN PASSWORD 'rhud_app' NOBYPASSRLS;
+  END IF;
+END
+$$;
 
 -- ── Tables ───────────────────────────────────────────────────────────────────
 CREATE TABLE "tenants" (

@@ -5,3 +5,4 @@ export * from './templates.js';
 export * from './engine.js';
 export * from './notifications.js';
 export * from './pricing.js';
+export * from './odoo.js';

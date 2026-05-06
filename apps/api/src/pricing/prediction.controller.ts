@@ -27,6 +27,7 @@ import type { AuthedRequest } from '../auth/auth.types.js';
 import { TenantDb } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { PredictionService } from './prediction.service.js';
+import { OdooService } from '../integrations/odoo/odoo.service.js';
 
 const APPROVAL_CHOICES = ['base', 'recommended', 'aggressive', 'custom'] as const;
 type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
@@ -88,6 +89,7 @@ export class PredictionController {
     private readonly svc: PredictionService,
     private readonly tenantDb: TenantDb,
     private readonly thread: ThreadService,
+    private readonly odoo: OdooService,
   ) {}
 
   @Post('predict')
@@ -191,6 +193,9 @@ export class PredictionController {
       payload: { approvedPriceCents: approvedCents, choice: dto.choice },
     });
 
+    // Push the just-approved opportunity to Odoo (no-op when not configured).
+    void this.odoo.maybeAutoSync(req.tenantId, engagementId, 'approved');
+
     return {
       engagementId: updated.id,
       approvedPriceCents: Number(updated.approvedPriceCents ?? 0),
@@ -273,6 +278,9 @@ export class PredictionController {
       actorId: req.user.sub,
       payload: { comment: dto.reason.trim() },
     });
+
+    // Lost-deal sync — Odoo has a dedicated lost-state action.
+    void this.odoo.maybeAutoSync(req.tenantId, engagementId, 'lost');
 
     return { engagementId: updated.id, status: updated.status };
   }

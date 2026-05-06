@@ -21,6 +21,7 @@ import { ThreadService } from '../thread/thread.service.js';
 import { S3Service } from '../storage/s3.service.js';
 import { MlService } from '../ml/ml.service.js';
 import { QuoteService } from '../pricing/quote.service.js';
+import { OdooService } from '../integrations/odoo/odoo.service.js';
 import { deviceFingerprint, fingerprintsEqual, verifyToken } from './token.util.js';
 
 export interface RequestContext {
@@ -94,6 +95,7 @@ export class GatheringService {
     private readonly s3: S3Service,
     private readonly ml: MlService,
     private readonly quotes: QuoteService,
+    private readonly odoo: OdooService,
   ) {}
 
   // ── Token resolution ─────────────────────────────────────────────────────
@@ -574,6 +576,11 @@ export class GatheringService {
     // base-only quoting (per PDF §3.4 cold-start handling) when the
     // tenant lacks the historical contracts the model needs.
     void this.ml.predictForEngagement(t.tenantId, t.engagementId);
+
+    // Odoo auto-sync (no-op when disabled / not configured). The
+    // service silently swallows errors so a flaky Odoo doesn't fail
+    // a submission.
+    void this.odoo.maybeAutoSync(t.tenantId, t.engagementId, 'submitted');
 
     return result;
   }
