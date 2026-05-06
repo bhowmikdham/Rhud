@@ -21,19 +21,24 @@ ALTER TABLE invites
     CHECK (role IN ('admin', 'sales_manager', 'sales_employee', 'tech_team'));
 
 -- ── 2. Add `price_tech_adjusted` to thread_events whitelist ─────────────────
+-- Whitelist mirrors @rhud/shared THREAD_EVENT_TYPES at the time this lands.
+-- Includes the events introduced by the file-extraction + site-enumeration
+-- pipelines so existing rows pass the new constraint.
 ALTER TABLE thread_events
   DROP CONSTRAINT IF EXISTS thread_events_event_type_check;
 ALTER TABLE thread_events
   ADD CONSTRAINT thread_events_event_type_check
     CHECK (event_type IN (
       'link_issued','link_opened','node_answered','file_uploaded',
+      'file_extracted','loop_iteration_removed','mapper_fallback_heuristic',
       'scope_submitted','price_predicted','price_tech_adjusted',
       'approval_requested',
       'approval_granted','approval_adjusted','approval_rejected',
       'approval_reverted',
       'proposal_draft_requested','proposal_draft_ready','proposal_sent',
       'engagement_synced','engagement_closed',
-      'quote_computed','quote_approved'
+      'quote_computed','quote_approved',
+      'site_enumerated','site_enumeration_failed'
     ));
 
 -- ── 3. Tech-adjustment columns on engagement_quotes ──────────────────────────
