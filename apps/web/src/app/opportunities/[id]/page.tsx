@@ -2397,11 +2397,39 @@ function GammaDeckRendered({
   onMarkSent(): void;
 }) {
   const [copied, setCopied] = useState(false);
+  // Gamma decks are mutable on gamma.app after we generate them — the
+  // user typically opens the deck in Gamma to polish it, and expects
+  // their edits to show here. The iframe loads its src once on mount
+  // and never re-fetches on its own, so we force a fresh load when the
+  // user comes back to this tab (likely just edited in Gamma) and on
+  // an explicit Refresh click.
+  const [refreshKey, setRefreshKey] = useState(0);
   const embedUrl = gammaEmbedUrl(url);
+  // Cache-bust query param doubles up with the React `key` so we get a
+  // fresh DOM node AND a URL the browser hasn't seen — Gamma ignores
+  // unknown query params on /embed so this is safe.
+  const embedSrc =
+    refreshKey === 0
+      ? embedUrl
+      : `${embedUrl}${embedUrl.includes('?') ? '&' : '?'}_=${refreshKey}`;
+
+  useEffect(() => {
+    function onVisibility() {
+      if (document.visibilityState === 'visible') {
+        setRefreshKey((k) => k + 1);
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
   function copyLink() {
     navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  }
+  function refreshDeck() {
+    setRefreshKey((k) => k + 1);
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -2415,7 +2443,8 @@ function GammaDeckRendered({
         aspectRatio: '16 / 9',
       }}>
         <iframe
-          src={embedUrl}
+          key={refreshKey}
+          src={embedSrc}
           title="Proposal deck preview"
           loading="lazy"
           allow="fullscreen"
@@ -2433,6 +2462,13 @@ function GammaDeckRendered({
         </a>
         <button onClick={copyLink} className="btn sm ghost">
           {copied ? <><Icon.Check size={11} /> Copied</> : <><Icon.Copy size={11} /> Copy link</>}
+        </button>
+        <button
+          onClick={refreshDeck}
+          className="btn sm ghost"
+          title="Reload the embed to pull the latest edits from Gamma"
+        >
+          <Icon.Refresh size={11} /> Refresh
         </button>
         {status !== 'sent' && (
           <button onClick={onRegenerate} disabled={busy} className="btn sm ghost">

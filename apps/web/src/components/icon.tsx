@@ -76,6 +76,7 @@ export const Icon = {
   Code: makeIcon(<><path d="m8 16-4-4 4-4" /><path d="m16 8 4 4-4 4" /><path d="m14 4-4 16" /></>),
   MoreHorizontal: makeIcon(<><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></>),
   Hash: makeIcon(<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18" />),
+  Refresh: makeIcon(<><path d="M21 12a9 9 0 1 1-3-6.7L21 8" /><path d="M21 3v5h-5" /></>),
 } as const;
 
 export type IconName = keyof typeof Icon;
