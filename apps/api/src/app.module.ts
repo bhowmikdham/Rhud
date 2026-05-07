@@ -17,6 +17,7 @@ import { GammaModule } from './gamma/gamma.module.js';
 import { IntegrationsModule } from './integrations/integrations.module.js';
 import { ExtractionModule } from './extraction/extraction.module.js';
 import { SiteEnumModule } from './site-enum/site-enum.module.js';
+import { LeadManagementModule } from './lead-management/lead-management.module.js';
 import { HealthController } from './health.controller.js';
 
 @Module({
@@ -44,6 +45,7 @@ import { HealthController } from './health.controller.js';
     IntegrationsModule,
     ExtractionModule,
     SiteEnumModule,
+    LeadManagementModule,
   ],
   controllers: [HealthController],
 })
