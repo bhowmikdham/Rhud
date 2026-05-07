@@ -25,6 +25,13 @@ export interface EngagementSummary {
   predictedPriceCents: number | null;
   priceLowCents: number | null;
   priceHighCents: number | null;
+  /**
+   * ISO 4217 code (INR / USD / EUR / GBP). Resolved from the engagement
+   * quote when one exists, otherwise null. Frontend uses this to format
+   * the price tag with the right symbol — without it we'd guess wrong on
+   * mixed-currency tenants.
+   */
+  currency: string | null;
 }
 
 /**
@@ -132,7 +139,13 @@ export class EngagementsService {
     return this.tenantDb.run(tenantId, async (db) => {
       const rows = await db.engagement.findMany({
         orderBy: { createdAt: 'desc' },
-        include: { template: { select: { name: true } } },
+        include: {
+          template: { select: { name: true } },
+          // Pull just the currency from the engagement quote so the
+          // list endpoint can surface the right currency symbol on
+          // each row without exposing the whole quote payload.
+          quote: { select: { currency: true } },
+        },
       });
       return rows.map(rowToSummary);
     });
@@ -158,7 +171,10 @@ export class EngagementsService {
     const { summary, link } = await this.tenantDb.run(tenantId, async (db) => {
       const row = await db.engagement.findUnique({
         where: { id },
-        include: { template: { select: { name: true } } },
+        include: {
+          template: { select: { name: true } },
+          quote: { select: { currency: true } },
+        },
       });
       if (!row) throw new NotFoundException('engagement_not_found');
       // Pick the most recent token. We don't pre-filter by revoked/expired
@@ -217,6 +233,9 @@ function rowToSummary(r: {
   predictedPriceCents: bigint | null;
   priceLowCents: bigint | null;
   priceHighCents: bigint | null;
+  // Optional — only populated when callers `include: { quote: ... }`.
+  // Single-record `getById` keeps it absent; `list` opts in.
+  quote?: { currency: string } | null;
 }): EngagementSummary {
   return {
     id: r.id,
@@ -230,5 +249,6 @@ function rowToSummary(r: {
     predictedPriceCents: r.predictedPriceCents == null ? null : Number(r.predictedPriceCents),
     priceLowCents: r.priceLowCents == null ? null : Number(r.priceLowCents),
     priceHighCents: r.priceHighCents == null ? null : Number(r.priceHighCents),
+    currency: r.quote?.currency ?? null,
   };
 }

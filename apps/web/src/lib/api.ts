@@ -253,6 +253,9 @@ export interface EngagementSummary {
   predictedPriceCents: number | null;
   priceLowCents: number | null;
   priceHighCents: number | null;
+  /** ISO 4217 from the engagement quote (INR/USD/EUR/GBP). Null when no
+   *  quote exists yet. Frontend uses this to format the price tag. */
+  currency: string | null;
 }
 
 /** Legacy alias used by older imports. */

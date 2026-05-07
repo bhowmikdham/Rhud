@@ -11,6 +11,66 @@ import { RowActions } from '@/components/row-actions';
 import { DeleteConfirmModal } from '@/components/delete-confirm-modal';
 
 type FilterId = 'all' | 'open' | 'pending_approval' | 'drafting' | 'sent';
+type ViewMode = 'list' | 'kanban';
+
+/**
+ * Lifecycle columns for the Kanban view. Each column collects one or
+ * more raw statuses so the board reads as the rep sees the work — not
+ * as the schema enumerates it. Order matters: earlier columns are the
+ * earlier lifecycle stages, leftmost on screen.
+ */
+const KANBAN_COLUMNS: Array<{
+  id: string;
+  label: string;
+  statuses: string[];
+  hint: string;
+  accent: string;
+}> = [
+  {
+    id: 'discovery',
+    label: 'Discovery',
+    statuses: ['issued', 'in_progress'],
+    hint: 'Client filling out scope',
+    accent: 'oklch(0.62 0.14 250)',
+  },
+  {
+    id: 'submitted',
+    label: 'Pricing',
+    statuses: ['submitted', 'predicted'],
+    hint: 'Scope in, price computed',
+    accent: 'oklch(0.6 0.13 180)',
+  },
+  {
+    id: 'approval',
+    label: 'Awaiting approval',
+    statuses: ['pending_approval'],
+    hint: 'Manager review',
+    accent: 'oklch(0.7 0.14 80)',
+  },
+  {
+    id: 'approved',
+    label: 'Approved',
+    statuses: ['approved'],
+    hint: 'Ready to draft',
+    accent: 'oklch(0.65 0.14 150)',
+  },
+  {
+    id: 'drafting',
+    label: 'Proposal',
+    statuses: ['drafting', 'draft_ready'],
+    hint: 'Drafting & ready to send',
+    accent: 'oklch(0.6 0.12 340)',
+  },
+  {
+    id: 'delivered',
+    label: 'Delivered',
+    statuses: ['sent', 'closed'],
+    hint: 'Sent to client',
+    accent: 'oklch(0.6 0.14 160)',
+  },
+];
+
+const ARCHIVED_STATUSES = new Set(['rejected', 'expired']);
 
 export default function OpportunitiesListPage() {
   const user = useRequireAuth();
@@ -19,6 +79,7 @@ export default function OpportunitiesListPage() {
   const [filter, setFilter] = useState<FilterId>('all');
   const [query, setQuery] = useState('');
   const [pendingDelete, setPendingDelete] = useState<EngagementSummary | null>(null);
+  const [view, setView] = useState<ViewMode>('list');
 
   const canDelete = user?.role === 'admin' || user?.role === 'sales_manager';
 
@@ -30,6 +91,21 @@ export default function OpportunitiesListPage() {
     if (!user) return;
     refresh();
   }, [user]);
+
+  // Restore saved view preference. Defaults to list — the table is the
+  // existing default, and we don't want to surprise people on first load.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem('rhud.opportunities.view');
+    if (stored === 'kanban' || stored === 'list') setView(stored);
+  }, []);
+
+  function changeView(next: ViewMode) {
+    setView(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('rhud.opportunities.view', next);
+    }
+  }
 
   const tabs: Array<{ id: FilterId; label: string; count: number }> = useMemo(() => {
     const all = items ?? [];
@@ -58,6 +134,11 @@ export default function OpportunitiesListPage() {
     });
   }, [items, filter, query]);
 
+  const archivedCount = useMemo(
+    () => (items ?? []).filter((e) => ARCHIVED_STATUSES.has(e.status)).length,
+    [items],
+  );
+
   return (
     <AppShell crumbs={[{ label: 'Opportunities' }]}>
       <div className="page-inner wide">
@@ -76,11 +157,12 @@ export default function OpportunitiesListPage() {
 
         {err && <div className="card" style={{ padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16 }}>{err}</div>}
 
-        {/* Tab strip */}
+        {/* Tab strip + view toggle + search */}
         <div style={{
           display: 'flex', alignItems: 'center', gap: 2,
           marginBottom: 14,
           borderBottom: '1px solid var(--border)', paddingBottom: 0,
+          flexWrap: 'wrap',
         }}>
           {tabs.map((tab) => (
             <button
@@ -105,7 +187,8 @@ export default function OpportunitiesListPage() {
             </button>
           ))}
           <div style={{ flex: 1 }} />
-          <div style={{ position: 'relative', marginBottom: 6 }}>
+          <ViewToggle view={view} onChange={changeView} />
+          <div style={{ position: 'relative', marginBottom: 6, marginLeft: 8 }}>
             <Icon.Search size={13} style={{ position: 'absolute', left: 8, top: 8, color: 'var(--fg-subtle)' }} />
             <input
               className="input"
@@ -138,65 +221,552 @@ export default function OpportunitiesListPage() {
           />
         )}
 
-        <div className="card" style={{ overflow: 'hidden' }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th style={{ width: 90 }}>ID</th>
-                <th>Opportunity</th>
-                <th style={{ width: 180 }}>Stage</th>
-                <th style={{ width: 110 }}>Updated</th>
-                <th style={{ width: 24 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {items === null && !err && (
-                <tr><td colSpan={5}><div className="empty">Loading…</div></td></tr>
-              )}
-              {filtered.length === 0 && items !== null && (
-                <tr><td colSpan={5}><div className="empty">No opportunities match.</div></td></tr>
-              )}
-              {filtered.map((e) => (
-                <tr key={e.id} onClick={() => location.assign(`/opportunities/${e.id}`)}>
-                  <td><span className="cell-mono">{e.id.slice(0, 8)}</span></td>
-                  <td>
-                    <div className="cell-strong">{e.name ?? e.clientEmail}</div>
-                    <div className="cell-muted" style={{ fontSize: 12 }}>
-                      {e.name ? `${e.clientEmail} · ${e.templateName}` : e.templateName}
-                    </div>
-                  </td>
-                  <td><StageChip stage={e.status} /></td>
-                  <td className="cell-muted" style={{ fontSize: 12 }}>{relativeTime(e.submittedAt ?? e.createdAt)}</td>
-                  <td onClick={(ev) => ev.stopPropagation()}>
-                    <RowActions
-                      size="sm"
-                      stopPropagation
-                      items={[
-                        {
-                          label: 'Open',
-                          icon: 'ArrowUpRight',
-                          onClick: () => location.assign(`/opportunities/${e.id}`),
-                        },
-                        { divider: true },
-                        {
-                          label: 'Delete opportunity',
-                          icon: 'X',
-                          danger: true,
-                          disabled: !canDelete,
-                          title: canDelete ? undefined : 'Manager or admin only',
-                          onClick: () => setPendingDelete(e),
-                        },
-                      ]}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {view === 'list' ? (
+          <ListView
+            items={items}
+            filtered={filtered}
+            canDelete={canDelete}
+            onDelete={(e) => setPendingDelete(e)}
+          />
+        ) : (
+          <KanbanView
+            items={items}
+            filtered={filtered}
+            canDelete={canDelete}
+            onDelete={(e) => setPendingDelete(e)}
+            archivedCount={archivedCount}
+          />
+        )}
       </div>
     </AppShell>
   );
+}
+
+function ViewToggle({ view, onChange }: { view: ViewMode; onChange(v: ViewMode): void }) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Layout"
+      style={{
+        display: 'inline-flex',
+        background: 'var(--bg-sunk)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: 2,
+        marginBottom: 6,
+      }}
+    >
+      <ViewToggleButton
+        active={view === 'list'}
+        onClick={() => onChange('list')}
+        icon={<Icon.FileText size={12} />}
+        label="List"
+      />
+      <ViewToggleButton
+        active={view === 'kanban'}
+        onClick={() => onChange('kanban')}
+        icon={<Icon.Thread size={12} />}
+        label="Kanban"
+      />
+    </div>
+  );
+}
+
+function ViewToggleButton({
+  active, onClick, icon, label,
+}: {
+  active: boolean;
+  onClick(): void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      style={{
+        appearance: 'none', cursor: 'pointer',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '4px 10px',
+        background: active ? 'var(--bg)' : 'transparent',
+        color: active ? 'var(--fg)' : 'var(--fg-muted)',
+        border: '1px solid ' + (active ? 'var(--border)' : 'transparent'),
+        borderRadius: 6,
+        fontSize: 12, fontWeight: 500,
+        boxShadow: active ? '0 1px 2px rgba(0,0,0,.05)' : 'none',
+        transition: 'background .15s, color .15s, box-shadow .15s',
+      }}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function ListView({
+  items, filtered, canDelete, onDelete,
+}: {
+  items: EngagementSummary[] | null;
+  filtered: EngagementSummary[];
+  canDelete: boolean;
+  onDelete(e: EngagementSummary): void;
+}) {
+  return (
+    <div className="card" style={{ overflow: 'hidden' }}>
+      <table className="table">
+        <thead>
+          <tr>
+            <th style={{ width: 90 }}>ID</th>
+            <th>Opportunity</th>
+            <th style={{ width: 180 }}>Stage</th>
+            <th style={{ width: 110 }}>Updated</th>
+            <th style={{ width: 24 }} />
+          </tr>
+        </thead>
+        <tbody>
+          {items === null && (
+            <tr><td colSpan={5}><div className="empty">Loading…</div></td></tr>
+          )}
+          {filtered.length === 0 && items !== null && (
+            <tr><td colSpan={5}><div className="empty">No opportunities match.</div></td></tr>
+          )}
+          {filtered.map((e) => (
+            <ListRow
+              key={e.id}
+              engagement={e}
+              canDelete={canDelete}
+              onDelete={() => onDelete(e)}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ListRow({
+  engagement, canDelete, onDelete,
+}: {
+  engagement: EngagementSummary;
+  canDelete: boolean;
+  onDelete(): void;
+}) {
+  const e = engagement;
+  const hasProposal = ['approved', 'drafting', 'draft_ready', 'sent', 'closed'].includes(e.status);
+  const [emailCopied, setEmailCopied] = useState(false);
+  function copyEmail() {
+    navigator.clipboard.writeText(e.clientEmail);
+    setEmailCopied(true);
+    setTimeout(() => setEmailCopied(false), 1500);
+  }
+  return (
+    <tr onClick={() => location.assign(`/opportunities/${e.id}`)}>
+      <td><span className="cell-mono">{e.id.slice(0, 8)}</span></td>
+      <td>
+        <div className="cell-strong">{e.name ?? e.clientEmail}</div>
+        <div className="cell-muted" style={{ fontSize: 12 }}>
+          {e.name ? `${e.clientEmail} · ${e.templateName}` : e.templateName}
+        </div>
+      </td>
+      <td><StageChip stage={e.status} /></td>
+      <td className="cell-muted" style={{ fontSize: 12 }}>{relativeTime(e.submittedAt ?? e.createdAt)}</td>
+      <td onClick={(ev) => ev.stopPropagation()}>
+        <RowActions
+          size="sm"
+          stopPropagation
+          items={[
+            {
+              label: 'Open opportunity',
+              icon: 'ArrowUpRight',
+              onClick: () => location.assign(`/opportunities/${e.id}`),
+            },
+            ...(hasProposal
+              ? [{
+                  label: 'View proposal',
+                  icon: 'FileText' as const,
+                  onClick: () => location.assign(`/opportunities/${e.id}/proposal`),
+                }]
+              : []),
+            { divider: true },
+            {
+              label: emailCopied ? 'Email copied' : 'Copy client email',
+              icon: emailCopied ? 'Check' : 'Mail',
+              onClick: copyEmail,
+            },
+            {
+              label: 'Open in new tab',
+              icon: 'ArrowUpRight',
+              onClick: () => window.open(`/opportunities/${e.id}`, '_blank', 'noopener'),
+            },
+            { divider: true },
+            {
+              label: 'Delete opportunity',
+              icon: 'X',
+              danger: true,
+              disabled: !canDelete,
+              title: canDelete ? undefined : 'Manager or admin only',
+              onClick: onDelete,
+            },
+          ]}
+        />
+      </td>
+    </tr>
+  );
+}
+
+function KanbanView({
+  items, filtered, canDelete, onDelete, archivedCount,
+}: {
+  items: EngagementSummary[] | null;
+  filtered: EngagementSummary[];
+  canDelete: boolean;
+  onDelete(e: EngagementSummary): void;
+  archivedCount: number;
+}) {
+  if (items === null) {
+    return <div className="empty" style={{ padding: 60 }}><span className="spin" /></div>;
+  }
+
+  const columns = KANBAN_COLUMNS.map((col) => ({
+    ...col,
+    items: filtered.filter((e) => col.statuses.includes(e.status)),
+  }));
+
+  const totalShown = columns.reduce((acc, c) => acc + c.items.length, 0);
+  // Track items that are part of the active filter but not in any
+  // pipeline column (rejected/expired) so the user knows they exist.
+  const orphans = filtered.filter((e) => !columns.some((c) => c.items.includes(e)));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{
+        display: 'flex',
+        gap: 12,
+        overflowX: 'auto',
+        paddingBottom: 8,
+        // Stretch columns to fill available width when there's room,
+        // and let them scroll horizontally on narrow viewports.
+        scrollSnapType: 'x proximity',
+      }}>
+        {columns.map((col) => (
+          <KanbanColumn
+            key={col.id}
+            column={col}
+            canDelete={canDelete}
+            onDelete={onDelete}
+          />
+        ))}
+      </div>
+      {totalShown === 0 && (
+        <div className="card" style={{ padding: 32 }}>
+          <div className="empty">No opportunities match.</div>
+        </div>
+      )}
+      <div style={{
+        display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+        fontSize: 11.5, color: 'var(--fg-subtle)',
+      }}>
+        <span>
+          Showing <b style={{ color: 'var(--fg-muted)' }}>{totalShown}</b> in pipeline
+        </span>
+        {orphans.length > 0 && (
+          <span title="Rejected or expired opportunities aren't in the pipeline columns above. Switch to List view to see them.">
+            · {orphans.length} archived (not shown — switch to List)
+          </span>
+        )}
+        {archivedCount > 0 && orphans.length === 0 && (
+          <span title="Rejected or expired opportunities exist outside the active filter.">
+            · {archivedCount} rejected/expired total
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function KanbanColumn({
+  column, canDelete, onDelete,
+}: {
+  column: typeof KANBAN_COLUMNS[number] & { items: EngagementSummary[] };
+  canDelete: boolean;
+  onDelete(e: EngagementSummary): void;
+}) {
+  return (
+    <div
+      style={{
+        flex: '1 0 280px',
+        minWidth: 280,
+        maxWidth: 360,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        scrollSnapAlign: 'start',
+      }}
+    >
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '4px 4px 6px',
+        position: 'sticky',
+        top: 0,
+        zIndex: 1,
+        background: 'var(--bg)',
+      }}>
+        <span style={{
+          width: 8, height: 8, borderRadius: 999,
+          background: column.accent,
+          flexShrink: 0,
+        }} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{
+            fontSize: 12, fontWeight: 600,
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+          }}>
+            {column.label}
+            <span style={{
+              fontSize: 11, fontVariantNumeric: 'tabular-nums',
+              padding: '1px 6px', borderRadius: 999,
+              background: 'var(--bg-sunk)', color: 'var(--fg-subtle)',
+              fontWeight: 500,
+            }}>
+              {column.items.length}
+            </span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--fg-subtle)', marginTop: 1 }}>
+            {column.hint}
+          </div>
+        </div>
+      </div>
+
+      <div style={{
+        display: 'flex', flexDirection: 'column', gap: 8,
+        background: 'var(--bg-sunk)',
+        borderRadius: 10,
+        padding: 8,
+        minHeight: 120,
+      }}>
+        {column.items.length === 0 ? (
+          <div style={{
+            fontSize: 11.5, color: 'var(--fg-subtle)',
+            padding: '24px 12px', textAlign: 'center',
+            border: '1px dashed var(--divider)',
+            borderRadius: 8,
+            background: 'var(--bg)',
+          }}>
+            No items
+          </div>
+        ) : (
+          column.items.map((e) => (
+            <KanbanCard
+              key={e.id}
+              engagement={e}
+              canDelete={canDelete}
+              onDelete={() => onDelete(e)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function KanbanCard({
+  engagement, canDelete, onDelete,
+}: {
+  engagement: EngagementSummary;
+  canDelete: boolean;
+  onDelete(): void;
+}) {
+  const e = engagement;
+  const title = e.name ?? e.clientEmail;
+  const subtitle = e.name ? e.clientEmail : e.templateName;
+  const updatedAt = e.submittedAt ?? e.createdAt;
+  const priceLabel = e.predictedPriceCents != null
+    ? formatPrice(e.predictedPriceCents, e.currency)
+    : null;
+  // Show the proposal shortcut only once the engagement has reached the
+  // post-approval lifecycle — that's when the workspace route is useful.
+  const hasProposal = ['approved', 'drafting', 'draft_ready', 'sent', 'closed'].includes(e.status);
+  // Copy-email convenience — the rep often wants to drop the client's
+  // address into Slack/Outlook without leaving the board.
+  const [emailCopied, setEmailCopied] = useState(false);
+  function copyEmail() {
+    navigator.clipboard.writeText(e.clientEmail);
+    setEmailCopied(true);
+    setTimeout(() => setEmailCopied(false), 1500);
+  }
+
+  return (
+    <div
+      onClick={() => location.assign(`/opportunities/${e.id}`)}
+      style={{
+        background: 'var(--bg)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: 12,
+        cursor: 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        transition: 'border-color .15s, box-shadow .15s, transform .1s',
+      }}
+      onMouseEnter={(ev) => {
+        ev.currentTarget.style.borderColor = 'var(--border-strong)';
+        ev.currentTarget.style.boxShadow = '0 4px 10px rgba(0,0,0,.04)';
+      }}
+      onMouseLeave={(ev) => {
+        ev.currentTarget.style.borderColor = 'var(--border)';
+        ev.currentTarget.style.boxShadow = 'none';
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{
+            fontSize: 13, fontWeight: 600, color: 'var(--fg)',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {title}
+          </div>
+          <div style={{
+            fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 2,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {subtitle}
+          </div>
+        </div>
+        <div onClick={(ev) => ev.stopPropagation()}>
+          <RowActions
+            size="sm"
+            stopPropagation
+            items={[
+              {
+                label: 'Open opportunity',
+                icon: 'ArrowUpRight',
+                onClick: () => location.assign(`/opportunities/${e.id}`),
+              },
+              ...(hasProposal
+                ? [{
+                    label: 'View proposal',
+                    icon: 'FileText' as const,
+                    onClick: () => location.assign(`/opportunities/${e.id}/proposal`),
+                  }]
+                : []),
+              { divider: true },
+              {
+                label: emailCopied ? 'Email copied' : 'Copy client email',
+                icon: emailCopied ? 'Check' : 'Mail',
+                onClick: copyEmail,
+              },
+              {
+                label: 'Open in new tab',
+                icon: 'ArrowUpRight',
+                onClick: () => window.open(`/opportunities/${e.id}`, '_blank', 'noopener'),
+              },
+              { divider: true },
+              {
+                label: 'Delete opportunity',
+                icon: 'X',
+                danger: true,
+                disabled: !canDelete,
+                title: canDelete ? undefined : 'Manager or admin only',
+                onClick: onDelete,
+              },
+            ]}
+          />
+        </div>
+      </div>
+
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+        marginTop: 2,
+      }}>
+        <StageChip stage={e.status} />
+        {priceLabel && (
+          <span style={{
+            fontSize: 11, fontVariantNumeric: 'tabular-nums',
+            padding: '2px 8px', borderRadius: 999,
+            background: 'var(--bg-sunk)', color: 'var(--fg)',
+            fontWeight: 500,
+          }}>
+            {priceLabel}
+          </span>
+        )}
+      </div>
+
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+        fontSize: 11, color: 'var(--fg-subtle)',
+        paddingTop: 6, borderTop: '1px solid var(--divider)',
+        minWidth: 0,
+      }}>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          minWidth: 0, flex: 1,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          <Icon.FileText size={9} />
+          <span style={{
+            overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>{e.templateName}</span>
+        </span>
+        <span className="mono" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{relativeTime(updatedAt)}</span>
+      </div>
+    </div>
+  );
+}
+
+function formatPrice(cents: number, currency: string | null): string {
+  // Pull the right symbol off the currency code via Intl, then build a
+  // compact label by hand. We avoid Intl's `notation: 'compact'` because
+  // it emits inconsistent spacing across currencies and locales (e.g.
+  // "₹54.8K" vs "$54.8K" vs "€54,8 K"); doing the magnitude formatting
+  // ourselves keeps the chip short and uniform.
+  const code = (currency ?? 'USD').toUpperCase();
+  const units = cents / 100;
+  const symbol = currencySymbol(code);
+  const abs = Math.abs(units);
+  let body: string;
+  if (abs >= 10_000_000 && code === 'INR') {
+    // Indian convention — 1 crore = 10⁷
+    body = `${(units / 10_000_000).toFixed(units % 10_000_000 === 0 ? 0 : 1)}Cr`;
+  } else if (abs >= 100_000 && code === 'INR') {
+    // Indian convention — 1 lakh = 10⁵
+    body = `${(units / 100_000).toFixed(units % 100_000 === 0 ? 0 : 1)}L`;
+  } else if (abs >= 1_000_000) {
+    body = `${(units / 1_000_000).toFixed(units % 1_000_000 === 0 ? 0 : 1)}M`;
+  } else if (abs >= 1_000) {
+    body = `${(units / 1_000).toFixed(units % 1_000 === 0 ? 0 : 1)}k`;
+  } else {
+    body = units.toFixed(0);
+  }
+  return `${symbol}${body}`;
+}
+
+function currencySymbol(code: string): string {
+  switch (code) {
+    case 'INR': return '₹';
+    case 'USD': return '$';
+    case 'EUR': return '€';
+    case 'GBP': return '£';
+    case 'JPY': return '¥';
+    case 'AUD': return 'A$';
+    case 'CAD': return 'C$';
+    default: {
+      // Fall back to the locale-aware symbol via Intl. If the code is
+      // unknown to Intl, emit the bare ISO code with a trailing space.
+      try {
+        const fmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: code });
+        const parts = fmt.formatToParts(0);
+        const sym = parts.find((p) => p.type === 'currency')?.value;
+        return sym ?? `${code} `;
+      } catch {
+        return `${code} `;
+      }
+    }
+  }
 }
 
 function relativeTime(iso: string): string {

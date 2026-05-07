@@ -6,7 +6,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   describeError,
   extraction,
-  integrations,
   justification,
   opportunities,
   predictions,
@@ -15,7 +14,6 @@ import {
   siteEnumeration,
   type ApprovalChoice,
   type BasePriceLine,
-  type CurrentProposalDraft,
   type EngagementQuote,
   type EngagementSummary,
   type ExtractedPoint,
@@ -24,11 +22,9 @@ import {
   type InferredEntity,
   type PointCategory,
   type JustificationResult,
-  type OutlookConnectionStatus,
   type ParsedDocument,
   type Prediction,
   type PredictionDriver,
-  type ProposalDraftResult,
   type Regime,
   type DiscoveredPageRow,
   type SiteEnumerationCategorySummary,
@@ -183,9 +179,10 @@ export default function OpportunityDetailPage() {
       await refreshAfterDecision();
       // Kick off proposal drafting in the background. Auto providers
       // run server-side; manual provider returns a prompt for the user
-      // to ferry — the ProposalDraftCard reads its own state and will
-      // surface whichever path the response calls for. We intentionally
-      // don't await this so the approve UI stays snappy.
+      // to ferry — the proposal workspace (/opportunities/[id]/proposal)
+      // reads its own state and will surface whichever path the response
+      // calls for. We intentionally don't await this so the approve UI
+      // stays snappy.
       void proposalDraft.generate(id).catch(() => undefined);
     } catch (e) {
       setErr(describeError(e));
@@ -434,12 +431,10 @@ export default function OpportunityDetailPage() {
 
             {quote && <JustificationCard engagementId={eng.id} clientEmail={eng.clientEmail} />}
 
-            {['approved', 'drafting', 'draft_ready', 'sent'].includes(eng.status) && user && (
-              <ProposalDraftCard
+            {['approved', 'drafting', 'draft_ready', 'sent'].includes(eng.status) && (
+              <ProposalSummaryCard
                 engagementId={eng.id}
-                clientEmail={eng.clientEmail}
-                userRole={user.role}
-                onStatusChange={() => { void refreshAfterDecision(); }}
+                status={eng.status}
               />
             )}
 
@@ -1603,302 +1598,6 @@ function PricePredictionCard({
       />
     </div>
   );
-}
-
-/**
- * Send-to-client modal — phase 1 (bridge before Outlook OAuth lands).
- *
- * The rep is the human-in-the-loop. They:
- *   1. Edit the subject + body in this modal (we prefill sensible
- *      defaults from the engagement).
- *   2. Click "Open in mail app" — opens their default mail client via
- *      a `mailto:` with the prefilled fields. (`mailto:` can't carry
- *      an attachment, so the modal also surfaces a prominent
- *      "Download PDF" button right above it.)
- *   3. Manually attach the downloaded PDF in their mail client.
- *   4. Send the email from their own account.
- *   5. Click "I've sent it" back here — flips status to `sent`.
- *
- * Phase 2 (Outlook OAuth) will replace steps 2–5 with a single
- * "Send via Outlook" button that composes + attaches + sends server-
- * side via the rep's own connected account. The modal layout stays
- * the same; we just add another action button.
- */
-function SendModal({
-  engagementId,
-  clientEmail,
-  source,
-  deckUrl,
-  text,
-  pdfAvailable,
-  busy,
-  onConfirmSent,
-  onClose,
-  onOutlookSent,
-}: {
-  engagementId: string;
-  clientEmail: string;
-  source: string | null;
-  deckUrl: string | null;
-  text: string | null;
-  pdfAvailable: boolean;
-  busy: boolean;
-  onConfirmSent(): void;
-  onClose(): void;
-  /** Called after a successful Send via Outlook — caller flips status
-   *  + shows a confirmation banner. Distinct from `onConfirmSent`
-   *  which is the manual "I've sent it" path. */
-  onOutlookSent(sentFrom: string): void;
-}) {
-  const isGamma = source === 'gamma' && !!deckUrl;
-  const clientName = nameFromEmail(clientEmail);
-  // Default subject + body. The body intentionally does NOT inline
-  // the full proposal text — keeps mailto: under length limits and
-  // makes it clear the PDF is the deliverable.
-  const defaultSubject = 'Your proposal';
-  const defaultBody =
-    `Hi ${clientName},\n\n` +
-    `Thanks for the time you spent on the scope. Please find the proposal attached` +
-    (isGamma ? ' (PDF) — you can also view it online here:\n' + deckUrl : '') +
-    (!isGamma && text ? '. Full text below.\n\n──────────────────\n' + text : '') +
-    `\n\nLet me know what you think — happy to jump on a call to walk through it.\n\n` +
-    `Best,`;
-
-  const [subject, setSubject] = useState(defaultSubject);
-  const [body, setBody] = useState(defaultBody);
-  const [downloaded, setDownloaded] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [outlook, setOutlook] = useState<OutlookConnectionStatus | null>(null);
-  const [sending, setSending] = useState(false);
-  const [sendErr, setSendErr] = useState<string | null>(null);
-
-  // Probe Outlook status on open. The result drives whether the
-  // "Send via Outlook" button shows up. We don't block the modal on
-  // this — if the API call fails we fall through to the mailto
-  // bridge UI as before.
-  useEffect(() => {
-    integrations.outlook.status().then(setOutlook).catch(() => setOutlook(null));
-  }, []);
-
-  const mailtoHref =
-    'mailto:' +
-    encodeURIComponent(clientEmail) +
-    '?subject=' +
-    encodeURIComponent(subject) +
-    '&body=' +
-    encodeURIComponent(body);
-
-  async function sendViaOutlook() {
-    if (sending) return;
-    setSending(true); setSendErr(null);
-    try {
-      const res = await proposalDraft.sendViaOutlook(engagementId, { subject, body });
-      onOutlookSent(res.sentFrom);
-    } catch (e) {
-      const msg = describeError(e);
-      if (msg.includes('outlook_reconnect_required')) {
-        setSendErr('Your Outlook session expired. Reconnect Outlook in Settings → Connections, then try again.');
-      } else if (msg.includes('outlook_not_connected')) {
-        setSendErr('Outlook isn\'t connected for your account. Connect it in Settings → Connections first.');
-      } else if (msg.includes('outlook_not_configured')) {
-        setSendErr('Outlook isn\'t configured for this workspace. Ask an admin to set up the integration.');
-      } else if (msg.includes('outlook_send_failed')) {
-        setSendErr(`Outlook returned an error: ${msg.replace(/^outlook_send_failed:\s*/, '')}`);
-      } else {
-        setSendErr(msg);
-      }
-    } finally {
-      setSending(false);
-    }
-  }
-
-  const outlookReady = outlook?.connected && outlook.available;
-  const outlookUnavailable = outlook && !outlook.available;
-
-  return (
-    <Portal>
-      <div
-        style={{
-          position: 'fixed', inset: 0,
-          background: 'color-mix(in oklch, black 40%, transparent)',
-          display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
-        }}
-        onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
-      >
-        <div
-          className="card"
-          style={{ width: '100%', maxWidth: 620, background: 'var(--bg)', maxHeight: '92vh', overflow: 'auto' }}
-        >
-          <header style={{
-            padding: '14px 18px', borderBottom: '1px solid var(--divider)',
-            display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-          }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Icon.Send size={13} /> Send proposal to client
-              </div>
-              <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.5 }}>
-                {outlookReady ? (
-                  <>Sends from <b>{outlook?.accountEmail}</b> via your connected Outlook account, with the PDF attached.</>
-                ) : outlookUnavailable ? (
-                  <>Edit, download the PDF, click <i>Open in mail app</i>, attach manually. (Outlook one-click send isn&apos;t configured on this server.)</>
-                ) : (
-                  <>Edit, download the PDF, click <i>Open in mail app</i>, attach manually. <a href="/integrations" style={{ color: 'var(--accent)' }}>Connect Outlook</a> to skip the manual attach.</>
-                )}
-              </div>
-            </div>
-            <button onClick={onClose} disabled={busy || sending} className="btn sm ghost"><Icon.X size={11} /></button>
-          </header>
-
-          <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <Field label="To">
-              <input className="input" value={clientEmail} disabled style={{ height: 32, fontSize: 13, padding: '0 10px' }} />
-            </Field>
-            <Field label="Subject">
-              <input
-                className="input"
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                style={{ height: 32, fontSize: 13, padding: '0 10px' }}
-              />
-            </Field>
-            <Field label="Body">
-              <textarea
-                className="input mono"
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                rows={10}
-                style={{ width: '100%', fontSize: 12.5, lineHeight: 1.55, padding: 10 }}
-              />
-            </Field>
-
-            {pdfAvailable ? (
-              <div style={{
-                padding: 12, borderRadius: 8,
-                background: 'var(--accent-tint)',
-                border: '1px solid color-mix(in oklch, var(--accent) 22%, transparent)',
-                display: 'flex', alignItems: 'center', gap: 12,
-              }}>
-                <span style={{
-                  width: 36, height: 36, borderRadius: 8,
-                  background: 'var(--accent)', color: 'white',
-                  display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700,
-                  flexShrink: 0,
-                }}>PDF</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>Proposal.pdf</div>
-                  <div style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>
-                    Download → attach in your mail client.
-                    {downloaded && <span style={{ color: 'var(--ok)', marginLeft: 6 }}>✓ Downloaded</span>}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="btn sm accent"
-                  disabled={downloading}
-                  onClick={async () => {
-                    setDownloading(true);
-                    setSendErr(null);
-                    const ok = await proposalDraft.downloadPdf(engagementId);
-                    setDownloading(false);
-                    if (ok) {
-                      setDownloaded(true);
-                    } else {
-                      setSendErr('PDF unavailable — the Gamma export URL may have expired. Regenerate the proposal to refresh.');
-                    }
-                  }}
-                >
-                  {downloading ? <span className="spin" /> : <><Icon.Download size={11} /> Download PDF</>}
-                </button>
-              </div>
-            ) : (
-              <div style={{
-                padding: 10, fontSize: 11.5, color: 'var(--fg-muted)',
-                background: 'var(--bg-sunk)', borderRadius: 8, lineHeight: 1.5,
-              }}>
-                <Icon.FileText size={11} style={{ marginRight: 4 }} />
-                {isGamma
-                  ? 'PDF link expired (Gamma exports lapse after ~7 days). Regenerate the proposal to refresh, or send the deck link inline.'
-                  : 'Text proposals don\'t carry a PDF in this phase — the body above contains the full text.'}
-              </div>
-            )}
-          </div>
-
-          {sendErr && (
-            <div style={{
-              margin: '0 18px 12px', padding: 10, fontSize: 12.5,
-              background: 'var(--danger-tint)', color: 'var(--danger)',
-              border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
-              borderRadius: 8,
-            }}>{sendErr}</div>
-          )}
-
-          <footer style={{
-            padding: '12px 18px', borderTop: '1px solid var(--divider)',
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap',
-          }}>
-            <button onClick={onClose} disabled={busy || sending} className="btn sm ghost">Cancel</button>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              {outlookReady ? (
-                <>
-                  {/* Bridge actions stay visible as a fallback in case
-                      Outlook fails or the rep wants to send via their
-                      desktop client this time. */}
-                  <a href={mailtoHref} className="btn sm ghost" onClick={(e) => { if (sending) e.preventDefault(); }}>
-                    <Icon.Mail size={11} /> Open in mail app
-                  </a>
-                  <button onClick={onConfirmSent} disabled={busy || sending} className="btn sm ghost">
-                    Mark as sent
-                  </button>
-                  <button onClick={sendViaOutlook} disabled={sending} className="btn sm accent">
-                    {sending ? <span className="spin" /> : <><Icon.Send size={11} /> Send via Outlook</>}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <a
-                    href={mailtoHref}
-                    className="btn sm"
-                    onClick={(e) => { if (busy) e.preventDefault(); }}
-                  >
-                    <Icon.Mail size={11} /> Open in mail app
-                  </a>
-                  <button
-                    onClick={onConfirmSent}
-                    disabled={busy}
-                    className="btn sm accent"
-                    title="Click after you've sent the email from your mail client"
-                  >
-                    {busy ? <span className="spin" /> : <><Icon.Check size={11} /> I&apos;ve sent it</>}
-                  </button>
-                </>
-              )}
-            </div>
-          </footer>
-        </div>
-      </div>
-    </Portal>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 500 }}>{label}</span>
-      {children}
-    </label>
-  );
-}
-
-/** Local copy of the email→name heuristic the backend uses for the
- *  same purpose. Cheap to duplicate; avoids importing backend code
- *  into the web bundle. */
-function nameFromEmail(email: string): string {
-  const local = email.split('@')[0] ?? '';
-  if (local.length < 2) return email;
-  const tokens = local.split(/[._+-]+/).filter(Boolean)
-    .map((t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase());
-  return tokens.length > 0 ? tokens.join(' ') : email;
 }
 
 function actorLabel(ev: ThreadEventRow): string {
@@ -4438,440 +4137,37 @@ function ManualJustificationFlow({
   );
 }
 
-// ── Proposal draft card (full proposal, AI-generated or manually pasted) ────
 
-function ProposalDraftCard({
+// ── Proposal summary card (links to the dedicated proposal workspace) ───────
+//
+// The full draft preview, regenerate flow, send modal, and manual-paste UX
+// all live on the dedicated /opportunities/[id]/proposal route now. This
+// card is just the at-a-glance summary in the artifact pane — status chip
+// + a CTA into the workspace where the user has room to actually work.
+
+function ProposalSummaryCard({
   engagementId,
-  clientEmail,
-  userRole,
-  onStatusChange,
+  status,
 }: {
   engagementId: string;
-  clientEmail: string;
-  userRole: string;
-  onStatusChange(): void;
+  status: string;
 }) {
-  const confirm = useConfirm();
-  const [current, setCurrent] = useState<CurrentProposalDraft | null>(null);
-  // Local "we're regenerating" flag — flips on immediately when the
-  // user confirms regenerate, off when the new draft + status are in.
-  // Keeps the UI from flashing the stale deck or the "Generate draft"
-  // CTA between clear() and the new gen id landing on the engagement.
-  const [regenerating, setRegenerating] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [manualPrompt, setManualPrompt] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  /** Recipient email after a successful send — drives a transient
-   *  "Sent to {email}" banner that auto-dismisses after 6s. */
-  const [sentTo, setSentTo] = useState<string | null>(null);
+  const isReady = status === 'draft_ready';
+  const isDrafting = status === 'drafting';
+  const isSent = status === 'sent';
 
-  // Sales reps are the human-in-the-loop for sending — they email the
-  // client themselves from their own Outlook/Gmail. Manager + admin
-  // can also send (for cases where the rep is OOO etc.).
-  const canSend =
-    userRole === 'admin' || userRole === 'sales_manager' || userRole === 'sales_employee';
-
-  const refresh = useCallback(async () => {
-    try {
-      const c = await proposalDraft.current(engagementId);
-      setCurrent(c);
-    } catch (e) {
-      setErr(describeError(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [engagementId]);
-
-  useEffect(() => { void refresh(); }, [refresh]);
-
-  // While the parent's `approvePrediction` fires-and-forgets a generate
-  // call, this card may be polled-into-existence right after. Poll
-  // while status is 'drafting' so the user sees the new draft appear
-  // without a manual refresh.
-  //
-  // Cadence is 5s — Gamma's docs explicitly say faster polling does not
-  // speed up generation and only burns rate-limit budget. The server
-  // proxies through `pollStatus`, which swallows 429s as "still pending"
-  // so a hot loop here can't strand the UI.
-  useEffect(() => {
-    if (current?.status !== 'drafting') return;
-    const handle = setInterval(() => { void refresh(); }, 5_000);
-    return () => clearInterval(handle);
-  }, [current?.status, refresh]);
-
-  // Clear the regenerating flag once the server has caught up: either
-  // the new draft is in flight (status=drafting → live phase UI takes
-  // over) or it finished synchronously (status=draft_ready → deck
-  // renders). Either way the regenerating placeholder has done its
-  // job of bridging the gap.
-  useEffect(() => {
-    if (!regenerating) return;
-    if (current?.status === 'drafting' || current?.status === 'draft_ready') {
-      setRegenerating(false);
-    }
-  }, [regenerating, current?.status]);
-
-  async function generate() {
-    if (busy) return;
-    setBusy(true); setErr(null); setManualPrompt(null);
-    try {
-      const res: ProposalDraftResult = await proposalDraft.generate(engagementId);
-      if (res.mode === 'manual') {
-        setManualPrompt(res.prompt);
-      } else {
-        // 'auto' (LLM text) and 'gamma' (synchronous URL — rare) both
-        // resolve here with a finished draft. 'gamma_pending' kicks off
-        // the async path: status flips to drafting on the server, the
-        // 5s poll loop above hits Gamma's status endpoint until the
-        // deck is ready. In all three cases we just refresh + let the
-        // card re-render based on the new server state.
-        await refresh();
-        onStatusChange();
-      }
-    } catch (e) {
-      const msg = describeError(e);
-      if (msg.includes('ai_not_configured')) {
-        setErr('AI isn\'t configured. An admin needs to set it up in Settings → AI.');
-      } else if (msg.includes('ai_provider_error')) {
-        setErr(`Your AI provider returned an error: ${msg.replace(/^ai_provider_error:\s*/, '')}`);
-      } else if (msg.includes('gamma_provider_error')) {
-        setErr(`Gamma returned an error: ${msg.replace(/^gamma_provider_error:\s*/, '')}`);
-      } else if (msg.includes('gamma_config_not_set') || msg.includes('gamma_api_key_missing')) {
-        setErr('Gamma is selected as your drafter but isn\'t fully configured. An admin needs to add the API key in Connections.');
-      } else {
-        setErr(msg);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function regenerate() {
-    if (busy) return;
-    const ok = await confirm({
-      title: 'Regenerate proposal draft?',
-      body: 'The current text will be replaced. The new draft is generated from scratch using the latest scope + price.',
-      tone: 'warn',
-      confirmLabel: 'Regenerate',
-      icon: 'Sparkles',
-    });
-    if (!ok) return;
-    // Flip the regenerating flag FIRST so the body switches to the
-    // "Regenerating…" state immediately — before the clear() round-trip
-    // wipes the persisted draft. Otherwise the UI flashes the empty
-    // CTA state for a split second.
-    setRegenerating(true);
-    setBusy(true); setErr(null); setManualPrompt(null);
-    try {
-      await proposalDraft.clear(engagementId);
-      await generate();
-      // Don't drop the regenerating flag yet — let the next refresh
-      // confirm the new draft is in flight (status=drafting). The
-      // useEffect below clears it when it sees the transition.
-    } catch (e) {
-      setErr(describeError(e));
-      setBusy(false);
-      setRegenerating(false);
-    }
-  }
-
-  async function markSent() {
-    if (busy) return;
-    const ok = await confirm({
-      title: 'Mark proposal as sent?',
-      body: (
-        <>
-          Use this if you already emailed <b>{clientEmail}</b> the proposal yourself.
-          Status moves to &ldquo;sent&rdquo;; we won&apos;t send anything from Rhud.
-        </>
-      ),
-      confirmLabel: 'Mark as sent',
-      icon: 'Send',
-    });
-    if (!ok) return;
-    setBusy(true); setErr(null);
-    try {
-      await proposalDraft.markSent(engagementId);
-      await refresh();
-      onStatusChange();
-    } catch (e) {
-      setErr(describeError(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // SendModal handles the actual mailto + PDF download orchestration.
-  // The Card just opens it and listens for the "I've sent it"
-  // confirmation, which calls markSent server-side.
-  const [showSend, setShowSend] = useState(false);
-
-  async function confirmSent() {
-    if (busy) return;
-    setBusy(true); setErr(null);
-    try {
-      await proposalDraft.markSent(engagementId);
-      await refresh();
-      onStatusChange();
-      setSentTo(clientEmail);
-      setTimeout(() => setSentTo(null), 6_000);
-    } catch (e) {
-      setErr(describeError(e));
-    } finally {
-      setBusy(false);
-      setShowSend(false);
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="card" style={{ padding: 22, marginTop: 16 }}>
-        <div className="section-label">Proposal draft</div>
-        <div className="empty" style={{ padding: 20 }}><span className="spin" /></div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="card" style={{ padding: 22, marginTop: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
-        <div>
-          <div className="section-label">Proposal draft</div>
-          {current?.draftedAt && (
-            <div style={{ fontSize: 11, color: 'var(--fg-subtle)', marginTop: 2 }}>
-              Drafted {relativeTime(current.draftedAt)}
-              {current.source && current.source !== 'manual' && ` · ${current.source}`}
-              {current.source === 'manual' && ' · pasted from your AI'}
-            </div>
-          )}
-        </div>
-        <ProposalStatusChip status={current?.status ?? 'approved'} hasText={!!current?.text} />
-      </div>
-
-      {err && (
-        <div style={{
-          padding: 10, fontSize: 12.5, marginBottom: 10,
-          background: 'var(--danger-tint)', color: 'var(--danger)',
-          border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
-          borderRadius: 8,
-        }}>{err}</div>
-      )}
-
-      {sentTo && (
-        <div style={{
-          padding: 10, fontSize: 12.5, marginBottom: 10,
-          background: 'var(--ok-tint)', color: 'var(--ok)',
-          border: '1px solid color-mix(in oklch, var(--ok) 22%, transparent)',
-          borderRadius: 8, display: 'flex', alignItems: 'center', gap: 8,
-        }}>
-          <Icon.Check size={12} />
-          <span>Sent to <b>{sentTo}</b>. They&apos;ll get an email with the proposal.</span>
-        </div>
-      )}
-
-      {/* Body — body keys swap as state transitions (regenerating →
-          drafting → ready) so React unmounts old + mounts new. The CSS
-          .draft-body-fade class fades the new content in so transitions
-          feel smooth instead of snappy. */}
-      <DraftBody
-        kind={
-          regenerating
-            ? 'regenerating'
-            : manualPrompt
-              ? 'manual'
-              : current?.status === 'drafting'
-                ? 'drafting'
-                : current?.text
-                  ? 'ready'
-                  : 'idle'
-        }
-      >
-        {regenerating ? (
-          <RegeneratingState source={current?.source ?? null} />
-        ) : manualPrompt ? (
-          <ManualDraftFlow
-            prompt={manualPrompt}
-            engagementId={engagementId}
-            clientEmail={clientEmail}
-            onAccepted={async () => {
-              setManualPrompt(null);
-              await refresh();
-              onStatusChange();
-            }}
-            onCancel={() => setManualPrompt(null)}
-          />
-        ) : current?.status === 'drafting' ? (
-          <DraftingState source={current.source} phase={current.gammaPhase} elapsed={current.gammaElapsedSeconds} />
-        ) : current?.text ? (
-          current.source === 'gamma' && current.gammaDeckUrl ? (
-            <GammaDeckRendered
-              url={current.gammaDeckUrl}
-              status={current.status}
-              canSend={canSend}
-              busy={busy}
-              onRegenerate={regenerate}
-              onSend={() => setShowSend(true)}
-              onMarkSent={markSent}
-            />
-          ) : (
-            <DraftRendered
-              text={current.text}
-              status={current.status}
-              canSend={canSend}
-              busy={busy}
-              onRegenerate={regenerate}
-              onSend={() => setShowSend(true)}
-              onMarkSent={markSent}
-            />
-          )
-        ) : (
-          <>
-            <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.55 }}>
-              Generate a client-ready proposal draft from this engagement&apos;s scope + approved price.
-              For manual AI mode you&apos;ll get a prompt to paste into ChatGPT / Claude / Gemini.
-            </p>
-            <button onClick={generate} disabled={busy} className="btn accent">
-              {busy ? <span className="spin" /> : <><Icon.Sparkles size={12} /> Generate draft</>}
-            </button>
-          </>
-        )}
-      </DraftBody>
-
-      {showSend && current && (
-        <SendModal
-          engagementId={engagementId}
-          clientEmail={clientEmail}
-          source={current.source}
-          deckUrl={current.gammaDeckUrl}
-          text={current.text}
-          pdfAvailable={current.proposalPdfAvailable}
-          busy={busy}
-          onConfirmSent={confirmSent}
-          onClose={() => setShowSend(false)}
-          onOutlookSent={async (sentFrom) => {
-            // Outlook send already flipped status on the server. Mirror
-            // the post-success bookkeeping markSent does here so the
-            // UI lands in the same state without re-calling the API.
-            await refresh();
-            onStatusChange();
-            setSentTo(`${clientEmail} (from ${sentFrom})`);
-            setTimeout(() => setSentTo(null), 6_000);
-            setShowSend(false);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-/** Wraps the card body and replays a fade-in animation each time the
- *  `kind` prop changes. The keyed wrapper forces React to remount, so
- *  the @keyframes fires fresh — no manual transition juggling. */
-function DraftBody({ kind, children }: { kind: string; children: React.ReactNode }) {
-  return (
-    <div
-      key={kind}
-      style={{
-        animation: 'draftBodyFade .35s cubic-bezier(.22,.8,.3,1) both',
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function RegeneratingState({ source }: { source: string | null }) {
-  return (
-    <div style={{
-      padding: 18, borderRadius: 8,
-      background: 'var(--accent-tint)',
-      display: 'flex', alignItems: 'center', gap: 14,
-      border: '1px solid color-mix(in oklch, var(--accent) 22%, transparent)',
-    }}>
-      <span style={{
-        display: 'inline-flex',
-        animation: 'spin 1s linear infinite',
-        color: 'var(--accent)',
-      }}>
-        <Icon.Sparkles size={18} />
+  const chip = isSent ? (
+    <span className="chip ok"><Icon.Check size={10} /> Sent</span>
+  ) : isReady ? (
+    <span className="chip accent"><Icon.Sparkles size={10} /> Draft ready</span>
+  ) : isDrafting ? (
+    <span className="chip warn">
+      <span style={{ display: 'inline-flex', animation: 'spin 1.2s linear infinite' }}>
+        <Icon.Clock size={10} />
       </span>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--fg)' }}>
-          Regenerating proposal…
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>
-          {source === 'gamma'
-            ? 'Telling Gamma to draft a fresh deck. This usually takes 30-90 seconds.'
-            : 'Replacing the previous draft with a fresh one.'}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DraftingState({
-  source,
-  phase,
-  elapsed,
-}: {
-  source: string | null;
-  phase: string | null;
-  elapsed: number | null;
-}) {
-  return (
-    <div style={{
-      padding: 18, borderRadius: 8,
-      background: 'var(--bg-sunk)',
-      display: 'flex', alignItems: 'center', gap: 14,
-    }}>
-      <span style={{
-        display: 'inline-flex',
-        animation: 'spin 1.2s linear infinite',
-        color: 'var(--accent)',
-      }}>
-        <Icon.Sparkles size={18} />
-      </span>
-      <div style={{ minWidth: 0, fontSize: 13, color: 'var(--fg-muted)' }}>
-        {source === 'gamma' ? (
-          <>
-            <div style={{ fontWeight: 600, color: 'var(--fg)', marginBottom: 2 }}>
-              {phase ? <>Gamma is {gammaPhaseLabel(phase)}…</> : <>Gamma is generating the deck…</>}
-            </div>
-            {elapsed != null && (
-              <div style={{ fontSize: 11.5, color: 'var(--fg-subtle)' }}>
-                {formatElapsed(elapsed)} elapsed · usually 30-90s
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            <div style={{ fontWeight: 600, color: 'var(--fg)', marginBottom: 2 }}>AI is drafting the proposal…</div>
-            <div style={{ fontSize: 11.5, color: 'var(--fg-subtle)' }}>Usually 10-30 seconds.</div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ProposalStatusChip({ status, hasText }: { status: string; hasText: boolean }) {
-  if (status === 'sent') return <span className="chip ok"><Icon.Check size={11} sw={2.2} /> Sent</span>;
-  if (status === 'draft_ready' || hasText) return <span className="chip accent"><Icon.Sparkles size={10} /> Draft ready</span>;
-  if (status === 'drafting') {
-    // Real loading state — spin the clock while we wait for the LLM/Gamma.
-    return (
-      <span className="chip warn">
-        <span style={{ display: 'inline-flex', animation: 'spin 1.2s linear infinite' }}>
-          <Icon.Clock size={10} />
-        </span>
-        Drafting
-      </span>
-    );
-  }
-  // Idle state — gentle pulse on the sparkle so the chip feels alive
-  // without screaming for attention (the user is the one who has to act).
-  return (
+      Drafting
+    </span>
+  ) : (
     <span className="chip outline">
       <span style={{ display: 'inline-flex', animation: 'pulse 1.8s ease-in-out infinite' }}>
         <Icon.Sparkle size={10} />
@@ -4879,326 +4175,43 @@ function ProposalStatusChip({ status, hasText }: { status: string; hasText: bool
       Awaiting draft
     </span>
   );
-}
 
-function DraftRendered({
-  text, status, canSend, busy, onRegenerate, onSend, onMarkSent,
-}: {
-  text: string;
-  status: string;
-  canSend: boolean;
-  busy: boolean;
-  onRegenerate(): void;
-  onSend(): void;
-  onMarkSent(): void;
-}) {
-  const [copied, setCopied] = useState(false);
-  function copy() {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
+  const ctaLabel = isSent
+    ? 'View proposal'
+    : isReady
+      ? 'Open proposal'
+      : isDrafting
+        ? 'View progress'
+        : 'Open workspace';
+
+  const description = isSent
+    ? 'Proposal has been sent to the client. Open the workspace to review what went out.'
+    : isReady
+      ? 'Draft is ready — open the workspace to review, regenerate, or send to the client.'
+      : isDrafting
+        ? 'Generation in progress. Open the workspace to follow along — usually 30-90s for Gamma decks.'
+        : 'Generate a client-ready proposal from the approved scope + price in the dedicated workspace.';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <pre style={{
-        margin: 0, padding: 14, background: 'var(--bg-sunk)', borderRadius: 8,
-        fontFamily: 'inherit', fontSize: 13, lineHeight: 1.6,
-        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-        maxHeight: 480, overflow: 'auto',
-      }}>{text}</pre>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button onClick={copy} className="btn sm">
-          {copied ? <><Icon.Check size={11} /> Copied</> : <><Icon.Copy size={11} /> Copy proposal</>}
-        </button>
-        {status !== 'sent' && (
-          <button onClick={onRegenerate} disabled={busy} className="btn sm ghost">
-            {busy ? <span className="spin" /> : <><Icon.Sparkles size={11} /> Regenerate</>}
-          </button>
-        )}
-        {status !== 'sent' && canSend && (
-          <>
-            <button onClick={onSend} disabled={busy} className="btn sm accent" style={{ marginLeft: 'auto' }}>
-              <Icon.Send size={11} /> Send to client
-            </button>
-            <button
-              onClick={onMarkSent}
-              disabled={busy}
-              className="btn sm ghost"
-              title="Already emailed it yourself? Just flip the status."
-            >
-              Mark as sent
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Convert a Gamma viewer URL into an iframe-safe embed URL.
- *
- * Gamma sends `X-Frame-Options: DENY` on the canonical viewer URL
- * (`gamma.app/docs/Some-Title-abc123`) — embedding it directly shows
- * the browser's "refused to connect" page. The platform exposes a
- * separate, framing-safe variant at `gamma.app/embed/{slug}` where
- * the slug is the trailing identifier from the viewer URL (after the
- * last hyphen, which Gamma uses to separate human-readable title
- * words from the file id).
- *
- * Edge cases handled:
- *   - Already an embed URL → returned as-is.
- *   - Hostname isn't gamma.app → returned as-is (let the iframe try).
- *   - Pathname has no hyphen → use the whole last segment as slug.
- *   - Bad URL string → returned as-is so the caller's link UX still works.
- *
- * Note: even with the embed URL, Gamma still requires the deck to be
- * publicly viewable. We default `sharingOptions.externalAccess: 'view'`
- * on every generation so newly-created decks frame fine. Older decks
- * (made before that change) may render as Gamma's own access-denied
- * page inside the frame — the "Open in Gamma" button below stays as
- * the escape hatch.
- */
-function gammaEmbedUrl(viewerUrl: string): string {
-  try {
-    const u = new URL(viewerUrl);
-    if (u.hostname !== 'gamma.app') return viewerUrl;
-    if (u.pathname.startsWith('/embed/')) return viewerUrl;
-    const last = u.pathname.split('/').filter(Boolean).pop() ?? '';
-    if (!last) return viewerUrl;
-    const slug = last.includes('-') ? last.split('-').pop()! : last;
-    return `https://gamma.app/embed/${slug}`;
-  } catch {
-    return viewerUrl;
-  }
-}
-
-function GammaDeckRendered({
-  url, status, canSend, busy, onRegenerate, onSend, onMarkSent,
-}: {
-  url: string;
-  status: string;
-  canSend: boolean;
-  busy: boolean;
-  onRegenerate(): void;
-  onSend(): void;
-  onMarkSent(): void;
-}) {
-  const [copied, setCopied] = useState(false);
-  // Gamma decks are mutable on gamma.app after we generate them — the
-  // user typically opens the deck in Gamma to polish it, and expects
-  // their edits to show here. The iframe loads its src once on mount
-  // and never re-fetches on its own, so we force a fresh load when the
-  // user comes back to this tab (likely just edited in Gamma) and on
-  // an explicit Refresh click.
-  const [refreshKey, setRefreshKey] = useState(0);
-  const embedUrl = gammaEmbedUrl(url);
-  // Cache-bust query param doubles up with the React `key` so we get a
-  // fresh DOM node AND a URL the browser hasn't seen — Gamma ignores
-  // unknown query params on /embed so this is safe.
-  const embedSrc =
-    refreshKey === 0
-      ? embedUrl
-      : `${embedUrl}${embedUrl.includes('?') ? '&' : '?'}_=${refreshKey}`;
-
-  useEffect(() => {
-    function onVisibility() {
-      if (document.visibilityState === 'visible') {
-        setRefreshKey((k) => k + 1);
-      }
-    }
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, []);
-
-  function copyLink() {
-    navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
-  function refreshDeck() {
-    setRefreshKey((k) => k + 1);
-  }
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="card" style={{ padding: 22, marginTop: 16 }}>
       <div style={{
-        position: 'relative',
-        background: 'var(--bg-sunk)',
-        borderRadius: 8,
-        border: '1px solid var(--divider)',
-        overflow: 'hidden',
-        // 16:9 — matches Gamma's default presentation aspect.
-        aspectRatio: '16 / 9',
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+        gap: 12, marginBottom: 10,
       }}>
-        <iframe
-          key={refreshKey}
-          src={embedSrc}
-          title="Proposal deck preview"
-          loading="lazy"
-          allow="fullscreen"
-          style={{
-            position: 'absolute', inset: 0,
-            width: '100%', height: '100%',
-            border: 0,
-            background: 'var(--bg-sunk)',
-          }}
-        />
-      </div>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="btn sm">
-          <Icon.ArrowUpRight size={11} /> Open in Gamma
-        </a>
-        <button onClick={copyLink} className="btn sm ghost">
-          {copied ? <><Icon.Check size={11} /> Copied</> : <><Icon.Copy size={11} /> Copy link</>}
-        </button>
-        <button
-          onClick={refreshDeck}
-          className="btn sm ghost"
-          title="Reload the embed to pull the latest edits from Gamma"
-        >
-          <Icon.Refresh size={11} /> Refresh
-        </button>
-        {status !== 'sent' && (
-          <button onClick={onRegenerate} disabled={busy} className="btn sm ghost">
-            {busy ? <span className="spin" /> : <><Icon.Sparkles size={11} /> Regenerate</>}
-          </button>
-        )}
-        {status !== 'sent' && canSend && (
-          <>
-            <button onClick={onSend} disabled={busy} className="btn sm accent" style={{ marginLeft: 'auto' }}>
-              <Icon.Send size={11} /> Send to client
-            </button>
-            <button
-              onClick={onMarkSent}
-              disabled={busy}
-              className="btn sm ghost"
-              title="Already emailed it yourself? Just flip the status."
-            >
-              Mark as sent
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Human-readable label for Gamma's terse status enum. */
-function gammaPhaseLabel(phase: string): string {
-  switch (phase.toLowerCase()) {
-    case 'queued':       return 'queued';
-    case 'pending':      return 'queued';
-    case 'processing':   return 'generating cards';
-    case 'in_progress':  return 'generating cards';
-    case 'completed':    return 'finishing up';
-    case 'failed':       return 'failed';
-    default:             return phase;
-  }
-}
-
-function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return s === 0 ? `${m}m` : `${m}m ${s}s`;
-}
-
-function ManualDraftFlow({
-  prompt, engagementId, clientEmail, onAccepted, onCancel,
-}: {
-  prompt: string;
-  engagementId: string;
-  clientEmail: string;
-  onAccepted(): Promise<void>;
-  onCancel(): void;
-}) {
-  const [pasted, setPasted] = useState('');
-  const [copied, setCopied] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  function copyAndOpen(url: string | null) {
-    navigator.clipboard.writeText(prompt);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    if (url) window.open(url, '_blank', 'noopener');
-  }
-
-  async function accept() {
-    if (!pasted.trim()) return;
-    setBusy(true); setErr(null);
-    try {
-      await proposalDraft.acceptManual(engagementId, pasted);
-      await onAccepted();
-    } catch (e) {
-      setErr(describeError(e));
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{
-        padding: '10px 12px', background: 'var(--accent-tint)',
-        borderRadius: 8, fontSize: 12.5,
-      }}>
-        <div style={{ fontWeight: 600, marginBottom: 2 }}>
-          <Icon.Sparkles size={11} /> Manual mode — proposal for <b>{clientEmail}</b>
+        <div style={{ minWidth: 0 }}>
+          <div className="section-label">Proposal</div>
         </div>
-        <div style={{ color: 'var(--fg-muted)' }}>
-          Copy the prompt to your AI of choice, paste back the response below. We&apos;ll persist it as the proposal draft.
-        </div>
+        {chip}
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        <button onClick={() => copyAndOpen('https://chat.openai.com/')} className="btn sm">
-          <Icon.Copy size={11} /> Copy &amp; open ChatGPT <Icon.ArrowUpRight size={10} />
-        </button>
-        <button onClick={() => copyAndOpen('https://claude.ai/new')} className="btn sm">
-          <Icon.Copy size={11} /> Copy &amp; open Claude <Icon.ArrowUpRight size={10} />
-        </button>
-        <button onClick={() => copyAndOpen('https://gemini.google.com/app')} className="btn sm">
-          <Icon.Copy size={11} /> Copy &amp; open Gemini <Icon.ArrowUpRight size={10} />
-        </button>
-        <button onClick={() => copyAndOpen(null)} className="btn sm ghost">
-          {copied ? <><Icon.Check size={11} /> Copied</> : <><Icon.Copy size={11} /> Just copy</>}
-        </button>
-      </div>
-      <details style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>
-        <summary style={{ cursor: 'pointer', padding: '4px 0' }}>Preview the prompt</summary>
-        <pre style={{
-          marginTop: 6, padding: 10, background: 'var(--bg-sunk)', borderRadius: 6,
-          fontFamily: 'inherit', fontSize: 11.5, lineHeight: 1.45,
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 240, overflow: 'auto',
-        }}>{prompt}</pre>
-      </details>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 500 }}>
-          Paste the AI&apos;s proposal here
-        </span>
-        <textarea
-          className="input"
-          rows={10}
-          value={pasted}
-          onChange={(e) => setPasted(e.target.value)}
-          placeholder="Paste the full proposal markdown the AI gave you…"
-          style={{ fontSize: 12.5, lineHeight: 1.5, padding: 10 }}
-          disabled={busy}
-        />
-      </label>
-      {err && (
-        <div style={{
-          padding: 10, fontSize: 12.5,
-          background: 'var(--danger-tint)', color: 'var(--danger)',
-          border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
-          borderRadius: 8,
-        }}>{err}</div>
-      )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-        <button onClick={onCancel} disabled={busy} className="btn sm ghost">Cancel</button>
-        <button onClick={accept} disabled={busy || !pasted.trim()} className="btn sm accent">
-          {busy ? <span className="spin" /> : <><Icon.Check size={11} /> Save as draft</>}
-        </button>
-      </div>
+      <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.55 }}>
+        {description}
+      </p>
+      <Link
+        href={`/opportunities/${engagementId}/proposal`}
+        className={'btn sm ' + (isReady || isSent ? 'accent' : '')}
+      >
+        {ctaLabel} <Icon.ArrowUpRight size={11} />
+      </Link>
     </div>
   );
 }
