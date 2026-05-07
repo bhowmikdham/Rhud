@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
+import { Portal } from '@/components/portal';
 import { useConfirm } from '@/components/confirm';
 import {
   describeError,
@@ -29,10 +30,12 @@ import {
   type OdooStageOption,
   type OdooTeamOption,
   type OdooUserOption,
+  type OdooImportedOpportunityRow,
+  type OdooPollResult,
 } from '@/lib/api';
 import { OdooConnectModal } from '../odoo-modal';
 
-type Tab = 'overview' | 'mappings' | 'browse' | 'logs' | 'webhooks' | 'links';
+type Tab = 'overview' | 'imported' | 'mappings' | 'browse' | 'logs' | 'webhooks' | 'links';
 
 export default function OdooSettingsPage() {
   const user = useRequireAuth();
@@ -76,6 +79,7 @@ export default function OdooSettingsPage() {
         <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--divider)' }}>
           {([
             ['overview', 'Overview'],
+            ['imported', 'External (from Odoo)'],
             ['mappings', 'Field mappings'],
             ['browse', 'Browse Odoo'],
             ['links', 'Linked records'],
@@ -98,6 +102,7 @@ export default function OdooSettingsPage() {
         </div>
 
         {tab === 'overview' && <OverviewTab status={status} onChanged={refresh} isAdmin={isAdmin} />}
+        {tab === 'imported' && <ImportedTab isAdmin={isAdmin} />}
         {tab === 'mappings' && <MappingsTab isAdmin={isAdmin} />}
         {tab === 'browse' && <BrowseTab isAdmin={isAdmin} />}
         {tab === 'links' && <LinksTab />}
@@ -280,6 +285,298 @@ function OverviewTab({
         </div>
       )}
     </div>
+  );
+}
+
+// ── Imported (External from Odoo) ───────────────────────────────────────
+
+function ImportedTab({ isAdmin }: { isAdmin: boolean }) {
+  const [rows, setRows] = useState<OdooImportedOpportunityRow[] | null>(null);
+  const [includePromoted, setIncludePromoted] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [polling, setPolling] = useState(false);
+  const [pollResult, setPollResult] = useState<OdooPollResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [promoteFor, setPromoteFor] = useState<OdooImportedOpportunityRow | null>(null);
+
+  const refresh = useCallback(() => {
+    integrations.odoo.listImported({ includePromoted, limit: 200 })
+      .then(setRows)
+      .catch((e) => setErr(describeError(e)));
+  }, [includePromoted]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function poll() {
+    setPolling(true); setErr(null);
+    try {
+      const result = await integrations.odoo.poll();
+      setPollResult(result);
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setPolling(false);
+    }
+  }
+
+  async function backfill() {
+    setBusy(true); setErr(null);
+    try {
+      const result = await integrations.odoo.backfill({ pageSize: 50, maxPages: 20 });
+      setPollResult({
+        ok: true,
+        changed: 0,
+        imported: result.imported,
+        promoted: 0,
+        skippedEcho: 0,
+        errors: 0,
+        newCursor: null,
+        message: `Backfilled ${result.imported} from ${result.pages} page(s)`,
+      });
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshOne(row: OdooImportedOpportunityRow) {
+    setBusy(true); setErr(null);
+    try {
+      await integrations.odoo.refreshImported(row.odooId);
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div className="card" style={{ padding: 16 }}>
+        <h2 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 600 }}>Opportunities from Odoo</h2>
+        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.55 }}>
+          When an opportunity is created or modified in Odoo, it shows up here.
+          Polling runs every {`${5}`} minutes by default; admins can trigger it manually below.
+          Promote a row to a Rhud Engagement (picking a template + salesperson) to unlock pricing,
+          proposal drafting, and the rest of the Rhud workflow on top of the Odoo record.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {isAdmin && (
+            <>
+              <button className="btn sm accent" disabled={polling} onClick={poll}>
+                {polling ? <span className="spin" /> : <><Icon.ArrowUpRight size={11} /> Poll Odoo now</>}
+              </button>
+              <button className="btn sm ghost" disabled={busy} onClick={backfill}>
+                {busy ? <span className="spin" /> : <><Icon.Plus size={11} /> Backfill all</>}
+              </button>
+            </>
+          )}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginLeft: 'auto' }}>
+            <input
+              type="checkbox"
+              checked={includePromoted}
+              onChange={(e) => setIncludePromoted(e.target.checked)}
+            />
+            <span>Show already-promoted</span>
+          </label>
+        </div>
+        {pollResult && (
+          <div style={{ marginTop: 10, padding: 8, fontSize: 12, borderRadius: 6, background: 'var(--bg-sunk)' }}>
+            {pollResult.ok
+              ? `✓ ${pollResult.imported} new · ${pollResult.changed} changed · ${pollResult.skippedEcho} skipped (echo)${pollResult.message ? ' · ' + pollResult.message : ''}`
+              : `✗ ${pollResult.message}`}
+          </div>
+        )}
+        {err && (
+          <div style={{ marginTop: 8, color: 'var(--danger)', fontSize: 12 }}>{err}</div>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+        <table style={{ width: '100%', fontSize: 12 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--fg-muted)' }}>
+              <th style={{ padding: 8 }}>Odoo id</th>
+              <th style={{ padding: 8 }}>Name</th>
+              <th style={{ padding: 8 }}>Email</th>
+              <th style={{ padding: 8 }}>Stage</th>
+              <th style={{ padding: 8 }}>Salesperson</th>
+              <th style={{ padding: 8 }}>Revenue</th>
+              <th style={{ padding: 8 }}>Last change</th>
+              <th style={{ padding: 8 }}>Status</th>
+              <th style={{ padding: 8 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(rows ?? []).map((r) => (
+              <tr key={r.id} style={{ borderTop: '1px solid var(--divider)' }}>
+                <td style={{ padding: 8 }}><code>#{r.odooId}</code></td>
+                <td style={{ padding: 8 }}>{r.name ?? '—'}</td>
+                <td style={{ padding: 8 }}>{r.emailFrom ?? '—'}</td>
+                <td style={{ padding: 8 }}>{r.stageName ?? '—'}</td>
+                <td style={{ padding: 8 }}>{r.userName ?? '—'}</td>
+                <td style={{ padding: 8 }}>{r.expectedRevenue != null ? r.expectedRevenue.toLocaleString() : '—'}</td>
+                <td style={{ padding: 8 }}>{r.odooWriteDate ? new Date(r.odooWriteDate).toLocaleString() : '—'}</td>
+                <td style={{ padding: 8 }}>
+                  {r.promoted
+                    ? <a href={`/opportunities/${r.promotedEngagementId}`} className="chip ok">Promoted</a>
+                    : <span className="chip warn">External</span>}
+                </td>
+                <td style={{ padding: 8, textAlign: 'right' }}>
+                  <div style={{ display: 'inline-flex', gap: 4 }}>
+                    <button className="btn sm ghost" disabled={busy} onClick={() => refreshOne(r)} title="Re-fetch from Odoo">
+                      <Icon.ArrowUpRight size={11} />
+                    </button>
+                    {!r.promoted && (
+                      <button className="btn sm accent" disabled={busy} onClick={() => setPromoteFor(r)}>
+                        Promote
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {(!rows || rows.length === 0) && (
+              <tr><td colSpan={9} style={{ padding: 14, color: 'var(--fg-subtle)' }}>
+                No imported opportunities yet. {isAdmin ? 'Try polling or backfilling.' : 'Ask your admin to run the first poll.'}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {promoteFor && (
+        <PromoteModal row={promoteFor} onClose={() => setPromoteFor(null)} onPromoted={() => { setPromoteFor(null); refresh(); }} />
+      )}
+    </div>
+  );
+}
+
+function PromoteModal({
+  row, onClose, onPromoted,
+}: {
+  row: OdooImportedOpportunityRow;
+  onClose(): void;
+  onPromoted(): void;
+}) {
+  const [tmpls, setTmpls] = useState<Array<{ id: string; name: string; status: string }> | null>(null);
+  const [users, setUsers] = useState<Array<{ id: string; email: string; role: string }> | null>(null);
+  const [templateId, setTemplateId] = useState<string>('');
+  const [salesEmployeeId, setSalesEmployeeId] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Pull published templates + tenant users for the dropdowns.
+    Promise.all([
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).fetch
+        ? fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'}/api/v1/templates`, {
+            headers: { authorization: `Bearer ${window.localStorage.getItem('rhud.token') ?? ''}` },
+          }).then((r) => r.json())
+        : Promise.resolve([]),
+      fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'}/api/v1/tenant/users`, {
+        headers: { authorization: `Bearer ${window.localStorage.getItem('rhud.token') ?? ''}` },
+      }).then((r) => r.json()),
+    ]).then(([t, u]) => {
+      const published = (t as Array<{ id: string; name: string; status: string }>).filter((x) => x.status === 'published');
+      setTmpls(published);
+      const first = published[0];
+      if (first) setTemplateId(first.id);
+      setUsers(u as Array<{ id: string; email: string; role: string }>);
+    }).catch(() => { setTmpls([]); setUsers([]); });
+  }, []);
+
+  async function go() {
+    if (!templateId) { setErr('Pick a template'); return; }
+    setBusy(true); setErr(null);
+    try {
+      await integrations.odoo.promoteImported(row.odooId, {
+        templateId,
+        ...(salesEmployeeId ? { salesEmployeeId } : {}),
+        ...(row.name ? { name: row.name } : {}),
+      });
+      onPromoted();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Portal>
+      <div
+        style={{
+          position: 'fixed', inset: 0,
+          background: 'color-mix(in oklch, black 40%, transparent)',
+          display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+        }}
+        onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
+      >
+        <div className="card" style={{ width: '100%', maxWidth: 520, background: 'var(--bg)' }}>
+          <header style={{ padding: '14px 18px', borderBottom: '1px solid var(--divider)' }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Promote to Rhud Engagement</div>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4 }}>
+              Odoo crm.lead #{row.odooId} — {row.name ?? '(no name)'}
+            </div>
+          </header>
+          <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Template</span>
+              <select
+                className="input"
+                value={templateId}
+                onChange={(e) => setTemplateId(e.target.value)}
+                disabled={!tmpls}
+              >
+                {tmpls == null && <option>Loading…</option>}
+                {tmpls && tmpls.length === 0 && <option value="">No published templates — publish one first</option>}
+                {(tmpls ?? []).map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Sales rep (defaults to you)</span>
+              <select
+                className="input"
+                value={salesEmployeeId}
+                onChange={(e) => setSalesEmployeeId(e.target.value)}
+                disabled={!users}
+              >
+                <option value="">— me —</option>
+                {(users ?? []).map((u) => (
+                  <option key={u.id} value={u.id}>{u.email} ({u.role})</option>
+                ))}
+              </select>
+            </label>
+            <p style={{ fontSize: 11.5, color: 'var(--fg-subtle)', margin: 0 }}>
+              Engagement will start in <code>submitted</code> (scope is already in Odoo, not the Rhud gathering form).
+              Subsequent updates in Odoo will sync to this engagement automatically.
+            </p>
+            {err && <div style={{ color: 'var(--danger)', fontSize: 12 }}>{err}</div>}
+          </div>
+          <footer style={{
+            padding: '12px 18px', borderTop: '1px solid var(--divider)',
+            display: 'flex', gap: 8, justifyContent: 'flex-end',
+          }}>
+            <button className="btn sm ghost" onClick={onClose} disabled={busy}>Cancel</button>
+            <button
+              className="btn sm accent"
+              onClick={go}
+              disabled={busy || !templateId || !tmpls || tmpls.length === 0}
+            >
+              {busy ? <span className="spin" /> : <><Icon.Check size={11} /> Promote</>}
+            </button>
+          </footer>
+        </div>
+      </div>
+    </Portal>
   );
 }
 

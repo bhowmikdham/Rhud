@@ -21,6 +21,67 @@ export function resolvePath(record: unknown, path: string): unknown {
   return cur;
 }
 
+/**
+ * Odoo returns Many2one and Many2many references as `[id, displayName]`
+ * tuples, which is awkward for both display and downstream mapping.
+ * This helper walks an Odoo record and produces a "flattened" view:
+ *
+ *   { stage_id: [3, 'Proposition'], user_id: false, ... }
+ *     ↓
+ *   { stage_id: 3, stage_id_display: 'Proposition',
+ *     user_id: null, user_id_display: null, ... }
+ *
+ * Inbound mappings can target either form. `false` is Odoo's
+ * "absent" marker for relational fields and is normalised to null.
+ */
+export function flattenOdooRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (Array.isArray(value) && value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'string') {
+      // Many2one tuple
+      out[key] = value[0];
+      out[`${key}_display`] = value[1];
+    } else if (value === false) {
+      // Odoo's "no value" sentinel for any field type
+      out[key] = null;
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/** Apply pull-direction mappings (Odoo → Rhud) to the snapshot, building
+ *  a partial Engagement update. Only direction='pull' or 'both' rows
+ *  are honored. Source paths are read off the FLATTENED snapshot so
+ *  callers can write `stage_id` (returns id) or `stage_id_display`
+ *  (returns label). */
+export function buildEngagementPatch(
+  mappings: Array<{
+    rhudEntity: string;
+    rhudField: string;
+    odooModel: string;
+    odooField: string;
+    transform: string | null;
+    direction: 'push' | 'pull' | 'both';
+  }>,
+  flattened: Record<string, unknown>,
+  targetOdooModel: string,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const m of mappings) {
+    if (m.rhudEntity !== 'engagement') continue;
+    if (m.odooModel !== targetOdooModel) continue;
+    if (m.direction === 'push') continue; // outbound only
+    const raw = flattened[m.odooField];
+    if (raw == null) continue;
+    const transformed = applyTransform(raw, m.transform);
+    if (transformed == null) continue;
+    patch[m.rhudField] = transformed;
+  }
+  return patch;
+}
+
 /** Apply the named transform to a value. Unknown transforms = identity. */
 export function applyTransform(value: unknown, transform: string | null | undefined): unknown {
   if (!transform) return value;

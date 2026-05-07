@@ -51,6 +51,7 @@ model Tenant {
   odooSyncLogs     OdooSyncLog[]
   odooEntityLinks  OdooEntityLink[]
   odooWebhookEvents OdooWebhookEvent[]
+  odooImported    OdooImportedOpportunity[]
 
   @@map("tenants")
 }
@@ -151,6 +152,11 @@ model Engagement {
   // Pinned so a re-evaluation later doesn't shift regime under our feet.
   closedEngagementCountSnapshot Int? @map("closed_engagement_count_snapshot")
   odooQuotationId     String?  @map("odoo_quotation_id")
+  /// True when this Engagement was promoted from an Odoo crm.lead
+  /// snapshot rather than issued natively in Rhud. The gathering
+  /// flow + outbound Odoo push are skipped for these (the canonical
+  /// source is Odoo; we mirror it).
+  importedFromOdoo    Boolean  @default(false) @map("imported_from_odoo")
   // Loop cursor state, keyed by loop node id:
   //   { "<loopNodeId>": { iter: <currentIteration>, status: 'iterating'|'done' } }
   // The runtime updates this as the responder enters/exits each loop;
@@ -803,6 +809,16 @@ model OdooConnection {
   lastErrorMessage String?  @map("last_error_message")
   /// Odoo server version reported on authenticate(). Display-only.
   serverVersion   String?  @map("server_version")
+  /// Polling cursor — the highest `write_date` we've already pulled
+  /// during incremental sync. The poller's next call uses
+  /// `[['write_date', '>', last_polled_at]]` as its domain. NULL on a
+  /// fresh tenant; first poll backfills using a configurable horizon.
+  lastPolledAt DateTime? @map("last_polled_at") @db.Timestamptz
+  /// Polling cadence in seconds. 0 = polling disabled (the tenant is on
+  /// the Custom plan and uses Studio webhooks exclusively). Default 300
+  /// keeps us politely under Odoo's ~1 req/sec AUP limit while still
+  /// surfacing changes within ~5 minutes for non-Studio tenants.
+  pollIntervalSeconds Int @default(300) @map("poll_interval_seconds")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
@@ -869,6 +885,17 @@ model OdooEntityLink {
   /// Last write_date observed from Odoo — used as the polling cursor for
   /// inbound change detection on this record.
   odooWriteDate DateTime? @map("odoo_write_date") @db.Timestamptz
+  /// Cached canonical Odoo snapshot (after the inbound processor
+  /// re-fetched the record). Used to render imported opportunities in
+  /// the UI without round-tripping XML-RPC each time.
+  cachedRecord  Json?     @map("cached_record")
+  /// When the cached snapshot was last refreshed.
+  cachedAt      DateTime? @map("cached_at") @db.Timestamptz
+  /// When Rhud last successfully wrote to this Odoo record. The
+  /// inbound processor uses this to suppress echo loops — if Odoo's
+  /// write_date is within ~30s of last_pushed_at, we assume the
+  /// inbound event is just our own push echoing back.
+  lastPushedAt  DateTime? @map("last_pushed_at") @db.Timestamptz
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -876,7 +903,45 @@ model OdooEntityLink {
   @@unique([tenantId, rhudEntity, rhudId, odooModel], map: "odoo_entity_links_rhud_uniq")
   @@unique([tenantId, odooModel, odooId], map: "odoo_entity_links_odoo_uniq")
   @@index([tenantId])
+  @@index([tenantId, odooWriteDate(sort: Desc)], map: "odoo_entity_links_write_date_idx")
   @@map("odoo_entity_links")
+}
+
+/// Snapshots of Odoo opportunities (crm.lead) that came from Odoo but
+/// haven't been promoted to a Rhud Engagement yet. Distinct from
+/// OdooEntityLink because Rhud Engagements require fields Odoo's
+/// crm.lead doesn't carry (templateId, salesEmployeeId), so we need
+/// a place to park the data while a user picks those.
+///
+/// Promotion is one-way: snapshot → Engagement. The row stays after
+/// promotion (with `promoted_engagement_id` set) for audit history.
+model OdooImportedOpportunity {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String    @map("tenant_id") @db.Uuid
+  /// Always 'crm.lead' today. Future-proofed for opportunity-equivalents
+  /// in other Odoo modules (e.g. `sale.order` for finished quotes).
+  odooModel            String    @default("crm.lead") @map("odoo_model")
+  odooId               Int       @map("odoo_id")
+  /// Canonical snapshot fetched directly from Odoo (never the raw
+  /// webhook payload). Refreshed on every inbound sync tick.
+  snapshot             Json
+  /// Odoo's write_date from the snapshot. Used as the per-record
+  /// idempotency cursor.
+  odooWriteDate        DateTime? @map("odoo_write_date") @db.Timestamptz
+  /// Set when a user has promoted this snapshot to a real Rhud
+  /// Engagement via the /promote endpoint. Once set, future inbound
+  /// sync ticks update both this snapshot AND the linked Engagement.
+  promotedEngagementId String?   @map("promoted_engagement_id") @db.Uuid
+  promotedAt           DateTime? @map("promoted_at") @db.Timestamptz
+  promotedBy           String?   @map("promoted_by") @db.Uuid
+  importedAt           DateTime  @default(now()) @map("imported_at") @db.Timestamptz
+  lastRefreshedAt      DateTime  @default(now()) @map("last_refreshed_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, odooModel, odooId], map: "odoo_imported_opportunities_uniq")
+  @@index([tenantId])
+  @@map("odoo_imported_opportunities")
 }
 
 /// Append-only log of every Odoo sync attempt. Surfaced in the
