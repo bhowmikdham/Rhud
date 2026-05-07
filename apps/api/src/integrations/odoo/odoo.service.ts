@@ -1372,15 +1372,28 @@ export class OdooService {
   // ── Polling fallback (for tenants without Studio) ─────────────────
 
   /**
-   * Pull every crm.lead whose `write_date` is greater than the cached
-   * cursor. Each changed record is run through `reconcileFromOdoo` so
-   * polling and webhooks share the same idempotent state machine.
+   * Pull every crm.lead whose `create_date` is greater than the cached
+   * cursor — i.e. opportunities that are NEW since we last looked.
    *
-   * Safe to call repeatedly: it's bounded by `last_polled_at` + uses
-   * `limit` per page. The first call on a fresh tenant scans the
-   * `pollIntervalSeconds` look-back rather than the entire history,
-   * to avoid pulling thousands of legacy leads — there's a separate
-   * `backfillImportedOpportunities` path for that.
+   * Why create_date and not write_date: filtering on write_date means
+   * every edit to every old opportunity comes through the cycle. On a
+   * tenant with thousands of leads that's a torrent of mostly
+   * irrelevant traffic, and most edits are bookkeeping the user
+   * doesn't need mirrored in Rhud anyway. Restricting to *new* opps
+   * keeps polling cheap and signal-rich.
+   *
+   * Updates to opportunities Rhud already cares about (i.e. promoted
+   * to a Rhud Engagement) still flow in two ways:
+   *   - via Studio webhooks (instant, when the customer's on a plan
+   *     that supports Automation Rules), and
+   *   - via the per-row "Refresh from Odoo" button on the imported
+   *     list and on the opportunity detail page (admin/manual).
+   *
+   * Safe to call repeatedly: bounded by `last_polled_at` + uses
+   * `limit` per page. First call on a fresh tenant scans the
+   * `pollIntervalSeconds` look-back rather than the entire history;
+   * the explicit `backfillImportedOpportunities` admin action is for
+   * deliberately importing the existing book.
    */
   async pollOdooChanges(
     tenantId: string,
@@ -1399,6 +1412,10 @@ export class OdooService {
     if (!conn) return { ok: false, changed: 0, imported: 0, promoted: 0, skippedEcho: 0, errors: 0, newCursor: null, message: 'odoo_not_configured' };
 
     // Cursor: explicit override > stored last_polled_at > now − interval.
+    // Note: cursor semantics now track create_date (see method comment),
+    // not write_date. The column is still named last_polled_at because
+    // callers consume it as "the moment we last looked"; the meaning is
+    // documented at the schema level.
     const since = opts.sinceOverride
       ?? conn.lastPolledAt
       ?? new Date(Date.now() - conn.pollIntervalSeconds * 1000);
@@ -1409,11 +1426,11 @@ export class OdooService {
     try {
       records = await client.searchRead<OdooRecord>(
         'crm.lead',
-        [['write_date', '>', formatOdooDate(since)]],
+        [['create_date', '>', formatOdooDate(since)]],
         {
           fields: CRM_LEAD_DEFAULT_FIELDS,
           limit,
-          order: 'write_date asc',
+          order: 'create_date asc',
         },
       );
     } catch (e) {
@@ -1436,13 +1453,15 @@ export class OdooService {
     let promoted = 0;
     let skippedEcho = 0;
     let errors = 0;
-    let maxWriteDate: Date | null = null;
+    // Cursor advances based on max(create_date) — same field we filter
+    // on, so the next poll's `> cursor` is monotonic.
+    let maxCreateDate: Date | null = null;
 
     for (const rec of records) {
       const recId = typeof rec.id === 'number' ? rec.id : null;
       if (recId == null) continue;
-      const wd = parseOdooDate(rec.write_date);
-      if (wd && (!maxWriteDate || wd > maxWriteDate)) maxWriteDate = wd;
+      const cd = parseOdooDate((rec as Record<string, unknown>).create_date);
+      if (cd && (!maxCreateDate || cd > maxCreateDate)) maxCreateDate = cd;
       try {
         const out = await this.reconcileFromOdoo(tenantId, 'crm.lead', recId, rec);
         if (out.echoSuppressed) skippedEcho += 1;
@@ -1457,7 +1476,7 @@ export class OdooService {
 
     // Advance cursor only if we processed at least one record. If the
     // page filled to `limit`, the next poll will pick up the rest.
-    const newCursor = maxWriteDate ?? null;
+    const newCursor = maxCreateDate ?? null;
     if (newCursor) {
       await this.tenantDb.run(tenantId, async (db) =>
         db.odooConnection.update({

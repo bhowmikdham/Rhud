@@ -809,10 +809,13 @@ model OdooConnection {
   lastErrorMessage String?  @map("last_error_message")
   /// Odoo server version reported on authenticate(). Display-only.
   serverVersion   String?  @map("server_version")
-  /// Polling cursor — the highest `write_date` we've already pulled
-  /// during incremental sync. The poller's next call uses
-  /// `[['write_date', '>', last_polled_at]]` as its domain. NULL on a
-  /// fresh tenant; first poll backfills using a configurable horizon.
+  /// Polling cursor — the highest `create_date` of any crm.lead we've
+  /// already pulled. The poller's next call uses
+  /// `[['create_date', '>', last_polled_at]]` as its domain so we only
+  /// catch *new* opportunities, not edits to old ones. Updates to
+  /// already-promoted Engagements come in via Studio webhooks (when
+  /// available) or the per-row Refresh button. NULL on a fresh tenant;
+  /// first poll uses `now − pollIntervalSeconds` as the lookback floor.
   lastPolledAt DateTime? @map("last_polled_at") @db.Timestamptz
   /// Polling cadence in seconds. 0 = polling disabled (the tenant is on
   /// the Custom plan and uses Studio webhooks exclusively). Default 300
