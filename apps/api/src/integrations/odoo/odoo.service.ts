@@ -30,6 +30,8 @@ import {
 import {
   compileMappings,
   buildOdooPayload,
+  buildEngagementPatch,
+  flattenOdooRecord,
 } from './odoo.mapping.js';
 import type {
   OdooConnectionStatus,
@@ -46,7 +48,44 @@ import type {
   OdooTeamOption,
   OdooUserOption,
   OdooTagOption,
+  OdooImportedOpportunityRow,
+  PromoteImportedOpportunityInput,
+  PromoteImportedOpportunityResult,
+  OdooPollResult,
 } from '@rhud/shared';
+
+/** Echo suppression window. If Odoo's write_date is within this many
+ *  ms of our last_pushed_at on the same record, we treat the inbound
+ *  event as the echo of our own push and skip it. 30s is generous
+ *  enough to cover network latency + Odoo's automation rule debounce. */
+const ECHO_SUPPRESSION_WINDOW_MS = 30_000;
+
+/** Fields we always pull from crm.lead during a poll/refresh. */
+const CRM_LEAD_DEFAULT_FIELDS = [
+  'id',
+  'name',
+  'type',
+  'email_from',
+  'phone',
+  'partner_id',
+  'partner_name',
+  'contact_name',
+  'expected_revenue',
+  'probability',
+  'stage_id',
+  'user_id',
+  'team_id',
+  'tag_ids',
+  'priority',
+  'description',
+  'date_deadline',
+  'date_open',
+  'date_closed',
+  'kanban_state',
+  'active',
+  'write_date',
+  'create_date',
+];
 
 @Injectable()
 export class OdooService {
@@ -707,6 +746,7 @@ export class OdooService {
     }
 
     await this.tenantDb.run(tenantId, async (db) => {
+      const now = new Date();
       await db.odooEntityLink.upsert({
         where: {
           tenantId_rhudEntity_rhudId_odooModel: {
@@ -722,9 +762,10 @@ export class OdooService {
           rhudId: engagementId,
           odooModel: targetModel,
           odooId,
-          lastSyncedAt: new Date(),
+          lastSyncedAt: now,
+          lastPushedAt: now, // for echo-suppression on the next inbound tick
         },
-        update: { odooId, lastSyncedAt: new Date() },
+        update: { odooId, lastSyncedAt: now, lastPushedAt: now },
       });
       // Mirror odoo_quotation_id on the engagement for legacy callers
       // (the schema placeholder existed pre-integration). Stringify
@@ -1015,13 +1056,27 @@ export class OdooService {
   }
 
   /**
-   * Best-effort processor for pending webhooks. Today: marks them
-   * processed without side effects. Future: refresh OdooEntityLink
-   * write_dates and run pull-mode mappings into Rhud entities.
+   * Real webhook processor. For each pending event:
+   *
+   *   1. Skip + mark `ignored` if we don't know the model.
+   *   2. Re-fetch the canonical record from Odoo (NEVER trust the
+   *      webhook payload — Studio rules let the customer choose what
+   *      fields to send and could be misconfigured or even malicious).
+   *   3. Echo-suppression: if there's an OdooEntityLink with a
+   *      `last_pushed_at` within `ECHO_SUPPRESSION_WINDOW_MS` of the
+   *      record's write_date, this is almost certainly our own push
+   *      coming back — mark `ignored`.
+   *   4. Otherwise, run `reconcileFromOdoo` which upserts the snapshot
+   *      cache + (if linked to an Engagement) applies pull-direction
+   *      mappings + emits an `engagement_synced` thread event.
+   *
+   * Idempotent: re-running on the same event yields the same state.
+   * Hands errors per-event so one bad webhook doesn't block the rest.
    */
-  async processPendingWebhooks(tenantId: string): Promise<{ processed: number; failed: number }> {
+  async processPendingWebhooks(tenantId: string): Promise<{ processed: number; failed: number; ignored: number }> {
     let processed = 0;
     let failed = 0;
+    let ignored = 0;
     const pending = await this.tenantDb.run(tenantId, async (db) =>
       db.odooWebhookEvent.findMany({
         where: { tenantId, status: 'pending' },
@@ -1029,15 +1084,31 @@ export class OdooService {
         take: 50,
       }),
     );
-    for (const ev of pending) {
-      try {
+    if (pending.length === 0) return { processed, failed, ignored };
+
+    let client: OdooClient;
+    try {
+      client = await this.clientFor(tenantId);
+    } catch (e) {
+      // No connection → mark all pending events failed; they can be
+      // retried after the admin reconnects.
+      for (const ev of pending) {
         await this.tenantDb.run(tenantId, async (db) => {
           await db.odooWebhookEvent.update({
             where: { id: ev.id },
-            data: { status: 'processed', processedAt: new Date() },
+            data: { status: 'failed', errorMessage: (e as Error).message, processedAt: new Date() },
           });
         });
-        processed += 1;
+        failed += 1;
+      }
+      return { processed, failed, ignored };
+    }
+
+    for (const ev of pending) {
+      try {
+        const outcome = await this.processWebhookEvent(client, tenantId, ev);
+        if (outcome === 'ignored') ignored += 1;
+        else processed += 1;
       } catch (e) {
         failed += 1;
         await this.tenantDb.run(tenantId, async (db) => {
@@ -1048,7 +1119,585 @@ export class OdooService {
         });
       }
     }
-    return { processed, failed };
+    return { processed, failed, ignored };
+  }
+
+  /** Single-event processing path. Returns 'processed' on success or
+   *  'ignored' when the event is a deliberate skip (echo, unknown
+   *  model, etc.). */
+  private async processWebhookEvent(
+    client: OdooClient,
+    tenantId: string,
+    ev: { id: string; odooModel: string; odooId: number | null; eventType: string },
+  ): Promise<'processed' | 'ignored'> {
+    if (ev.odooModel !== 'crm.lead') {
+      // We only handle crm.lead today. res.partner could come later
+      // when contact-merging matters.
+      await this.tenantDb.run(tenantId, async (db) =>
+        db.odooWebhookEvent.update({
+          where: { id: ev.id },
+          data: {
+            status: 'ignored',
+            errorMessage: `unsupported_model:${ev.odooModel}`,
+            processedAt: new Date(),
+          },
+        }),
+      );
+      return 'ignored';
+    }
+    if (ev.odooId == null) {
+      await this.tenantDb.run(tenantId, async (db) =>
+        db.odooWebhookEvent.update({
+          where: { id: ev.id },
+          data: { status: 'ignored', errorMessage: 'no_record_id', processedAt: new Date() },
+        }),
+      );
+      return 'ignored';
+    }
+
+    if (ev.eventType === 'unlink') {
+      // Record was deleted in Odoo. Drop our links + snapshots.
+      await this.handleOdooUnlink(tenantId, ev.odooModel, ev.odooId);
+      await this.tenantDb.run(tenantId, async (db) =>
+        db.odooWebhookEvent.update({
+          where: { id: ev.id },
+          data: { status: 'processed', processedAt: new Date() },
+        }),
+      );
+      return 'processed';
+    }
+
+    // Re-fetch canonical record. If Odoo returns no rows, the record
+    // was likely deleted between event fire and now → treat like unlink.
+    const records = await client.read('crm.lead', [ev.odooId], CRM_LEAD_DEFAULT_FIELDS);
+    if (records.length === 0) {
+      await this.handleOdooUnlink(tenantId, 'crm.lead', ev.odooId);
+      await this.tenantDb.run(tenantId, async (db) =>
+        db.odooWebhookEvent.update({
+          where: { id: ev.id },
+          data: { status: 'processed', errorMessage: 'record_not_found', processedAt: new Date() },
+        }),
+      );
+      return 'processed';
+    }
+    const record = records[0] as OdooRecord;
+
+    const result = await this.reconcileFromOdoo(tenantId, 'crm.lead', ev.odooId, record);
+
+    await this.tenantDb.run(tenantId, async (db) =>
+      db.odooWebhookEvent.update({
+        where: { id: ev.id },
+        data: {
+          status: result.echoSuppressed ? 'ignored' : 'processed',
+          errorMessage: result.echoSuppressed ? 'echo_suppressed' : null,
+          processedAt: new Date(),
+        },
+      }),
+    );
+    return result.echoSuppressed ? 'ignored' : 'processed';
+  }
+
+  /**
+   * Core "given a fresh Odoo record snapshot, update Rhud accordingly":
+   *
+   *   - If linked to an Engagement: refresh OdooEntityLink.cachedRecord +
+   *     (when pull-mappings exist) apply them to the engagement, emit a
+   *     thread event.
+   *   - If not linked: upsert into OdooImportedOpportunity so the user
+   *     sees it in the "External" list and can promote it.
+   *
+   * Echo-suppression check happens here so both webhook and polling
+   * paths benefit. Returns `echoSuppressed=true` when the record's
+   * write_date is too close to our last push to be a real change.
+   */
+  private async reconcileFromOdoo(
+    tenantId: string,
+    odooModel: string,
+    odooId: number,
+    record: OdooRecord,
+  ): Promise<{ echoSuppressed: boolean; engagementId: string | null; isNewImport: boolean }> {
+    const flat = flattenOdooRecord(record);
+    const writeDate = parseOdooDate(record.write_date);
+
+    return this.tenantDb.run(tenantId, async (db) => {
+      const link = await db.odooEntityLink.findUnique({
+        where: { tenantId_odooModel_odooId: { tenantId, odooModel, odooId } },
+      });
+
+      // Echo suppression: our own push echoing back.
+      if (
+        link?.lastPushedAt &&
+        writeDate &&
+        Math.abs(writeDate.getTime() - link.lastPushedAt.getTime()) < ECHO_SUPPRESSION_WINDOW_MS
+      ) {
+        await this.writeLog(db, tenantId, {
+          rhudEntity: link.rhudEntity,
+          rhudId: link.rhudId,
+          odooModel,
+          odooId,
+          direction: 'pull',
+          operation: 'webhook',
+          status: 'skipped',
+          triggeredBy: 'webhook',
+          errorMessage: 'echo_suppressed',
+        });
+        return { echoSuppressed: true, engagementId: link.rhudId, isNewImport: false };
+      }
+
+      // Linked to an Engagement → refresh cache + apply pull mappings.
+      if (link?.rhudEntity === 'engagement') {
+        await db.odooEntityLink.update({
+          where: { id: link.id },
+          data: {
+            cachedRecord: record as unknown as object,
+            cachedAt: new Date(),
+            odooWriteDate: writeDate,
+            lastSyncedAt: new Date(),
+          },
+        });
+
+        const customMappings = await db.odooFieldMapping.findMany({ where: { tenantId } });
+        const compiled = compileMappings(customMappings.map(toMappingDto));
+        const patch = buildEngagementPatch(compiled, flat, odooModel);
+        if (Object.keys(patch).length > 0) {
+          // Coerce known numeric fields to BigInt so Prisma accepts them.
+          const clean: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(patch)) {
+            if (k.endsWith('Cents') && typeof v === 'number') clean[k] = BigInt(Math.round(v * 100));
+            else clean[k] = v;
+          }
+          await db.engagement.update({
+            where: { id: link.rhudId },
+            data: clean as unknown as Parameters<typeof db.engagement.update>[0]['data'],
+          }).catch((err) => {
+            // Don't fail the whole reconciliation on a single bad
+            // mapping — log and move on.
+            this.logger.warn(`engagement patch failed eng=${link.rhudId}: ${(err as Error).message}`);
+          });
+          await db.threadEvent.create({
+            data: {
+              tenantId,
+              engagementId: link.rhudId,
+              eventType: 'engagement_synced',
+              actorType: 'integration',
+              actorId: 'odoo',
+              payload: { odooModel, odooId, fields: Object.keys(patch) },
+            },
+          });
+        }
+        await this.writeLog(db, tenantId, {
+          rhudEntity: 'engagement',
+          rhudId: link.rhudId,
+          odooModel,
+          odooId,
+          direction: 'pull',
+          operation: 'update',
+          status: 'ok',
+          triggeredBy: 'webhook',
+        });
+        return { echoSuppressed: false, engagementId: link.rhudId, isNewImport: false };
+      }
+
+      // Not linked → upsert into the imported-opportunity table.
+      // Also keep a parallel OdooEntityLink with rhudEntity='odoo_imported'
+      // so the cache + last_pushed_at machinery applies uniformly.
+      const imported = await db.odooImportedOpportunity.upsert({
+        where: { tenantId_odooModel_odooId: { tenantId, odooModel, odooId } },
+        create: {
+          tenantId,
+          odooModel,
+          odooId,
+          snapshot: record as unknown as object,
+          odooWriteDate: writeDate,
+          importedAt: new Date(),
+          lastRefreshedAt: new Date(),
+        },
+        update: {
+          snapshot: record as unknown as object,
+          odooWriteDate: writeDate,
+          lastRefreshedAt: new Date(),
+        },
+      });
+
+      // If the snapshot has been promoted to an Engagement, also patch
+      // the Engagement (same logic as the linked branch above).
+      if (imported.promotedEngagementId) {
+        const customMappings = await db.odooFieldMapping.findMany({ where: { tenantId } });
+        const compiled = compileMappings(customMappings.map(toMappingDto));
+        const patch = buildEngagementPatch(compiled, flat, odooModel);
+        if (Object.keys(patch).length > 0) {
+          const clean: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(patch)) {
+            if (k.endsWith('Cents') && typeof v === 'number') clean[k] = BigInt(Math.round(v * 100));
+            else clean[k] = v;
+          }
+          await db.engagement.update({
+            where: { id: imported.promotedEngagementId },
+            data: clean as unknown as Parameters<typeof db.engagement.update>[0]['data'],
+          }).catch((err) => {
+            this.logger.warn(`engagement patch failed eng=${imported.promotedEngagementId}: ${(err as Error).message}`);
+          });
+        }
+      }
+
+      const isNewImport = imported.lastRefreshedAt.getTime() === imported.importedAt.getTime();
+      await this.writeLog(db, tenantId, {
+        odooModel,
+        odooId,
+        direction: 'pull',
+        operation: isNewImport ? 'create' : 'update',
+        status: 'ok',
+        triggeredBy: 'webhook',
+      });
+      return { echoSuppressed: false, engagementId: imported.promotedEngagementId ?? null, isNewImport };
+    });
+  }
+
+  /** Drop all Rhud-side state for an Odoo record that was deleted. */
+  private async handleOdooUnlink(tenantId: string, odooModel: string, odooId: number): Promise<void> {
+    await this.tenantDb.run(tenantId, async (db) => {
+      await db.odooEntityLink.deleteMany({ where: { tenantId, odooModel, odooId } });
+      await db.odooImportedOpportunity.deleteMany({ where: { tenantId, odooModel, odooId } });
+      await this.writeLog(db, tenantId, {
+        odooModel,
+        odooId,
+        direction: 'pull',
+        operation: 'unlink',
+        status: 'ok',
+        triggeredBy: 'webhook',
+      });
+    });
+  }
+
+  // ── Polling fallback (for tenants without Studio) ─────────────────
+
+  /**
+   * Pull every crm.lead whose `write_date` is greater than the cached
+   * cursor. Each changed record is run through `reconcileFromOdoo` so
+   * polling and webhooks share the same idempotent state machine.
+   *
+   * Safe to call repeatedly: it's bounded by `last_polled_at` + uses
+   * `limit` per page. The first call on a fresh tenant scans the
+   * `pollIntervalSeconds` look-back rather than the entire history,
+   * to avoid pulling thousands of legacy leads — there's a separate
+   * `backfillImportedOpportunities` path for that.
+   */
+  async pollOdooChanges(
+    tenantId: string,
+    opts: { sinceOverride?: Date; limit?: number } = {},
+  ): Promise<OdooPollResult> {
+    let client: OdooClient;
+    try {
+      client = await this.clientFor(tenantId);
+    } catch (e) {
+      return { ok: false, changed: 0, imported: 0, promoted: 0, skippedEcho: 0, errors: 0, newCursor: null, message: (e as Error).message };
+    }
+
+    const conn = await this.tenantDb.run(tenantId, async (db) =>
+      db.odooConnection.findUnique({ where: { tenantId } }),
+    );
+    if (!conn) return { ok: false, changed: 0, imported: 0, promoted: 0, skippedEcho: 0, errors: 0, newCursor: null, message: 'odoo_not_configured' };
+
+    // Cursor: explicit override > stored last_polled_at > now − interval.
+    const since = opts.sinceOverride
+      ?? conn.lastPolledAt
+      ?? new Date(Date.now() - conn.pollIntervalSeconds * 1000);
+
+    const limit = opts.limit ?? 100;
+
+    let records: OdooRecord[];
+    try {
+      records = await client.searchRead<OdooRecord>(
+        'crm.lead',
+        [['write_date', '>', formatOdooDate(since)]],
+        {
+          fields: CRM_LEAD_DEFAULT_FIELDS,
+          limit,
+          order: 'write_date asc',
+        },
+      );
+    } catch (e) {
+      const msg = (e as Error).message;
+      await this.tenantDb.run(tenantId, async (db) =>
+        this.writeLog(db, tenantId, {
+          odooModel: 'crm.lead',
+          direction: 'pull',
+          operation: 'read',
+          status: 'error',
+          triggeredBy: 'system',
+          errorMessage: msg,
+        }),
+      );
+      return { ok: false, changed: 0, imported: 0, promoted: 0, skippedEcho: 0, errors: 1, newCursor: null, message: msg };
+    }
+
+    let changed = 0;
+    let imported = 0;
+    let promoted = 0;
+    let skippedEcho = 0;
+    let errors = 0;
+    let maxWriteDate: Date | null = null;
+
+    for (const rec of records) {
+      const recId = typeof rec.id === 'number' ? rec.id : null;
+      if (recId == null) continue;
+      const wd = parseOdooDate(rec.write_date);
+      if (wd && (!maxWriteDate || wd > maxWriteDate)) maxWriteDate = wd;
+      try {
+        const out = await this.reconcileFromOdoo(tenantId, 'crm.lead', recId, rec);
+        if (out.echoSuppressed) skippedEcho += 1;
+        else if (out.engagementId) promoted += 1;
+        else if (out.isNewImport) imported += 1;
+        else changed += 1;
+      } catch (e) {
+        errors += 1;
+        this.logger.warn(`poll reconcile failed odoo_id=${recId}: ${(e as Error).message}`);
+      }
+    }
+
+    // Advance cursor only if we processed at least one record. If the
+    // page filled to `limit`, the next poll will pick up the rest.
+    const newCursor = maxWriteDate ?? null;
+    if (newCursor) {
+      await this.tenantDb.run(tenantId, async (db) =>
+        db.odooConnection.update({
+          where: { tenantId },
+          data: { lastPolledAt: newCursor, updatedAt: new Date() },
+        }),
+      );
+    }
+
+    await this.tenantDb.run(tenantId, async (db) =>
+      this.writeLog(db, tenantId, {
+        odooModel: 'crm.lead',
+        direction: 'pull',
+        operation: 'read',
+        status: errors > 0 ? 'error' : 'ok',
+        triggeredBy: 'system',
+        responsePayload: { changed, imported, promoted, skippedEcho, errors, count: records.length },
+      }),
+    );
+
+    return {
+      ok: true,
+      changed,
+      imported,
+      promoted,
+      skippedEcho,
+      errors,
+      newCursor: newCursor ? newCursor.toISOString() : null,
+    };
+  }
+
+  // ── Imported opportunities (UI-facing reads + actions) ─────────────
+
+  async listImportedOpportunities(
+    tenantId: string,
+    opts: { includePromoted?: boolean; limit?: number } = {},
+  ): Promise<OdooImportedOpportunityRow[]> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      const rows = await db.odooImportedOpportunity.findMany({
+        where: {
+          tenantId,
+          ...(opts.includePromoted ? {} : { promotedAt: null }),
+        },
+        orderBy: { lastRefreshedAt: 'desc' },
+        take: Math.min(opts.limit ?? 200, 500),
+      });
+      return rows.map((r) => importedToDto(r));
+    });
+  }
+
+  /** Fetch the canonical Odoo record for a single imported snapshot
+   *  and refresh its cache in place. UI uses this for the "Refresh"
+   *  button on individual rows. */
+  async refreshImportedOpportunity(tenantId: string, odooId: number): Promise<OdooImportedOpportunityRow> {
+    const client = await this.clientFor(tenantId);
+    const records = await client.read('crm.lead', [odooId], CRM_LEAD_DEFAULT_FIELDS);
+    if (records.length === 0) {
+      // Record was deleted — drop our shadow and surface a 404.
+      await this.handleOdooUnlink(tenantId, 'crm.lead', odooId);
+      throw new NotFoundException('odoo_record_not_found');
+    }
+    const record = records[0] as OdooRecord;
+    await this.reconcileFromOdoo(tenantId, 'crm.lead', odooId, record);
+    const row = await this.tenantDb.run(tenantId, async (db) =>
+      db.odooImportedOpportunity.findUnique({
+        where: { tenantId_odooModel_odooId: { tenantId, odooModel: 'crm.lead', odooId } },
+      }),
+    );
+    if (!row) throw new NotFoundException('imported_not_found');
+    return importedToDto(row);
+  }
+
+  /**
+   * Promote an imported Odoo opportunity to a real Rhud Engagement.
+   * Creates the Engagement with `imported_from_odoo=true`, ties it to
+   * the snapshot via OdooEntityLink, and stamps the snapshot row so
+   * subsequent polls update both sides.
+   *
+   * Idempotent: a second promote on an already-promoted snapshot
+   * returns the existing Engagement id with `alreadyPromoted=true`.
+   */
+  async promoteImportedOpportunity(
+    tenantId: string,
+    odooId: number,
+    input: PromoteImportedOpportunityInput,
+    actorUserId: string,
+  ): Promise<PromoteImportedOpportunityResult> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      const imported = await db.odooImportedOpportunity.findUnique({
+        where: { tenantId_odooModel_odooId: { tenantId, odooModel: 'crm.lead', odooId } },
+      });
+      if (!imported) throw new NotFoundException('imported_not_found');
+      if (imported.promotedEngagementId) {
+        return { engagementId: imported.promotedEngagementId, alreadyPromoted: true };
+      }
+
+      const tmpl = await db.template.findUnique({
+        where: { id: input.templateId },
+        select: { id: true, version: true, status: true, tenantId: true },
+      });
+      if (!tmpl || tmpl.tenantId !== tenantId) throw new NotFoundException('template_not_found');
+      if (tmpl.status !== 'published') throw new BadRequestException('template_not_published');
+
+      const salesEmployeeId = input.salesEmployeeId ?? actorUserId;
+
+      const snap = imported.snapshot as Record<string, unknown>;
+      const flat = flattenOdooRecord(snap);
+      const clientEmail = typeof flat.email_from === 'string' ? flat.email_from : `imported-${odooId}@odoo.local`;
+      const name = input.name ?? (typeof flat.name === 'string' ? flat.name : null);
+
+      const eng = await db.engagement.create({
+        data: {
+          tenantId,
+          templateId: tmpl.id,
+          templateVersion: tmpl.version,
+          salesEmployeeId,
+          clientEmail,
+          name,
+          // Imported opportunities skip the gathering flow — they
+          // start in 'submitted' (scope already lives in Odoo) so the
+          // pricing engine can run immediately if the user chooses.
+          status: 'submitted',
+          submittedAt: new Date(),
+          importedFromOdoo: true,
+        },
+      });
+
+      // Bind the engagement to the Odoo record via OdooEntityLink.
+      await db.odooEntityLink.upsert({
+        where: { tenantId_odooModel_odooId: { tenantId, odooModel: 'crm.lead', odooId } },
+        create: {
+          tenantId,
+          rhudEntity: 'engagement',
+          rhudId: eng.id,
+          odooModel: 'crm.lead',
+          odooId,
+          lastSyncedAt: new Date(),
+          cachedRecord: snap as unknown as object,
+          cachedAt: new Date(),
+          odooWriteDate: imported.odooWriteDate,
+        },
+        update: {
+          rhudEntity: 'engagement',
+          rhudId: eng.id,
+          lastSyncedAt: new Date(),
+          cachedRecord: snap as unknown as object,
+          cachedAt: new Date(),
+          odooWriteDate: imported.odooWriteDate,
+        },
+      });
+
+      // Mark the snapshot promoted so subsequent polls keep the
+      // engagement in sync but don't show it in "External" anymore.
+      await db.odooImportedOpportunity.update({
+        where: { id: imported.id },
+        data: {
+          promotedEngagementId: eng.id,
+          promotedAt: new Date(),
+          promotedBy: actorUserId,
+        },
+      });
+
+      // Audit trail: thread event so the engagement timeline shows
+      // where it came from.
+      await db.threadEvent.create({
+        data: {
+          tenantId,
+          engagementId: eng.id,
+          eventType: 'engagement_synced',
+          actorType: 'user',
+          actorId: actorUserId,
+          payload: {
+            event: 'imported_from_odoo',
+            odooModel: 'crm.lead',
+            odooId,
+          },
+        },
+      });
+
+      await this.writeLog(db, tenantId, {
+        rhudEntity: 'engagement',
+        rhudId: eng.id,
+        odooModel: 'crm.lead',
+        odooId,
+        direction: 'pull',
+        operation: 'create',
+        status: 'ok',
+        triggeredBy: 'manual',
+        actorUserId,
+      });
+
+      return { engagementId: eng.id, alreadyPromoted: false };
+    });
+  }
+
+  /** One-time backfill: pull all crm.lead records into the imported
+   *  table on first connect. Bounded to avoid exhausting Odoo's rate
+   *  limit; runs in `pageSize` batches. The admin can call this from
+   *  the UI; we don't auto-run it on connect. */
+  async backfillImportedOpportunities(
+    tenantId: string,
+    opts: { pageSize?: number; maxPages?: number; activeOnly?: boolean } = {},
+  ): Promise<{ imported: number; pages: number }> {
+    const client = await this.clientFor(tenantId);
+    const pageSize = opts.pageSize ?? 50;
+    const maxPages = opts.maxPages ?? 20;
+    const domain: OdooDomain = opts.activeOnly === false ? [] : [['active', '=', true]];
+
+    let imported = 0;
+    let pages = 0;
+    for (let offset = 0; pages < maxPages; offset += pageSize, pages++) {
+      const recs = await client.searchRead<OdooRecord>(
+        'crm.lead',
+        domain,
+        { fields: CRM_LEAD_DEFAULT_FIELDS, limit: pageSize, offset, order: 'id asc' },
+      );
+      if (recs.length === 0) break;
+      for (const rec of recs) {
+        const recId = typeof rec.id === 'number' ? rec.id : null;
+        if (recId == null) continue;
+        try {
+          const out = await this.reconcileFromOdoo(tenantId, 'crm.lead', recId, rec);
+          if (out.isNewImport) imported += 1;
+        } catch (e) {
+          this.logger.warn(`backfill reconcile failed odoo_id=${recId}: ${(e as Error).message}`);
+        }
+      }
+      if (recs.length < pageSize) break;
+    }
+
+    // Stamp the cursor so subsequent polls start from "now" and don't
+    // re-process the entire backfill.
+    await this.tenantDb.run(tenantId, async (db) =>
+      db.odooConnection.update({
+        where: { tenantId },
+        data: { lastPolledAt: new Date(), updatedAt: new Date() },
+      }),
+    );
+
+    return { imported, pages };
   }
 
   // ── Internal helpers ──────────────────────────────────────────────
@@ -1196,5 +1845,58 @@ function toMappingDto(row: {
     required: row.required,
     direction: row.direction as 'push' | 'pull' | 'both',
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** Parse an Odoo write_date / date field. Odoo writes either ISO
+ *  ('2026-05-07T08:30:00') or its older space-separated form
+ *  ('2026-05-07 08:30:00'). Both are UTC. Returns null on bad input. */
+function parseOdooDate(value: unknown): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value !== 'string' || value.length === 0) return null;
+  // Tolerate both 'YYYY-MM-DD HH:MM:SS' and ISO forms. Always treat as UTC.
+  const normalised = value.includes('T') ? value : value.replace(' ', 'T');
+  const withZ = normalised.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(normalised) ? normalised : `${normalised}Z`;
+  const d = new Date(withZ);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** Format a JS Date for Odoo's domain-filter expectation:
+ *  'YYYY-MM-DD HH:MM:SS' UTC, no timezone suffix. */
+function formatOdooDate(d: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+
+function importedToDto(row: {
+  id: string;
+  odooModel: string;
+  odooId: number;
+  snapshot: unknown;
+  odooWriteDate: Date | null;
+  promotedEngagementId: string | null;
+  promotedAt: Date | null;
+  importedAt: Date;
+  lastRefreshedAt: Date;
+}): OdooImportedOpportunityRow {
+  const snap = (row.snapshot && typeof row.snapshot === 'object' ? row.snapshot : {}) as Record<string, unknown>;
+  const flat = flattenOdooRecord(snap);
+  return {
+    id: row.id,
+    odooModel: row.odooModel,
+    odooId: row.odooId,
+    name: typeof flat.name === 'string' ? flat.name : null,
+    emailFrom: typeof flat.email_from === 'string' ? flat.email_from : null,
+    stageName: typeof flat.stage_id_display === 'string' ? flat.stage_id_display : null,
+    userName: typeof flat.user_id_display === 'string' ? flat.user_id_display : null,
+    teamName: typeof flat.team_id_display === 'string' ? flat.team_id_display : null,
+    expectedRevenue:
+      typeof flat.expected_revenue === 'number' ? flat.expected_revenue : null,
+    probability: typeof flat.probability === 'number' ? flat.probability : null,
+    odooWriteDate: row.odooWriteDate?.toISOString() ?? null,
+    promoted: row.promotedEngagementId != null,
+    promotedEngagementId: row.promotedEngagementId,
+    importedAt: row.importedAt.toISOString(),
+    lastRefreshedAt: row.lastRefreshedAt.toISOString(),
   };
 }

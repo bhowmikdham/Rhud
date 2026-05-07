@@ -173,3 +173,66 @@ export interface OdooStageOption { id: number; name: string; sequence: number; i
 export interface OdooTeamOption  { id: number; name: string }
 export interface OdooUserOption  { id: number; name: string; login: string }
 export interface OdooTagOption   { id: number; name: string; color?: number }
+
+// ── Inbound (Odoo → Rhud) sync ───────────────────────────────────────
+
+/** Snapshot of an Odoo opportunity that hasn't been promoted to a
+ *  Rhud Engagement yet. Surfaced in the "External (from Odoo)" list. */
+export interface OdooImportedOpportunityRow {
+  id: string;
+  odooModel: string;
+  odooId: number;
+  /** Display name from Odoo crm.lead.name. */
+  name: string | null;
+  /** Email of the lead's contact (lead.email_from). */
+  emailFrom: string | null;
+  /** Stage label flattened from crm.lead.stage_id [id, name]. */
+  stageName: string | null;
+  /** Salesperson display name flattened from user_id [id, name]. */
+  userName: string | null;
+  /** Sales team display name. */
+  teamName: string | null;
+  /** Expected revenue in account currency (Odoo's float field). */
+  expectedRevenue: number | null;
+  /** Probability percentage (0..100) from Odoo. */
+  probability: number | null;
+  /** ISO timestamp of Odoo's write_date — when the record last changed. */
+  odooWriteDate: string | null;
+  /** True when this snapshot has been promoted to a Rhud Engagement. */
+  promoted: boolean;
+  /** When non-null, the Rhud engagement id this snapshot promoted to. */
+  promotedEngagementId: string | null;
+  /** ISO of import + last refresh times. */
+  importedAt: string;
+  lastRefreshedAt: string;
+}
+
+/** Body of the "promote imported opportunity to engagement" request. */
+export interface PromoteImportedOpportunityInput {
+  /** Rhud template to bind the new Engagement to (required — Odoo
+   *  doesn't have an analogue, the user picks). */
+  templateId: string;
+  /** Sales rep to assign. Defaults to the calling user when omitted. */
+  salesEmployeeId?: string;
+  /** Optional Rhud-side display name override; falls back to crm.lead.name. */
+  name?: string;
+}
+
+export interface PromoteImportedOpportunityResult {
+  engagementId: string;
+  alreadyPromoted: boolean;
+}
+
+/** Result of an incremental poll cycle. */
+export interface OdooPollResult {
+  ok: boolean;
+  changed: number;
+  imported: number;
+  promoted: number;
+  skippedEcho: number;
+  errors: number;
+  /** ISO of the new cursor (nullable when nothing was found). */
+  newCursor: string | null;
+  /** When ok=false, why. */
+  message?: string;
+}

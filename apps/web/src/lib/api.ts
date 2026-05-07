@@ -30,6 +30,10 @@ import type {
   OdooTeamOption,
   OdooUserOption,
   OdooTagOption,
+  OdooImportedOpportunityRow,
+  PromoteImportedOpportunityInput,
+  PromoteImportedOpportunityResult,
+  OdooPollResult,
 } from '@rhud/shared';
 
 export type {
@@ -56,6 +60,10 @@ export type {
   OdooTeamOption,
   OdooUserOption,
   OdooTagOption,
+  OdooImportedOpportunityRow,
+  PromoteImportedOpportunityInput,
+  PromoteImportedOpportunityResult,
+  OdooPollResult,
 };
 
 export type CreateTemplate = { serviceLine: string; name: string };
@@ -1249,9 +1257,35 @@ export const integrations = {
     webhookEvents: (limit = 100) =>
       request<OdooWebhookEventRow[]>(`/integrations/odoo/webhooks?limit=${limit}`),
     processWebhooks: () =>
-      request<{ processed: number; failed: number }>(
+      request<{ processed: number; failed: number; ignored: number }>(
         `/integrations/odoo/webhooks/process`,
         { method: 'POST' },
+      ),
+
+    // Inbound (Odoo → Rhud) sync
+    poll: () =>
+      request<OdooPollResult>(`/integrations/odoo/poll`, { method: 'POST' }),
+    backfill: (opts: { pageSize?: number; maxPages?: number; activeOnly?: boolean } = {}) =>
+      request<{ imported: number; pages: number }>(
+        `/integrations/odoo/backfill`,
+        { method: 'POST', body: JSON.stringify(opts) },
+      ),
+    listImported: (opts: { includePromoted?: boolean; limit?: number } = {}) => {
+      const qs = new URLSearchParams();
+      if (opts.includePromoted) qs.set('includePromoted', 'true');
+      if (opts.limit) qs.set('limit', String(opts.limit));
+      const tail = qs.toString() ? `?${qs.toString()}` : '';
+      return request<OdooImportedOpportunityRow[]>(`/integrations/odoo/imported${tail}`);
+    },
+    refreshImported: (odooId: number) =>
+      request<OdooImportedOpportunityRow>(
+        `/integrations/odoo/imported/${odooId}/refresh`,
+        { method: 'POST' },
+      ),
+    promoteImported: (odooId: number, input: PromoteImportedOpportunityInput) =>
+      request<PromoteImportedOpportunityResult>(
+        `/integrations/odoo/imported/${odooId}/promote`,
+        { method: 'POST', body: JSON.stringify(input) },
       ),
   },
 };

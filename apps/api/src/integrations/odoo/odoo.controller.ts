@@ -120,6 +120,18 @@ class OutcomeDto {
   @IsIn(['won', 'lost']) outcome!: 'won' | 'lost';
 }
 
+class PromoteImportedDto {
+  @IsString() templateId!: string;
+  @IsOptional() @IsString() salesEmployeeId?: string;
+  @IsOptional() @IsString() name?: string;
+}
+
+class BackfillDto {
+  @IsOptional() @IsInt() pageSize?: number;
+  @IsOptional() @IsInt() maxPages?: number;
+  @IsOptional() @IsBoolean() activeOnly?: boolean;
+}
+
 @Controller('integrations/odoo')
 export class OdooController {
   constructor(
@@ -325,6 +337,63 @@ export class OdooController {
   @Roles('admin')
   processWebhooks(@Req() req: AuthedRequest) {
     return this.svc.processPendingWebhooks(req.tenantId);
+  }
+
+  // ── Inbound (Odoo → Rhud) sync ────────────────────────────────────
+
+  /** Manual poll trigger — admin "Refresh from Odoo" button. */
+  @Post('poll')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  poll(@Req() req: AuthedRequest) {
+    return this.svc.pollOdooChanges(req.tenantId);
+  }
+
+  /** One-time backfill of all crm.lead records into the imported list.
+   *  Bounded; admins can re-run it if an import gets interrupted. */
+  @Post('backfill')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  backfill(@Req() req: AuthedRequest, @Body() dto: BackfillDto) {
+    return this.svc.backfillImportedOpportunities(req.tenantId, dto);
+  }
+
+  /** List opportunities Rhud has snapshotted from Odoo. By default
+   *  hides ones already promoted to a Rhud Engagement. */
+  @Get('imported')
+  @UseGuards(JwtAuthGuard)
+  listImported(
+    @Req() req: AuthedRequest,
+    @Query('includePromoted') includePromoted?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.svc.listImportedOpportunities(req.tenantId, {
+      includePromoted: includePromoted === 'true' || includePromoted === '1',
+      ...(limit ? { limit: Number(limit) } : {}),
+    });
+  }
+
+  /** Re-fetch the canonical Odoo record + refresh the snapshot. */
+  @Post('imported/:odooId/refresh')
+  @UseGuards(JwtAuthGuard)
+  refreshImported(@Req() req: AuthedRequest, @Param('odooId') odooId: string) {
+    return this.svc.refreshImportedOpportunity(req.tenantId, Number(odooId));
+  }
+
+  /** Promote a snapshot to a real Rhud Engagement. */
+  @Post('imported/:odooId/promote')
+  @UseGuards(JwtAuthGuard)
+  promoteImported(
+    @Req() req: AuthedRequest,
+    @Param('odooId') odooId: string,
+    @Body() dto: PromoteImportedDto,
+  ) {
+    return this.svc.promoteImportedOpportunity(
+      req.tenantId,
+      Number(odooId),
+      dto,
+      req.user.sub,
+    );
   }
 
   // ── Inbound webhook (no JWT — secret is in URL) ────────────────────
