@@ -63,6 +63,18 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   // capture scope manually, …).
   site_enumerated:           [],
   site_enumeration_failed:   ['sales_employee', 'sales_manager'],
+  // Lead-management events. Tickets fan out to whoever owns the
+  // engagement; status changes only to the assigned rep + manager.
+  // Follow-ups are quiet by default — the dashboard widget is the
+  // primary surfacing.
+  ticket_opened:             ['sales_employee', 'sales_manager'],
+  ticket_status_changed:     ['sales_employee'],
+  ticket_resolved:           ['sales_employee', 'sales_manager'],
+  follow_up_scheduled:       [],
+  follow_up_completed:       [],
+  // Summary generation is silent — it's a UI-side digest, not an
+  // event the team needs in their inbox.
+  summary_generated:         [],
 };
 
 /**

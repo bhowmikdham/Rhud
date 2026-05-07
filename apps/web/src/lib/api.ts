@@ -34,6 +34,23 @@ import type {
   PromoteImportedOpportunityInput,
   PromoteImportedOpportunityResult,
   OdooPollResult,
+  TicketRow,
+  TicketCategory,
+  TicketPriority,
+  TicketStatus,
+  CreateTicketInput,
+  UpdateTicketInput,
+  FollowUpRow,
+  CreateFollowUpInput,
+  UpdateFollowUpInput,
+  CompleteFollowUpInput,
+  LeadSummaryRow,
+  GenerateSummaryResult,
+  AcceptManualSummaryInput,
+  SummaryNextAction,
+  SummaryRiskLevel,
+  OpenTicketSummary,
+  UpcomingFollowUp,
 } from '@rhud/shared';
 
 export type {
@@ -64,6 +81,23 @@ export type {
   PromoteImportedOpportunityInput,
   PromoteImportedOpportunityResult,
   OdooPollResult,
+  TicketRow,
+  TicketCategory,
+  TicketPriority,
+  TicketStatus,
+  CreateTicketInput,
+  UpdateTicketInput,
+  FollowUpRow,
+  CreateFollowUpInput,
+  UpdateFollowUpInput,
+  CompleteFollowUpInput,
+  LeadSummaryRow,
+  GenerateSummaryResult,
+  AcceptManualSummaryInput,
+  SummaryNextAction,
+  SummaryRiskLevel,
+  OpenTicketSummary,
+  UpcomingFollowUp,
 };
 
 export type CreateTemplate = { serviceLine: string; name: string };
@@ -730,6 +764,79 @@ export const gamma = {
   remove: () => request<void>('/tenant/gamma-config', { method: 'DELETE' }),
   test: () =>
     request<{ ok: boolean; error?: string }>('/tenant/gamma-config/test', { method: 'POST' }),
+};
+
+// ── Lead management — tickets, follow-ups, AI summary ──────────────
+
+export const tickets = {
+  list: (engagementId: string) =>
+    request<TicketRow[]>(`/opportunities/${engagementId}/tickets`),
+  create: (engagementId: string, input: CreateTicketInput) =>
+    request<TicketRow>(`/opportunities/${engagementId}/tickets`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  update: (engagementId: string, ticketId: string, input: UpdateTicketInput) =>
+    request<TicketRow>(`/opportunities/${engagementId}/tickets/${ticketId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  remove: (engagementId: string, ticketId: string) =>
+    request<void>(`/opportunities/${engagementId}/tickets/${ticketId}`, {
+      method: 'DELETE',
+    }),
+};
+
+export const followUps = {
+  list: (engagementId: string) =>
+    request<FollowUpRow[]>(`/opportunities/${engagementId}/follow-ups`),
+  create: (engagementId: string, input: CreateFollowUpInput) =>
+    request<FollowUpRow>(`/opportunities/${engagementId}/follow-ups`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  update: (engagementId: string, followUpId: string, input: UpdateFollowUpInput) =>
+    request<FollowUpRow>(`/opportunities/${engagementId}/follow-ups/${followUpId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  complete: (engagementId: string, followUpId: string, input: CompleteFollowUpInput = {}) =>
+    request<FollowUpRow>(`/opportunities/${engagementId}/follow-ups/${followUpId}/complete`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  remove: (engagementId: string, followUpId: string) =>
+    request<void>(`/opportunities/${engagementId}/follow-ups/${followUpId}`, {
+      method: 'DELETE',
+    }),
+};
+
+export const leadSummary = {
+  current: (engagementId: string) =>
+    request<LeadSummaryRow | null>(`/opportunities/${engagementId}/summary`),
+  generate: (engagementId: string) =>
+    request<GenerateSummaryResult>(`/opportunities/${engagementId}/summary`, {
+      method: 'POST',
+    }),
+  acceptManual: (engagementId: string, input: AcceptManualSummaryInput) =>
+    request<LeadSummaryRow>(`/opportunities/${engagementId}/summary/manual`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  clear: (engagementId: string) =>
+    request<void>(`/opportunities/${engagementId}/summary`, { method: 'DELETE' }),
+};
+
+export const leadDashboard = {
+  openTickets: (limit = 100) =>
+    request<OpenTicketSummary[]>(`/tenant/lead-management/open-tickets?limit=${limit}`),
+  upcomingFollowUps: (opts: { withinDays?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.withinDays) qs.set('within', String(opts.withinDays));
+    if (opts.limit) qs.set('limit', String(opts.limit));
+    const tail = qs.toString() ? `?${qs.toString()}` : '';
+    return request<UpcomingFollowUp[]>(`/tenant/lead-management/upcoming-follow-ups${tail}`);
+  },
 };
 
 export const proposalDraft = {

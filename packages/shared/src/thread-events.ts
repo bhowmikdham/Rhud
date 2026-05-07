@@ -45,6 +45,25 @@ export const THREAD_EVENT_TYPES = [
   /// Payload: `{ siteUrl, error, attempts }`. Distinct from
   /// site_enumerated so the timeline shows the failure clearly.
   'site_enumeration_failed',
+  /// Lead-management: a ticket (complaint / question / change request /
+  /// check-in / internal note) was raised against the engagement.
+  /// Payload: `{ ticketId, category, priority, title }`.
+  'ticket_opened',
+  /// Ticket transitioned status (open ↔ in_progress, etc.) without
+  /// being a final resolution. Payload: `{ ticketId, from, to }`.
+  'ticket_status_changed',
+  /// Ticket terminal state (resolved or wont_fix) reached.
+  /// Payload: `{ ticketId, from, to, note? }`.
+  'ticket_resolved',
+  /// A scheduled follow-up was created. Payload: `{ followUpId,
+  /// scheduledFor, reason, assignedTo? }`.
+  'follow_up_scheduled',
+  /// A scheduled follow-up was marked complete. Payload:
+  /// `{ followUpId, note? }`.
+  'follow_up_completed',
+  /// AI lead summary was generated or manually saved.
+  /// Payload: `{ generatedBy, riskLevel, recommendedFollowUpDays, model? }`.
+  'summary_generated',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];

@@ -52,6 +52,9 @@ model Tenant {
   odooEntityLinks  OdooEntityLink[]
   odooWebhookEvents OdooWebhookEvent[]
   odooImported    OdooImportedOpportunity[]
+  engagementTickets EngagementTicket[]
+  engagementFollowUps EngagementFollowUp[]
+  engagementSummaries EngagementSummary[]
 
   @@map("tenants")
 }
@@ -203,6 +206,9 @@ model Engagement {
   events          ThreadEvent[]
   quote           EngagementQuote?
   predictions     Prediction[]
+  tickets         EngagementTicket[]
+  followUps       EngagementFollowUp[]
+  summary         EngagementSummary?
   siteEnumeration SiteEnumeration?
 
   @@index([tenantId])
@@ -1118,4 +1124,100 @@ model SiteEnumerationPage {
   @@index([enumerationId, category])
   @@index([tenantId])
   @@map("site_enumeration_pages")
+}
+
+// ── Lead-management: tickets, follow-ups, AI summaries ────────────────
+
+/// A ticket raised against an engagement. Covers complaints, change
+/// requests, internal check-ins. Status flows open → in_progress →
+/// resolved (or wont_fix). Audit-tracked via thread_events
+/// (ticket_opened / ticket_status_changed / ticket_resolved).
+model EngagementTicket {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  engagementId   String    @map("engagement_id") @db.Uuid
+  /// 'complaint' | 'question' | 'change_request' | 'check_in' | 'internal_note'
+  category       String
+  /// 'low' | 'medium' | 'high' | 'urgent' — CHECK in migration.
+  priority       String    @default("medium")
+  /// 'open' | 'in_progress' | 'resolved' | 'wont_fix'
+  status         String    @default("open")
+  title          String
+  description    String?
+  /// 'client' | 'sales_rep' | 'sales_manager' | 'admin' | 'system'
+  raisedBy       String    @map("raised_by")
+  raisedByUserId String?   @map("raised_by_user_id") @db.Uuid
+  raisedByEmail  String?   @map("raised_by_email")
+  assignedTo     String?   @map("assigned_to") @db.Uuid
+  resolvedAt     DateTime? @map("resolved_at") @db.Timestamptz
+  resolutionNote String?   @map("resolution_note")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  engagement     Engagement  @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  followUps      EngagementFollowUp[] @relation("TicketRelatedFollowUps")
+
+  @@index([tenantId])
+  @@index([engagementId])
+  @@map("engagement_tickets")
+}
+
+/// A scheduled follow-up reminder against an engagement. The manager
+/// dashboard lists pending ones due in the next N days. Completion is
+/// soft (completed_at set) so the row stays for audit.
+model EngagementFollowUp {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  engagementId    String    @map("engagement_id") @db.Uuid
+  scheduledFor    DateTime  @map("scheduled_for") @db.Timestamptz
+  reason          String
+  assignedTo      String?   @map("assigned_to") @db.Uuid
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz
+  completedBy     String?   @map("completed_by") @db.Uuid
+  completionNote  String?   @map("completion_note")
+  /// Optional FK back to a ticket the follow-up was created for or
+  /// resolved. Helps the rep see "this follow-up was for the
+  /// scope-change ticket" without extra clicks.
+  relatedTicketId String?   @map("related_ticket_id") @db.Uuid
+  createdBy       String    @map("created_by") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  engagement   Engagement        @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  relatedTicket EngagementTicket? @relation("TicketRelatedFollowUps", fields: [relatedTicketId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([engagementId])
+  @@map("engagement_follow_ups")
+}
+
+/// One row per engagement: the most recent LLM-generated summary.
+/// Re-running the summariser overwrites in place. The thread events
+/// table is the immutable audit, which is enough provenance for v1.
+model EngagementSummary {
+  engagementId             String    @id @map("engagement_id") @db.Uuid
+  tenantId                 String    @map("tenant_id") @db.Uuid
+  summaryText              String    @map("summary_text")
+  /// 'low' | 'medium' | 'high'
+  riskLevel                String    @default("low") @map("risk_level")
+  /// Array of { title, urgency, owner? }
+  nextActions              Json      @default("[]") @map("next_actions")
+  recommendedFollowUpDays  Int?      @map("recommended_follow_up_days")
+  /// 'llm' | 'manual'
+  generatedBy              String    @default("llm") @map("generated_by")
+  /// Provider/model id when generated_by='llm', e.g. "anthropic:claude-opus-4-7".
+  model                    String?
+  inputTokens              Int?      @map("input_tokens")
+  outputTokens             Int?      @map("output_tokens")
+  generatedByUserId        String?   @map("generated_by_user_id") @db.Uuid
+  generatedAt              DateTime  @default(now()) @map("generated_at") @db.Timestamptz
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, riskLevel])
+  @@map("engagement_summaries")
 }
