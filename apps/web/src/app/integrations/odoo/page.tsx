@@ -359,10 +359,12 @@ function ImportedTab({ isAdmin }: { isAdmin: boolean }) {
       <div className="card" style={{ padding: 16 }}>
         <h2 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 600 }}>Opportunities from Odoo</h2>
         <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.55 }}>
-          When an opportunity is created or modified in Odoo, it shows up here.
-          Polling runs every {`${5}`} minutes by default; admins can trigger it manually below.
-          Promote a row to a Rhud Engagement (picking a template + salesperson) to unlock pricing,
-          proposal drafting, and the rest of the Rhud workflow on top of the Odoo record.
+          New opportunities created in Odoo show up here. Polling runs every 5 minutes by
+          default and only catches <b>new</b> records (the ones with a fresh <code>create_date</code>) — so a
+          tenant with thousands of legacy leads doesn&apos;t flood Rhud with every old edit.
+          Updates to already-promoted opportunities flow in via Studio webhooks or the per-row
+          <i> Refresh</i> button. Use <b>Backfill all</b> once at first connect if you also want to
+          pull the existing book.
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {isAdmin && (
@@ -387,7 +389,7 @@ function ImportedTab({ isAdmin }: { isAdmin: boolean }) {
         {pollResult && (
           <div style={{ marginTop: 10, padding: 8, fontSize: 12, borderRadius: 6, background: 'var(--bg-sunk)' }}>
             {pollResult.ok
-              ? `✓ ${pollResult.imported} new · ${pollResult.changed} changed · ${pollResult.skippedEcho} skipped (echo)${pollResult.message ? ' · ' + pollResult.message : ''}`
+              ? `✓ ${pollResult.imported} new opportunit${pollResult.imported === 1 ? 'y' : 'ies'} imported${pollResult.errors ? ` · ${pollResult.errors} error(s)` : ''}${pollResult.message ? ' · ' + pollResult.message : ''}`
               : `✗ ${pollResult.message}`}
           </div>
         )}
