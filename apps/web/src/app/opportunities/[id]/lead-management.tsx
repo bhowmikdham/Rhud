@@ -30,7 +30,9 @@ import { Icon } from '@/components/icon';
 import { Portal } from '@/components/portal';
 import { useConfirm } from '@/components/confirm';
 
-// ── Top-level panel ──────────────────────────────────────────────────
+// ── Top-level panel — single card with tabs ──────────────────────────
+
+type Tab = 'summary' | 'tickets' | 'followups';
 
 export function LeadManagementSection({
   engagementId,
@@ -39,18 +41,100 @@ export function LeadManagementSection({
   engagementId: string;
   userRole: string;
 }) {
+  const [tab, setTab] = useState<Tab>('summary');
+  const [tickets, setTickets] = useState<TicketRow[] | null>(null);
+  const [followUps, setFollowUps] = useState<FollowUpRow[] | null>(null);
+
+  // Lift counts up so the tab labels can show them. Each child panel
+  // notifies on change via its onListChanged prop.
+  const openTicketCount = (tickets ?? []).filter((t) => t.status === 'open' || t.status === 'in_progress').length;
+  const pendingFollowUpCount = (followUps ?? []).filter((f) => !f.completedAt).length;
+  const overdueFollowUpCount = (followUps ?? []).filter((f) => f.overdue).length;
+
   return (
-    <div style={{ display: 'grid', gap: 14 }}>
-      <LeadSummaryCard engagementId={engagementId} />
-      <TicketsPanel engagementId={engagementId} userRole={userRole} />
-      <FollowUpsPanel engagementId={engagementId} />
+    <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      <div style={{
+        display: 'flex', alignItems: 'stretch',
+        borderBottom: '1px solid var(--divider)',
+      }}>
+        <TabButton active={tab === 'summary'} onClick={() => setTab('summary')}>
+          <Icon.Sparkle size={11} /> Lead summary
+        </TabButton>
+        <TabButton active={tab === 'tickets'} onClick={() => setTab('tickets')}>
+          Tickets {openTicketCount > 0 && (
+            <span className="chip" style={{ marginLeft: 4, padding: '1px 6px', fontSize: 10 }}>
+              {openTicketCount}
+            </span>
+          )}
+        </TabButton>
+        <TabButton active={tab === 'followups'} onClick={() => setTab('followups')}>
+          Follow-ups {pendingFollowUpCount > 0 && (
+            <span
+              className="chip"
+              style={{
+                marginLeft: 4, padding: '1px 6px', fontSize: 10,
+                background: overdueFollowUpCount > 0 ? 'var(--danger-tint)' : undefined,
+                color: overdueFollowUpCount > 0 ? 'var(--danger)' : undefined,
+              }}
+            >
+              {pendingFollowUpCount}
+            </span>
+          )}
+        </TabButton>
+        <div style={{ flex: 1 }} />
+      </div>
+
+      <div style={{ padding: 16 }}>
+        {tab === 'summary' && <LeadSummaryPanel engagementId={engagementId} />}
+        {tab === 'tickets' && (
+          <TicketsPanel
+            engagementId={engagementId}
+            userRole={userRole}
+            onListChanged={setTickets}
+          />
+        )}
+        {tab === 'followups' && (
+          <FollowUpsPanel
+            engagementId={engagementId}
+            onListChanged={setFollowUps}
+          />
+        )}
+      </div>
     </div>
   );
 }
 
-// ── Lead Summary card ────────────────────────────────────────────────
+function TabButton({
+  active, onClick, children,
+}: {
+  active: boolean;
+  onClick(): void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: active ? 'var(--bg)' : 'transparent',
+        border: 'none',
+        borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+        marginBottom: -1,
+        padding: '12px 16px',
+        fontSize: 13,
+        fontWeight: active ? 600 : 500,
+        color: active ? 'var(--fg)' : 'var(--fg-muted)',
+        cursor: 'pointer',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
 
-function LeadSummaryCard({ engagementId }: { engagementId: string }) {
+// ── Lead Summary panel ────────────────────────────────────────────────
+
+function LeadSummaryPanel({ engagementId }: { engagementId: string }) {
   const [summary, setSummary] = useState<LeadSummaryRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -106,19 +190,18 @@ function LeadSummaryCard({ engagementId }: { engagementId: string }) {
   }
 
   return (
-    <div className="card" style={{ padding: 16 }}>
+    <div>
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Icon.Sparkle size={12} /> Lead summary
-          </h2>
-          {summary && (
-            <div style={{ fontSize: 11, color: 'var(--fg-subtle)', marginTop: 2 }}>
+        <div style={{ fontSize: 11, color: 'var(--fg-subtle)' }}>
+          {summary ? (
+            <>
               {summary.generatedBy === 'manual' ? 'Manual' : (summary.model ?? 'LLM')}
               {' · '}
               {new Date(summary.generatedAt).toLocaleString()}
               {!summary.fresh && <span style={{ marginLeft: 6, color: 'var(--warn, #b85)' }}>· stale</span>}
-            </div>
+            </>
+          ) : (
+            <span style={{ color: 'var(--fg-muted)' }}>AI-generated digest of this lead's status</span>
           )}
         </div>
         <button className="btn sm accent" disabled={generating} onClick={generate}>
@@ -260,16 +343,31 @@ function UrgencyDot({ urgency }: { urgency: SummaryNextAction['urgency'] }) {
 
 // ── Tickets panel ────────────────────────────────────────────────────
 
-function TicketsPanel({ engagementId, userRole }: { engagementId: string; userRole: string }) {
+function TicketsPanel({
+  engagementId,
+  userRole,
+  onListChanged,
+}: {
+  engagementId: string;
+  userRole: string;
+  onListChanged?(list: TicketRow[]): void;
+}) {
   const confirm = useConfirm();
   const [list, setList] = useState<TicketRow[] | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<TicketRow | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  const updateList = useCallback((next: TicketRow[]) => {
+    setList(next);
+    onListChanged?.(next);
+  }, [onListChanged]);
+
   const refresh = useCallback(() => {
-    ticketsApi.list(engagementId).then(setList).catch((e) => setErr(describeError(e)));
-  }, [engagementId]);
+    ticketsApi.list(engagementId)
+      .then((rows) => updateList(rows))
+      .catch((e) => setErr(describeError(e)));
+  }, [engagementId, updateList]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -279,7 +377,8 @@ function TicketsPanel({ engagementId, userRole }: { engagementId: string; userRo
         status,
         ...(note ? { resolutionNote: note } : {}),
       });
-      setList((cur) => (cur ?? []).map((x) => (x.id === updated.id ? updated : x)));
+      const next = (list ?? []).map((x) => (x.id === updated.id ? updated : x));
+      updateList(next);
     } catch (e) { setErr(describeError(e)); }
   }
 
@@ -301,9 +400,11 @@ function TicketsPanel({ engagementId, userRole }: { engagementId: string; userRo
   const closed = (list ?? []).filter((t) => t.status === 'resolved' || t.status === 'wont_fix');
 
   return (
-    <div className="card" style={{ padding: 16 }}>
+    <div>
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Tickets &amp; complaints</h2>
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+          Complaints, questions, change requests, and internal notes against this opportunity
+        </span>
         <button className="btn sm accent" onClick={() => setShowCreate(true)}>
           <Icon.Plus size={11} /> Raise ticket
         </button>
@@ -593,7 +694,13 @@ function TicketEditorModal({
 
 // ── Follow-ups panel ────────────────────────────────────────────────
 
-function FollowUpsPanel({ engagementId }: { engagementId: string }) {
+function FollowUpsPanel({
+  engagementId,
+  onListChanged,
+}: {
+  engagementId: string;
+  onListChanged?(list: FollowUpRow[]): void;
+}) {
   const confirm = useConfirm();
   const [list, setList] = useState<FollowUpRow[] | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -601,8 +708,10 @@ function FollowUpsPanel({ engagementId }: { engagementId: string }) {
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    followUpsApi.list(engagementId).then(setList).catch((e) => setErr(describeError(e)));
-  }, [engagementId]);
+    followUpsApi.list(engagementId)
+      .then((rows) => { setList(rows); onListChanged?.(rows); })
+      .catch((e) => setErr(describeError(e)));
+  }, [engagementId, onListChanged]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -624,9 +733,11 @@ function FollowUpsPanel({ engagementId }: { engagementId: string }) {
   const done = (list ?? []).filter((f) => f.completedAt);
 
   return (
-    <div className="card" style={{ padding: 16 }}>
+    <div>
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Follow-ups</h2>
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+          Scheduled reminders to check on this lead
+        </span>
         <button className="btn sm accent" onClick={() => setShowCreate(true)}>
           <Icon.Plus size={11} /> Schedule follow-up
         </button>
@@ -636,7 +747,7 @@ function FollowUpsPanel({ engagementId }: { engagementId: string }) {
 
       {list && pending.length === 0 && done.length === 0 && (
         <div style={{ fontSize: 12.5, color: 'var(--fg-muted)', padding: '6px 0' }}>
-          No follow-ups scheduled. Use these for "remind me to call client in 3 days" tasks.
+          No follow-ups scheduled. Use these for &quot;remind me to call client in 3 days&quot; tasks.
         </div>
       )}
 
