@@ -128,13 +128,42 @@ export interface LeadSummaryRow {
   generatedByUserId: string | null;
   generatedAt: string;
   /** True when the summary's generatedAt is within the freshness
-   *  window (default 24h) — UI uses this to show "stale" badge. */
+   *  window (default 24h). Display-only — for the "regenerated long
+   *  ago" stale-badge UI. Distinct from `stale` below. */
   fresh: boolean;
+  /** True when new thread events have landed for this engagement
+   *  *since* the cached summary was generated. The auto-regenerate
+   *  path keys on this. */
+  stale: boolean;
+  /** Latest thread-event id at the time of generation. Useful for
+   *  debugging "why does this look out of date". */
+  basedOnEventId: string | null;
+  basedOnEventAt: string | null;
 }
 
 export type GenerateSummaryResult =
   | { mode: 'auto'; summary: LeadSummaryRow }
   | { mode: 'manual'; prompt: string };
+
+/** Result of the auto-regenerate path. `regenerated` tells the UI
+ *  whether an LLM call actually fired (false = served from cache). */
+export interface AutoSummaryResult {
+  /** True when a new generation happened. False when we returned
+   *  the cached row (no activity changes, or auto-gen disabled,
+   *  or within cool-down). */
+  regenerated: boolean;
+  /** Why we didn't regenerate, when regenerated=false. One of:
+   *    'fresh'              — chain unchanged
+   *    'auto_disabled'      — tenant turned off auto-gen
+   *    'cool_down'          — another generate fired in the last 60s
+   *    'no_llm_provider'    — provider not configured / manual mode
+   *    'no_data'            — engagement has no thread events yet
+   */
+  skipReason?: 'fresh' | 'auto_disabled' | 'cool_down' | 'no_llm_provider' | 'no_data' | null;
+  /** Current summary (cached or freshly generated). Null on a brand
+   *  new engagement when we couldn't generate. */
+  summary: LeadSummaryRow | null;
+}
 
 export interface AcceptManualSummaryInput {
   /** The text the manager pasted from a chat tool. We try to parse a

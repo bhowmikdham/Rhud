@@ -192,6 +192,17 @@ export class LeadManagementController {
     return this.summary.generate(req.tenantId, engagementId, req.user.sub);
   }
 
+  /**
+   * Auto path. Called by the web UI on opportunity page load. Fast
+   * path that returns the cached summary unchanged when the activity
+   * chain hasn't moved; only invokes the LLM when the chain has new
+   * events since the last generation.
+   */
+  @Post('summary/auto')
+  autoGenerateSummary(@Req() req: AuthedRequest, @Param('id') engagementId: string) {
+    return this.summary.generateIfStale(req.tenantId, engagementId, req.user.sub);
+  }
+
   @Post('summary/manual')
   acceptManualSummary(
     @Req() req: AuthedRequest,

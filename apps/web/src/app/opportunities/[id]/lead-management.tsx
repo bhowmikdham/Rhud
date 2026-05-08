@@ -1,25 +1,22 @@
 'use client';
 
 /**
- * Lead-management panels rendered on every opportunity detail page:
- *   - Lead Summary card (AI digest with risk + next actions + refresh)
+ * Lead-management drawer content rendered behind the HUD chips:
  *   - Tickets panel (complaints, change requests, internal check-ins)
  *   - Follow-ups panel (scheduled "remind me" reminders)
+ *
+ * The Lead Summary card moved to lead-summary-inline.tsx — it's
+ * rendered above the body, not in a tab.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   describeError,
   followUps as followUpsApi,
-  leadSummary as leadSummaryApi,
   tickets as ticketsApi,
   type CreateFollowUpInput,
   type CreateTicketInput,
   type FollowUpRow,
-  type GenerateSummaryResult,
-  type LeadSummaryRow,
-  type SummaryNextAction,
-  type SummaryRiskLevel,
   type TicketCategory,
   type TicketPriority,
   type TicketRow,
@@ -30,18 +27,23 @@ import { Icon } from '@/components/icon';
 import { Portal } from '@/components/portal';
 import { useConfirm } from '@/components/confirm';
 
-// ── Top-level panel — single card with tabs ──────────────────────────
+// ── Top-level panel — Tickets | Follow-ups (Summary lives inline) ───
 
-type Tab = 'summary' | 'tickets' | 'followups';
+type Tab = 'tickets' | 'followups';
 
 export function LeadManagementSection({
   engagementId,
   userRole,
+  initialTab,
 }: {
   engagementId: string;
   userRole: string;
+  /** When mounted from a drawer, the caller wants to land on a
+   *  specific tab — e.g. clicking the "3 tickets" chip opens straight
+   *  to Tickets. Defaults to 'tickets'. */
+  initialTab?: Tab;
 }) {
-  const [tab, setTab] = useState<Tab>('summary');
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'tickets');
   const [tickets, setTickets] = useState<TicketRow[] | null>(null);
   const [followUps, setFollowUps] = useState<FollowUpRow[] | null>(null);
 
@@ -57,9 +59,6 @@ export function LeadManagementSection({
         display: 'flex', alignItems: 'stretch',
         borderBottom: '1px solid var(--divider)',
       }}>
-        <TabButton active={tab === 'summary'} onClick={() => setTab('summary')}>
-          <Icon.Sparkle size={11} /> Lead summary
-        </TabButton>
         <TabButton active={tab === 'tickets'} onClick={() => setTab('tickets')}>
           Tickets {openTicketCount > 0 && (
             <span className="chip" style={{ marginLeft: 4, padding: '1px 6px', fontSize: 10 }}>
@@ -85,7 +84,6 @@ export function LeadManagementSection({
       </div>
 
       <div style={{ padding: 16 }}>
-        {tab === 'summary' && <LeadSummaryPanel engagementId={engagementId} />}
         {tab === 'tickets' && (
           <TicketsPanel
             engagementId={engagementId}
@@ -132,214 +130,6 @@ function TabButton({
   );
 }
 
-// ── Lead Summary panel ────────────────────────────────────────────────
-
-function LeadSummaryPanel({ engagementId }: { engagementId: string }) {
-  const [summary, setSummary] = useState<LeadSummaryRow | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [manualPrompt, setManualPrompt] = useState<string | null>(null);
-  const [manualText, setManualText] = useState('');
-  const [manualSaving, setManualSaving] = useState(false);
-
-  const refresh = useCallback(async () => {
-    try {
-      setLoading(true);
-      const cur = await leadSummaryApi.current(engagementId);
-      setSummary(cur);
-    } catch (e) {
-      setErr(describeError(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [engagementId]);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
-  async function generate() {
-    if (generating) return;
-    setGenerating(true); setErr(null); setManualPrompt(null);
-    try {
-      const result: GenerateSummaryResult = await leadSummaryApi.generate(engagementId);
-      if (result.mode === 'manual') {
-        setManualPrompt(result.prompt);
-      } else {
-        setSummary(result.summary);
-      }
-    } catch (e) {
-      setErr(describeError(e));
-    } finally {
-      setGenerating(false);
-    }
-  }
-
-  async function submitManual() {
-    if (!manualText.trim()) return;
-    setManualSaving(true); setErr(null);
-    try {
-      const row = await leadSummaryApi.acceptManual(engagementId, { text: manualText });
-      setSummary(row);
-      setManualPrompt(null);
-      setManualText('');
-    } catch (e) {
-      setErr(describeError(e));
-    } finally {
-      setManualSaving(false);
-    }
-  }
-
-  return (
-    <div>
-      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <div style={{ fontSize: 11, color: 'var(--fg-subtle)' }}>
-          {summary ? (
-            <>
-              {summary.generatedBy === 'manual' ? 'Manual' : (summary.model ?? 'LLM')}
-              {' · '}
-              {new Date(summary.generatedAt).toLocaleString()}
-              {!summary.fresh && <span style={{ marginLeft: 6, color: 'var(--warn, #b85)' }}>· stale</span>}
-            </>
-          ) : (
-            <span style={{ color: 'var(--fg-muted)' }}>AI-generated digest of this lead's status</span>
-          )}
-        </div>
-        <button className="btn sm accent" disabled={generating} onClick={generate}>
-          {generating ? <span className="spin" /> : <><Icon.ArrowUpRight size={11} /> {summary ? 'Refresh' : 'Generate'}</>}
-        </button>
-      </header>
-
-      {loading && <div className="empty"><span className="spin" /></div>}
-
-      {!loading && !summary && !manualPrompt && (
-        <div style={{ fontSize: 12.5, color: 'var(--fg-muted)', padding: '6px 0' }}>
-          No summary yet. Click <b>Generate</b> to have the configured AI provider produce a status briefing
-          based on the opportunity&apos;s state, open tickets, follow-ups, and recent activity.
-        </div>
-      )}
-
-      {summary && !manualPrompt && (
-        <SummaryBody summary={summary} />
-      )}
-
-      {manualPrompt && (
-        <ManualSummaryPanel
-          prompt={manualPrompt}
-          text={manualText}
-          onTextChange={setManualText}
-          onCancel={() => { setManualPrompt(null); setManualText(''); }}
-          onSubmit={submitManual}
-          saving={manualSaving}
-        />
-      )}
-
-      {err && (
-        <div style={{ marginTop: 10, padding: 8, fontSize: 12, color: 'var(--danger)', background: 'var(--danger-tint)', borderRadius: 6 }}>
-          {err}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SummaryBody({ summary }: { summary: LeadSummaryRow }) {
-  return (
-    <div style={{ display: 'grid', gap: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <RiskChip risk={summary.riskLevel} />
-        {summary.recommendedFollowUpDays != null && (
-          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-            <Icon.Clock size={11} /> Suggested follow-up in <b>{summary.recommendedFollowUpDays}</b> day{summary.recommendedFollowUpDays === 1 ? '' : 's'}
-          </span>
-        )}
-      </div>
-      <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{summary.summaryText}</p>
-      {summary.nextActions.length > 0 && (
-        <div>
-          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', fontWeight: 600, marginBottom: 6 }}>NEXT ACTIONS</div>
-          <ul style={{ margin: 0, padding: '0 0 0 18px', display: 'grid', gap: 4 }}>
-            {summary.nextActions.map((a, i) => (
-              <li key={i} style={{ fontSize: 12.5 }}>
-                <UrgencyDot urgency={a.urgency} />
-                <span style={{ marginLeft: 6 }}>{a.title}</span>
-                {a.owner && <span style={{ color: 'var(--fg-muted)', marginLeft: 6 }}>— {a.owner}</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ManualSummaryPanel({
-  prompt, text, onTextChange, onCancel, onSubmit, saving,
-}: {
-  prompt: string;
-  text: string;
-  onTextChange(v: string): void;
-  onCancel(): void;
-  onSubmit(): void;
-  saving: boolean;
-}) {
-  const [copied, setCopied] = useState(false);
-  function copyPrompt() {
-    navigator.clipboard.writeText(prompt);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
-  return (
-    <div style={{ display: 'grid', gap: 8 }}>
-      <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-        Your tenant uses manual LLM mode. Copy this prompt into your AI tool, then paste the JSON response below.
-      </div>
-      <div style={{ display: 'flex', gap: 6 }}>
-        <button className="btn sm" onClick={copyPrompt}>
-          {copied ? <><Icon.Check size={11} /> Copied prompt</> : <><Icon.Copy size={11} /> Copy prompt</>}
-        </button>
-      </div>
-      <textarea
-        className="input"
-        value={text}
-        onChange={(e) => onTextChange(e.target.value)}
-        placeholder='Paste the AI response here. JSON like {"summary":"…","risk":"low","actions":[…],"follow_up_days":7} works best.'
-        rows={6}
-        style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}
-      />
-      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-        <button className="btn sm ghost" onClick={onCancel} disabled={saving}>Cancel</button>
-        <button className="btn sm accent" onClick={onSubmit} disabled={saving || !text.trim()}>
-          {saving ? <span className="spin" /> : <><Icon.Check size={11} /> Save summary</>}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function RiskChip({ risk }: { risk: SummaryRiskLevel }) {
-  const styles: Record<SummaryRiskLevel, { bg: string; fg: string; label: string }> = {
-    low: { bg: 'var(--ok-tint)', fg: 'var(--ok)', label: 'Low risk' },
-    medium: { bg: 'color-mix(in oklch, #d80 22%, transparent)', fg: '#a60', label: 'Medium risk' },
-    high: { bg: 'var(--danger-tint)', fg: 'var(--danger)', label: 'High risk' },
-  };
-  const s = styles[risk];
-  return (
-    <span style={{
-      padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600,
-      background: s.bg, color: s.fg,
-    }}>{s.label}</span>
-  );
-}
-
-function UrgencyDot({ urgency }: { urgency: SummaryNextAction['urgency'] }) {
-  const colors = { low: 'var(--fg-muted)', medium: '#c80', high: 'var(--danger)' };
-  return (
-    <span style={{
-      display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
-      background: colors[urgency],
-    }} />
-  );
-}
 
 // ── Tickets panel ────────────────────────────────────────────────────
 

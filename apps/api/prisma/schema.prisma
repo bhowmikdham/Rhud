@@ -22,6 +22,12 @@ model Tenant {
   id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name        String
   plan        String   @default("mvp")
+  /// When true, opening an opportunity in the UI silently regenerates
+  /// the lead summary if and only if new thread events have landed
+  /// since the last generation. Off → summary card shows a manual
+  /// Generate button (existing flow). Default on so a fresh tenant
+  /// gets the "summary is already there" experience.
+  leadSummaryAutoGenerate Boolean @default(true) @map("lead_summary_auto_generate")
   // JSONB configs for external integrations; secrets live in KMS/Doppler,
   // these columns hold non-secret pointers (urls, workspace ids, etc.).
   odooConfig         Json?    @map("odoo_config")
@@ -1213,6 +1219,14 @@ model EngagementSummary {
   outputTokens             Int?      @map("output_tokens")
   generatedByUserId        String?   @map("generated_by_user_id") @db.Uuid
   generatedAt              DateTime  @default(now()) @map("generated_at") @db.Timestamptz
+  /// Latest thread event id at the time of generation. Used by the
+  /// auto-regenerate path to detect activity-chain changes — if the
+  /// engagement's current latest event differs, the summary is stale
+  /// and we re-invoke the LLM. Nullable for legacy rows pre-feature.
+  basedOnEventId           String?   @map("based_on_event_id") @db.Uuid
+  /// That event's createdAt. Stored separately so we don't have to
+  /// JOIN to thread_events on every staleness check.
+  basedOnEventAt           DateTime? @map("based_on_event_at") @db.Timestamptz
 
   tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)

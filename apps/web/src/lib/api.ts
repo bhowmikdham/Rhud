@@ -47,6 +47,7 @@ import type {
   LeadSummaryRow,
   GenerateSummaryResult,
   AcceptManualSummaryInput,
+  AutoSummaryResult,
   SummaryNextAction,
   SummaryRiskLevel,
   OpenTicketSummary,
@@ -94,6 +95,7 @@ export type {
   LeadSummaryRow,
   GenerateSummaryResult,
   AcceptManualSummaryInput,
+  AutoSummaryResult,
   SummaryNextAction,
   SummaryRiskLevel,
   OpenTicketSummary,
@@ -639,11 +641,14 @@ export interface TenantInfo {
   id: string;
   name: string;
   plan: string;
+  /** Auto-regenerate the AI lead summary when an opportunity is opened
+   *  and new activity has happened since the last summary. */
+  leadSummaryAutoGenerate: boolean;
 }
 
 export const tenant = {
   me: () => request<TenantInfo>('/tenant/me'),
-  update: (dto: { name?: string }) =>
+  update: (dto: { name?: string; leadSummaryAutoGenerate?: boolean }) =>
     request<TenantInfo>('/tenant/me', { method: 'PATCH', body: JSON.stringify(dto) }),
 };
 
@@ -816,6 +821,14 @@ export const leadSummary = {
     request<LeadSummaryRow | null>(`/opportunities/${engagementId}/summary`),
   generate: (engagementId: string) =>
     request<GenerateSummaryResult>(`/opportunities/${engagementId}/summary`, {
+      method: 'POST',
+    }),
+  /** Cheap path called on opportunity page load. Returns the cached
+   *  summary unchanged when the activity chain hasn't moved; only
+   *  invokes the LLM when new events have happened since the last
+   *  generation. */
+  auto: (engagementId: string) =>
+    request<AutoSummaryResult>(`/opportunities/${engagementId}/summary/auto`, {
       method: 'POST',
     }),
   acceptManual: (engagementId: string, input: AcceptManualSummaryInput) =>

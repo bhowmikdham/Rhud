@@ -31,4 +31,10 @@ export class UpdateTenantDto {
   @MinLength(1)
   @MaxLength(120)
   name?: string;
+
+  /** Auto-generate the AI lead summary on every opportunity open
+   *  when there's been new activity since the last generation.
+   *  Default is true at row creation; admins can flip in /settings. */
+  @IsOptional()
+  leadSummaryAutoGenerate?: boolean;
 }

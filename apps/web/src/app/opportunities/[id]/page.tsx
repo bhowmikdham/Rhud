@@ -40,8 +40,8 @@ import { Portal } from '@/components/portal';
 import { RowActions } from '@/components/row-actions';
 import { DeleteConfirmModal } from '@/components/delete-confirm-modal';
 import { useConfirm } from '@/components/confirm';
-import { OdooSyncCard } from './odoo-sync-card';
-import { LeadManagementSection } from './lead-management';
+import { LeadHud } from './lead-hud';
+import { LeadSummaryInline } from './lead-summary-inline';
 
 const EVENT_LABELS: Record<string, string> = {
   link_issued: 'Link issued to client',
@@ -329,7 +329,15 @@ export default function OpportunityDetailPage() {
             </div>
             <Link href="/opportunities" className="btn sm"><Icon.ChevronLeft size={12} />All opportunities</Link>
           </div>
+          {user && (
+            <LeadHud engagementId={eng.id} status={eng.status} userRole={user.role} />
+          )}
           <div className="artifact-body">
+            {user && (
+              <div style={{ marginBottom: 16 }}>
+                <LeadSummaryInline engagementId={eng.id} />
+              </div>
+            )}
             <div ref={predictionSectionRef} style={{ scrollMarginTop: 80 }}>
             {prediction && user && (
               <ApprovalCard
@@ -437,14 +445,6 @@ export default function OpportunityDetailPage() {
                 engagementId={eng.id}
                 status={eng.status}
               />
-            )}
-
-            {user && <OdooSyncCard engagementId={eng.id} status={eng.status} />}
-
-            {user && (
-              <div style={{ marginTop: 16 }}>
-                <LeadManagementSection engagementId={eng.id} userRole={user.role} />
-              </div>
             )}
 
             <div className="card" style={{ padding: 22, marginTop: 16 }}>
