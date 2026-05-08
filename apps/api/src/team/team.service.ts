@@ -72,11 +72,11 @@ export class TeamService {
 
   // ── Tenant identity ─────────────────────────────────────────────────────
 
-  async getTenant(tenantId: string): Promise<{ id: string; name: string; plan: string }> {
+  async getTenant(tenantId: string): Promise<{ id: string; name: string; plan: string; leadSummaryAutoGenerate: boolean }> {
     return this.tenantDb.run(tenantId, async (db) => {
       const row = await db.tenant.findUnique({
         where: { id: tenantId },
-        select: { id: true, name: true, plan: true },
+        select: { id: true, name: true, plan: true, leadSummaryAutoGenerate: true },
       });
       if (!row) throw new NotFoundException('tenant_not_found');
       return row;
@@ -86,14 +86,17 @@ export class TeamService {
   async updateTenant(
     tenantId: string,
     actor: JwtPayload,
-    args: { name?: string },
-  ): Promise<{ id: string; name: string; plan: string }> {
-    const data: { name?: string } = {};
+    args: { name?: string; leadSummaryAutoGenerate?: boolean },
+  ): Promise<{ id: string; name: string; plan: string; leadSummaryAutoGenerate: boolean }> {
+    const data: { name?: string; leadSummaryAutoGenerate?: boolean } = {};
     if (args.name !== undefined) {
       const trimmed = args.name.trim();
       if (trimmed.length === 0) throw new BadRequestException('name_required');
       if (trimmed.length > 120) throw new BadRequestException('name_too_long');
       data.name = trimmed;
+    }
+    if (args.leadSummaryAutoGenerate !== undefined) {
+      data.leadSummaryAutoGenerate = !!args.leadSummaryAutoGenerate;
     }
     if (Object.keys(data).length === 0) throw new BadRequestException('no_fields_to_update');
 
@@ -101,7 +104,7 @@ export class TeamService {
       const updated = await db.tenant.update({
         where: { id: tenantId },
         data,
-        select: { id: true, name: true, plan: true },
+        select: { id: true, name: true, plan: true, leadSummaryAutoGenerate: true },
       });
       this.logger.log(`tenant ${tenantId} updated by ${actor.sub}: ${JSON.stringify(data)}`);
       return updated;

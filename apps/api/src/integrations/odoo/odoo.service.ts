@@ -57,7 +57,10 @@ import type {
 /** Echo suppression window. If Odoo's write_date is within this many
  *  ms of our last_pushed_at on the same record, we treat the inbound
  *  event as the echo of our own push and skip it. 30s is generous
- *  enough to cover network latency + Odoo's automation rule debounce. */
+ *  enough to cover network latency + Odoo's automation rule debounce.
+ *
+ *  NOTE this constant lives here for the Odoo integration only.
+ *  Lead-summary cool-down is in summary.service.ts. */
 const ECHO_SUPPRESSION_WINDOW_MS = 30_000;
 
 /** Fields we always pull from crm.lead during a poll/refresh. */

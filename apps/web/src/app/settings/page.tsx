@@ -242,21 +242,28 @@ function WorkspacePanel({ isAdmin }: { isAdmin: boolean }) {
   // Local form state mirrors the cached tenant; on Save we PATCH and
   // the auth context refresh broadcasts the new name to AppShell.
   const [name, setName] = useState(tenant?.name ?? '');
+  const [autoSummary, setAutoSummary] = useState<boolean>(tenant?.leadSummaryAutoGenerate ?? true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     setName(tenant?.name ?? '');
-  }, [tenant?.name]);
+    setAutoSummary(tenant?.leadSummaryAutoGenerate ?? true);
+  }, [tenant?.name, tenant?.leadSummaryAutoGenerate]);
 
-  const dirty = name.trim() !== (tenant?.name ?? '').trim();
+  const dirty =
+    name.trim() !== (tenant?.name ?? '').trim()
+    || autoSummary !== (tenant?.leadSummaryAutoGenerate ?? true);
 
   async function save() {
     if (!dirty || busy) return;
     setBusy(true); setErr(null); setSaved(false);
     try {
-      await tenantApi.update({ name: name.trim() });
+      await tenantApi.update({
+        name: name.trim(),
+        leadSummaryAutoGenerate: autoSummary,
+      });
       await refreshTenant();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -312,6 +319,28 @@ function WorkspacePanel({ isAdmin }: { isAdmin: boolean }) {
         </Row>
       </SectionCard>
 
+      <SectionCard
+        title="AI Lead summary"
+        desc="When an opportunity opens, Rhud asks the configured AI provider for a status digest. Off → reps generate manually."
+      >
+        <Row
+          label="Auto-generate on open"
+          sub="Re-generates only when new activity has happened since the last summary, so token usage stays minimal."
+          last
+        >
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: isAdmin ? 'pointer' : 'not-allowed' }}>
+            <input
+              type="checkbox"
+              checked={autoSummary}
+              onChange={(e) => setAutoSummary(e.target.checked)}
+              disabled={!isAdmin || busy}
+              style={{ width: 16, height: 16 }}
+            />
+            <span style={{ fontSize: 12.5 }}>{autoSummary ? 'Enabled' : 'Disabled'}</span>
+          </label>
+        </Row>
+      </SectionCard>
+
       {err && (
         <div className="card" style={{
           padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16,
@@ -323,7 +352,14 @@ function WorkspacePanel({ isAdmin }: { isAdmin: boolean }) {
       {isAdmin && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, alignItems: 'center' }}>
           {saved && <span style={{ fontSize: 12, color: 'var(--ok)' }}><Icon.Check size={12} /> Saved</span>}
-          <button className="btn ghost" disabled={!dirty || busy} onClick={() => setName(tenant?.name ?? '')}>
+          <button
+            className="btn ghost"
+            disabled={!dirty || busy}
+            onClick={() => {
+              setName(tenant?.name ?? '');
+              setAutoSummary(tenant?.leadSummaryAutoGenerate ?? true);
+            }}
+          >
             Reset
           </button>
           <button className="btn accent" disabled={!dirty || busy || !name.trim()} onClick={save}>

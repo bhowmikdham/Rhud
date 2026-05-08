@@ -27,12 +27,13 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { TenantDb } from '../db/with-tenant.js';
+import { TenantDb, type PrismaTx } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { LlmService } from '../llm/llm.service.js';
 import type { ChatMessage } from '../llm/llm.types.js';
 import type {
   AcceptManualSummaryInput,
+  AutoSummaryResult,
   GenerateSummaryResult,
   LeadSummaryRow,
   SummaryNextAction,
@@ -40,9 +41,16 @@ import type {
 } from '@rhud/shared';
 import { SUMMARY_RISK_LEVELS } from '@rhud/shared';
 
-/** How long a cached summary is considered "fresh" before the UI nags
- *  to regenerate. */
+/** How long a cached summary is considered "fresh" before the UI shows
+ *  a "stale" badge. Pure display semantics — distinct from the
+ *  activity-chain `stale` boolean used by auto-regenerate. */
 const FRESHNESS_WINDOW_MS = 24 * 3600 * 1000;
+
+/** Cool-down between auto-generations on the same engagement. Prevents
+ *  two simultaneous opens (or rapid-fire edits) from triggering
+ *  duplicate LLM calls. 60s is enough to absorb concurrency without
+ *  delaying real updates noticeably. */
+const AUTO_REGENERATE_COOLDOWN_MS = 60_000;
 
 @Injectable()
 export class SummaryService {
@@ -62,12 +70,100 @@ export class SummaryService {
       });
       if (!eng) throw new NotFoundException('engagement_not_found');
 
-      const row = await db.engagementSummary.findUnique({
-        where: { engagementId },
-      });
+      const [row, latest] = await Promise.all([
+        db.engagementSummary.findUnique({ where: { engagementId } }),
+        findLatestNonSummaryEvent(db, engagementId),
+      ]);
       if (!row) return null;
-      return rowToDto(row);
+      return rowToDto(row, latest);
     });
+  }
+
+  /**
+   * Auto-regenerate path. Called by the web UI on every opportunity
+   * page load; designed to be cheap most of the time.
+   *
+   * Decision tree:
+   *   1. tenant.leadSummaryAutoGenerate is false  → return cache,
+   *                                                  skipReason='auto_disabled'
+   *   2. engagement has no thread events at all   → return cache,
+   *                                                  skipReason='no_data'
+   *   3. cache exists AND its basedOnEventId equals the latest
+   *      event's id (i.e. nothing has happened since)
+   *                                               → return cache,
+   *                                                  skipReason='fresh'
+   *   4. cache was regenerated within COOLDOWN_MS
+   *                                               → return cache,
+   *                                                  skipReason='cool_down'
+   *   5. provider is null or 'manual'             → return cache,
+   *                                                  skipReason='no_llm_provider'
+   *   6. otherwise                                → call generate(),
+   *                                                  return new row, regenerated=true
+   */
+  async generateIfStale(
+    tenantId: string,
+    engagementId: string,
+    actorUserId: string,
+  ): Promise<AutoSummaryResult> {
+    const tenant = await this.tenantDb.run(tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true },
+      });
+      if (!eng) throw new NotFoundException('engagement_not_found');
+      const [t, summary, latest] = await Promise.all([
+        db.tenant.findUnique({
+          where: { id: tenantId },
+          select: { leadSummaryAutoGenerate: true },
+        }),
+        db.engagementSummary.findUnique({ where: { engagementId } }),
+        findLatestNonSummaryEvent(db, engagementId),
+      ]);
+      return { autoOn: !!t?.leadSummaryAutoGenerate, summary, latest };
+    });
+
+    const cached = tenant.summary ? rowToDto(tenant.summary, tenant.latest) : null;
+
+    if (!tenant.autoOn) {
+      return { regenerated: false, skipReason: 'auto_disabled', summary: cached };
+    }
+    if (!tenant.latest) {
+      return { regenerated: false, skipReason: 'no_data', summary: cached };
+    }
+    if (cached && tenant.summary?.basedOnEventId === tenant.latest.id) {
+      return { regenerated: false, skipReason: 'fresh', summary: cached };
+    }
+    if (
+      tenant.summary &&
+      Date.now() - tenant.summary.generatedAt.getTime() < AUTO_REGENERATE_COOLDOWN_MS
+    ) {
+      return { regenerated: false, skipReason: 'cool_down', summary: cached };
+    }
+
+    const provider = await this.llm.getProviderName(tenantId);
+    if (!provider || provider === 'manual') {
+      return { regenerated: false, skipReason: 'no_llm_provider', summary: cached };
+    }
+
+    // Stale & we're allowed → regenerate. We reuse the existing
+    // generate() path so manual-mode handling, prompt building, and
+    // logging stay in one place.
+    try {
+      const result = await this.generate(tenantId, engagementId, actorUserId);
+      if (result.mode === 'auto') {
+        return { regenerated: true, skipReason: null, summary: result.summary };
+      }
+      // generate() shouldn't return manual when we already filtered
+      // it out above, but defend against it anyway.
+      return { regenerated: false, skipReason: 'no_llm_provider', summary: cached };
+    } catch (e) {
+      this.logger.warn(
+        `lead summary auto-regenerate failed engagement=${engagementId}: ${(e as Error).message}`,
+      );
+      // Don't surface the error to the caller — the inline UI should
+      // gracefully show the cached summary if regen fails.
+      return { regenerated: false, skipReason: 'no_llm_provider', summary: cached };
+    }
   }
 
   /**
@@ -94,6 +190,14 @@ export class SummaryService {
       };
     }
 
+    // Capture the latest event id BEFORE we generate. After persist(),
+    // a 'summary_generated' event will be appended; storing the
+    // pre-generate id is what lets the next staleness check correctly
+    // identify the chain as unchanged.
+    const preGenLatest = await this.tenantDb.run(tenantId, async (db) =>
+      findLatestNonSummaryEvent(db, engagementId),
+    );
+
     let result;
     try {
       result = await this.llm.chat(tenantId, messages, {
@@ -116,6 +220,8 @@ export class SummaryService {
       inputTokens: result.inputTokens ?? null,
       outputTokens: result.outputTokens ?? null,
       generatedByUserId: actorUserId,
+      basedOnEventId: preGenLatest?.id ?? null,
+      basedOnEventAt: preGenLatest?.createdAt ?? null,
     });
     return { mode: 'auto', summary };
   }
@@ -128,6 +234,9 @@ export class SummaryService {
     actorUserId: string,
   ): Promise<LeadSummaryRow> {
     const parsed = parseSummaryFromText(input.text);
+    const preGenLatest = await this.tenantDb.run(tenantId, async (db) =>
+      findLatestNonSummaryEvent(db, engagementId),
+    );
     return this.persist(tenantId, engagementId, {
       summaryText: parsed.summary,
       riskLevel: parsed.risk,
@@ -138,6 +247,8 @@ export class SummaryService {
       inputTokens: null,
       outputTokens: null,
       generatedByUserId: actorUserId,
+      basedOnEventId: preGenLatest?.id ?? null,
+      basedOnEventAt: preGenLatest?.createdAt ?? null,
     });
   }
 
@@ -163,6 +274,8 @@ export class SummaryService {
       inputTokens: number | null;
       outputTokens: number | null;
       generatedByUserId: string;
+      basedOnEventId: string | null;
+      basedOnEventAt: Date | null;
     },
   ): Promise<LeadSummaryRow> {
     return this.tenantDb.run(tenantId, async (db) => {
@@ -180,6 +293,8 @@ export class SummaryService {
           inputTokens: input.inputTokens,
           outputTokens: input.outputTokens,
           generatedByUserId: input.generatedByUserId,
+          basedOnEventId: input.basedOnEventId,
+          basedOnEventAt: input.basedOnEventAt,
           generatedAt: new Date(),
         },
         update: {
@@ -192,6 +307,8 @@ export class SummaryService {
           inputTokens: input.inputTokens,
           outputTokens: input.outputTokens,
           generatedByUserId: input.generatedByUserId,
+          basedOnEventId: input.basedOnEventId,
+          basedOnEventAt: input.basedOnEventAt,
           generatedAt: new Date(),
         },
       });
@@ -207,7 +324,12 @@ export class SummaryService {
           ...(input.model ? { model: input.model } : {}),
         },
       });
-      return rowToDto(row);
+      // Latest meaningful event = `basedOnEventId` (we just stamped
+      // the row with it). Pass through to rowToDto so the freshly
+      // returned row reports stale=false.
+      return rowToDto(row, input.basedOnEventId
+        ? { id: input.basedOnEventId, createdAt: input.basedOnEventAt ?? new Date() }
+        : null);
     });
   }
 
@@ -234,8 +356,12 @@ export class SummaryService {
           orderBy: { scheduledFor: 'asc' },
           take: 50,
         }),
+        // Exclude `summary_generated` events from the prompt context.
+        // They're our own internal markers; including them tempts the
+        // LLM to write meta-narration like "the last activity was when
+        // the summary was generated" — noise from the user's POV.
         db.threadEvent.findMany({
-          where: { engagementId },
+          where: { engagementId, NOT: { eventType: 'summary_generated' } },
           orderBy: { createdAt: 'desc' },
           take: 30,
         }),
@@ -361,11 +487,41 @@ function buildPromptMessages(ctx: SummaryContext): ChatMessage[] {
       '  - medium = open question, follow-up due soon, predicted price unapproved > 7 days.',
       '  - low   = on track, no open tickets, recent activity.',
       '',
-      'Be specific in the summary. Reference the actual client name, dollar figures, and ticket titles when present.',
+      'Be specific in the summary. Reference the actual client name, ticket titles, and pricing figures.',
+      '',
+      'CRITICAL — money handling:',
+      '  All monetary figures are pre-formatted strings under `pricing.display.*` (e.g. "INR 32,000").',
+      '  Use those strings VERBATIM in the summary. Do not invent commas, change orders of magnitude,',
+      '  or convert units. The numeric `pricing.values.*` fields are already in the `pricing.currency`',
+      '  units (NOT cents), provided only for reasoning. When in doubt, copy from `pricing.display`.',
+      '',
+      'CRITICAL — what NOT to mention:',
+      '  Do NOT narrate the prompt. Do NOT say "the last activity was X" unless X is a meaningful',
+      '  business event the rep can act on. Do NOT mention this summary, the act of generating it,',
+      '  the model, prompt timestamps, or "the summary was generated on …".',
+      '  Talk about the LEAD, not about Rhud or the summary itself.',
+      '',
+      'CRITICAL — keep status separate from recommendations:',
+      '  The `summary` field describes CURRENT STATE; the `actions` list is your separate',
+      '  recommendations. They must not contradict each other. Specifically:',
+      '   - If you recommend "Follow up with client" as an action, do NOT also write',
+      '     "no pending follow-ups" in the summary — that reads as a contradiction.',
+      '   - Prefer positive phrasing: state what IS (e.g. "Awaiting client response since',
+      '     April 27"), not what isn\'t, especially when you\'re about to suggest filling',
+      '     the absence.',
+      '   - It is fine to mention `open_tickets` is empty — tickets are problems and "no',
+      '     problems" is itself useful state. But avoid "no scheduled reminders" alongside',
+      '     a recommended follow-up action.',
+      '',
       'Action titles must be short imperative phrases ("Call client to confirm scope"), not vague labels.',
       'When the engagement was imported from Odoo, weight Odoo stage_id and write_date.',
     ].join('\n'),
   };
+
+  // Build the pricing block with explicit currency + pre-formatted
+  // strings so the LLM has no chance to misread cents as currency
+  // units.
+  const pricing = buildPricingForPrompt(ctx);
 
   const userBody: Record<string, unknown> = {
     engagement: {
@@ -379,15 +535,13 @@ function buildPromptMessages(ctx: SummaryContext): ChatMessage[] {
       submitted_at: ctx.submittedAt?.toISOString() ?? null,
       closed_at: ctx.closedAt?.toISOString() ?? null,
     },
-    pricing: {
-      predicted_cents: ctx.predictedPriceCents,
-      approved_cents: ctx.approvedPriceCents,
-      band: { low_cents: ctx.priceLowCents, high_cents: ctx.priceHighCents },
-      quote: ctx.quote,
-    },
+    pricing,
     open_tickets: ctx.tickets.filter((t) => t.status === 'open' || t.status === 'in_progress'),
     resolved_tickets_recent: ctx.tickets.filter((t) => t.status === 'resolved' || t.status === 'wont_fix').slice(0, 5),
-    pending_follow_ups: ctx.followUps.filter((f) => !f.completedAt),
+    // Renamed to disambiguate from the `actions` list the LLM produces.
+    // Both used to be called "follow-ups" which led to summaries that
+    // said "no pending follow-ups" while recommending one as an action.
+    scheduled_reminders: ctx.followUps.filter((f) => !f.completedAt),
     recent_activity: ctx.thread,
   };
   if (ctx.odoo) {
@@ -408,6 +562,55 @@ function buildPromptMessages(ctx: SummaryContext): ChatMessage[] {
       content: `Today is ${today}.\n\nProduce the JSON briefing for this lead:\n\n${JSON.stringify(userBody, null, 2)}`,
     },
   ];
+}
+
+/**
+ * Build the pricing object in a shape the LLM can't misread.
+ *
+ * The DB stores money in cents (BigInt). Earlier versions of this
+ * prompt sent `predicted_cents: 3200000` and the LLM happily wrote
+ * "3,200,000 INR" — it had no way to know the value was in cents.
+ *
+ * Now we send:
+ *   - `currency`: ISO 4217 code (defaults to INR)
+ *   - `display`: pre-formatted strings like "INR 32,000" — meant to be
+ *     copy-pasted into the summary verbatim
+ *   - `values`:  numeric values in CURRENCY UNITS (already divided by
+ *     100) — for any arithmetic the LLM wants to do
+ */
+function buildPricingForPrompt(ctx: SummaryContext): Record<string, unknown> {
+  const currency = ctx.quote?.currency ?? 'INR';
+  const toCurrency = (cents: number | null) => (cents == null ? null : cents / 100);
+  const fmt = (cents: number | null) => {
+    if (cents == null) return null;
+    const v = cents / 100;
+    return `${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  };
+
+  const values = {
+    predicted: toCurrency(ctx.predictedPriceCents),
+    approved: toCurrency(ctx.approvedPriceCents),
+    band_low: toCurrency(ctx.priceLowCents),
+    band_high: toCurrency(ctx.priceHighCents),
+    quote_base_total: toCurrency(ctx.quote?.baseTotalCents ?? null),
+    quote_approved: toCurrency(ctx.quote?.approvedPriceCents ?? null),
+  };
+
+  const display = {
+    predicted: fmt(ctx.predictedPriceCents),
+    approved: fmt(ctx.approvedPriceCents),
+    band: ctx.priceLowCents != null && ctx.priceHighCents != null
+      ? `${fmt(ctx.priceLowCents)} – ${fmt(ctx.priceHighCents)}`
+      : null,
+    quote_base_total: fmt(ctx.quote?.baseTotalCents ?? null),
+    quote_approved: fmt(ctx.quote?.approvedPriceCents ?? null),
+  };
+
+  // The "headline" price the LLM should reference when one exists.
+  // Approved beats predicted beats quote-base in priority.
+  const headline = display.approved ?? display.predicted ?? display.quote_approved ?? display.quote_base_total ?? null;
+
+  return { currency, headline, display, values };
 }
 
 function flattenForClipboard(messages: ChatMessage[]): string {
@@ -475,7 +678,7 @@ function parseSummaryFromText(raw: string): ParsedSummary {
   };
 }
 
-function rowToDto(r: {
+interface SummaryRowShape {
   engagementId: string;
   summaryText: string;
   riskLevel: string;
@@ -487,10 +690,23 @@ function rowToDto(r: {
   outputTokens: number | null;
   generatedByUserId: string | null;
   generatedAt: Date;
-}): LeadSummaryRow {
+  basedOnEventId: string | null;
+  basedOnEventAt: Date | null;
+}
+
+function rowToDto(
+  r: SummaryRowShape,
+  latestEvent: { id: string; createdAt: Date } | null,
+): LeadSummaryRow {
   const actions: SummaryNextAction[] = Array.isArray(r.nextActions)
     ? (r.nextActions as SummaryNextAction[])
     : [];
+  // Stale when the activity chain has moved on. If we have no
+  // basedOnEventId on the row (legacy / migrated row), treat as not
+  // stale — the auto-regenerator will fix it on next chain change.
+  const stale = latestEvent != null
+    && r.basedOnEventId != null
+    && latestEvent.id !== r.basedOnEventId;
   return {
     engagementId: r.engagementId,
     summaryText: r.summaryText,
@@ -504,5 +720,26 @@ function rowToDto(r: {
     generatedByUserId: r.generatedByUserId,
     generatedAt: r.generatedAt.toISOString(),
     fresh: Date.now() - r.generatedAt.getTime() < FRESHNESS_WINDOW_MS,
+    stale,
+    basedOnEventId: r.basedOnEventId,
+    basedOnEventAt: r.basedOnEventAt?.toISOString() ?? null,
   };
+}
+
+/**
+ * Find the most recent thread event that is NOT itself a
+ * 'summary_generated' marker. We exclude summary_generated because
+ * persist() emits it after every summary write — counting it as
+ * "latest event" would mark every cached summary stale on the next
+ * read and trigger an infinite regenerate loop.
+ */
+async function findLatestNonSummaryEvent(
+  db: PrismaTx,
+  engagementId: string,
+): Promise<{ id: string; createdAt: Date } | null> {
+  return db.threadEvent.findFirst({
+    where: { engagementId, NOT: { eventType: 'summary_generated' } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { id: true, createdAt: true },
+  });
 }

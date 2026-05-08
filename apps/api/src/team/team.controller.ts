@@ -32,19 +32,23 @@ export class TeamController {
    *  workspace's name + plan. Used by the shell for branding (sidebar,
    *  topbar) and by the Settings → Workspace tab. */
   @Get('me')
-  getTenant(@Req() req: AuthedRequest): Promise<{ id: string; name: string; plan: string }> {
+  getTenant(@Req() req: AuthedRequest): Promise<{ id: string; name: string; plan: string; leadSummaryAutoGenerate: boolean }> {
     return this.svc.getTenant(req.tenantId);
   }
 
-  /** Mutate workspace identity. Admin-only — non-admins shouldn't be
-   *  able to rename the workspace under their teammates' feet. */
+  /** Mutate workspace identity + per-tenant feature toggles. Admin-only
+   *  — non-admins shouldn't be able to rename the workspace or flip
+   *  spend-affecting toggles like the AI auto-summariser. */
   @Patch('me')
   @Roles('admin')
   updateTenant(
     @Req() req: AuthedRequest,
     @Body() dto: UpdateTenantDto,
-  ): Promise<{ id: string; name: string; plan: string }> {
-    return this.svc.updateTenant(req.tenantId, req.user, dto.name !== undefined ? { name: dto.name } : {});
+  ): Promise<{ id: string; name: string; plan: string; leadSummaryAutoGenerate: boolean }> {
+    return this.svc.updateTenant(req.tenantId, req.user, {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.leadSummaryAutoGenerate !== undefined ? { leadSummaryAutoGenerate: dto.leadSummaryAutoGenerate } : {}),
+    });
   }
 
   @Get('users')
