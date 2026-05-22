@@ -823,6 +823,11 @@ export interface TenantInfo {
    *  disabled. CEO threshold must be >= VP threshold when both set. */
   requiresVpApprovalAboveCents: number | null;
   requiresCeoApprovalAboveCents: number | null;
+  /** Phase D — tenant proposal-template defaults: per-category
+   *  methodology + tools, team details, T&C boilerplate. Shape lives
+   *  in @rhud/shared.ProposalDefaults, but we keep this open here so
+   *  forward-compatible extensions don't require an api.ts bump. */
+  proposalDefaults: Record<string, unknown>;
 }
 
 export const tenant = {
@@ -832,6 +837,7 @@ export const tenant = {
     leadSummaryAutoGenerate?: boolean;
     requiresVpApprovalAboveCents?: number | null;
     requiresCeoApprovalAboveCents?: number | null;
+    proposalDefaults?: Record<string, unknown>;
   }) =>
     request<TenantInfo>('/tenant/me', { method: 'PATCH', body: JSON.stringify(dto) }),
 };
@@ -1071,6 +1077,35 @@ export const proposalDraft = {
       typeof window === 'undefined' ? null : window.localStorage.getItem('rhud.token');
     const res = await fetch(
       `${BASE}/api/v1/opportunities/${engagementId}/draft/pdf`,
+      { headers: t ? { authorization: `Bearer ${t}` } : {} },
+    );
+    if (!res.ok) return false;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
+  },
+  /**
+   * Phase D — pure server-side DOCX render. Unlike the Gamma PDF path
+   * which depends on an external draft URL, this is always available:
+   * it stitches the engagement + line items + tenant proposal_defaults
+   * into a Word document on the server and streams the bytes back.
+   *
+   * Returns true on success. On failure (e.g. proposal_draft missing,
+   * engagement not in a renderable state), the API returns 4xx and we
+   * resolve false so the caller can show a toast.
+   */
+  async downloadDocx(engagementId: string, filename = 'Proposal.docx'): Promise<boolean> {
+    const t =
+      typeof window === 'undefined' ? null : window.localStorage.getItem('rhud.token');
+    const res = await fetch(
+      `${BASE}/api/v1/opportunities/${engagementId}/proposal/docx`,
       { headers: t ? { authorization: `Bearer ${t}` } : {} },
     );
     if (!res.ok) return false;

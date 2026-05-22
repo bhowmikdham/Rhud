@@ -35,6 +35,11 @@ model Tenant {
   /// pattern for CEO. Both null = single-stage approval (existing).
   requiresVpApprovalAboveCents  BigInt? @map("requires_vp_approval_above_cents")
   requiresCeoApprovalAboveCents BigInt? @map("requires_ceo_approval_above_cents")
+  /// Phase D — proposal-template defaults. Boilerplate sections the
+  /// DOCX renderer interpolates: methodology + tools per category,
+  /// team details, terms & conditions. See packages/shared/src/
+  /// proposal-defaults.ts for the shape.
+  proposalDefaults              Json    @default("{}") @map("proposal_defaults")
   // JSONB configs for external integrations; secrets live in KMS/Doppler,
   // these columns hold non-secret pointers (urls, workspace ids, etc.).
   odooConfig         Json?    @map("odoo_config")

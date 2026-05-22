@@ -51,6 +51,7 @@ export class TeamController {
       ...(dto.leadSummaryAutoGenerate !== undefined ? { leadSummaryAutoGenerate: dto.leadSummaryAutoGenerate } : {}),
       ...(dto.requiresVpApprovalAboveCents !== undefined ? { requiresVpApprovalAboveCents: dto.requiresVpApprovalAboveCents } : {}),
       ...(dto.requiresCeoApprovalAboveCents !== undefined ? { requiresCeoApprovalAboveCents: dto.requiresCeoApprovalAboveCents } : {}),
+      ...(dto.proposalDefaults !== undefined ? { proposalDefaults: dto.proposalDefaults } : {}),
     });
   }
 

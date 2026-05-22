@@ -45,4 +45,10 @@ export class UpdateTenantDto {
 
   @IsOptional()
   requiresCeoApprovalAboveCents?: number | null;
+
+  /** Phase D — tenant proposal-template defaults (methodology, tools,
+   *  team, T&C). Passed as a partial; we merge with the stored object
+   *  so individual fields can be updated without clobbering others. */
+  @IsOptional()
+  proposalDefaults?: Record<string, unknown>;
 }

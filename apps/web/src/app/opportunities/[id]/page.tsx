@@ -4543,6 +4543,9 @@ function ProposalDraftCard({
   /** Recipient email after a successful send — drives a transient
    *  "Sent to {email}" banner that auto-dismisses after 6s. */
   const [sentTo, setSentTo] = useState<string | null>(null);
+  /** Phase D — DOCX export is pure server-side render, always available
+   *  once a draft exists. Independent of Gamma PDF status. */
+  const [downloadingDocx, setDownloadingDocx] = useState(false);
 
   // Sales reps are the human-in-the-loop for sending — they email the
   // client themselves from their own Outlook/Gmail. Manager + admin
@@ -4724,7 +4727,31 @@ function ProposalDraftCard({
             </div>
           )}
         </div>
-        <ProposalStatusChip status={current?.status ?? 'approved'} hasText={!!current?.text} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {current?.text && (
+            <button
+              type="button"
+              className="btn sm ghost"
+              disabled={downloadingDocx}
+              title="Download a Word-compatible .docx version of this proposal"
+              onClick={async () => {
+                if (downloadingDocx) return;
+                setDownloadingDocx(true);
+                setErr(null);
+                const ok = await proposalDraft.downloadDocx(engagementId);
+                setDownloadingDocx(false);
+                if (!ok) {
+                  setErr('Could not generate the DOCX. Make sure the draft + scope are saved, then retry.');
+                }
+              }}
+            >
+              {downloadingDocx
+                ? <span className="spin" />
+                : <><Icon.Download size={11} /> DOCX</>}
+            </button>
+          )}
+          <ProposalStatusChip status={current?.status ?? 'approved'} hasText={!!current?.text} />
+        </div>
       </div>
 
       {err && (
