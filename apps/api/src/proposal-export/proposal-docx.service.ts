@@ -200,11 +200,6 @@ interface RenderContext {
 // ── Document assembly ────────────────────────────────────────────
 
 function buildDocument(ctx: RenderContext): Document {
-  const sections = [
-    ...coverSection(ctx),
-    ...new Array<Paragraph>(),
-  ];
-
   const body: Paragraph[] = [];
   body.push(...coverSection(ctx));
   body.push(pageBreak());
@@ -435,7 +430,17 @@ function deliverablesSection(_ctx: RenderContext): Paragraph[] {
 function toolsSection(ctx: RenderContext): Paragraph[] {
   const key = ctx.engagement.categorySlug;
   const text = key ? ctx.tenant.defaults.toolsByCategory?.[key] : undefined;
-  return text ? paragraphsFromText(text) : [paragraph('Industry-standard commercial + open-source tooling.')];
+  if (!text) return [paragraph('Industry-standard commercial + open-source tooling.')];
+  // Tools are entered one-per-line in the settings UI. Split on single
+  // newlines (not blank-line-separated paragraphs) and emit each as a
+  // bulleted item. Falls back to a single paragraph when the admin
+  // enters a single-line description instead of a list.
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) return paragraphsFromText(text);
+  return lines.map((line) => new Paragraph({
+    numbering: { reference: 'bullets', level: 0 },
+    children: [new TextRun({ text: line })],
+  }));
 }
 
 function timelinesSection(ctx: RenderContext): Paragraph[] {
@@ -532,15 +537,34 @@ function paragraph(text: string): Paragraph {
 }
 
 function paragraphsFromText(text: string): Paragraph[] {
-  return text
-    .split(/\n\s*\n/)
-    .map((para) => para.trim())
-    .filter(Boolean)
-    .map((para) => new Paragraph({ children: [new TextRun({ text: para })] }));
+  // Each non-empty line becomes its own paragraph. Blank lines in the
+  // source bump the top spacing of the next paragraph so paragraph
+  // separation survives the trip from textarea → DOCX. Without this,
+  // multi-line fields (T&C, methodology, team details entered as
+  // newline-separated prose) all collapse onto one line because
+  // Word ignores literal \n inside a <w:t> run.
+  const out: Paragraph[] = [];
+  let pendingBlank = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) {
+      pendingBlank = true;
+      continue;
+    }
+    out.push(new Paragraph({
+      ...(pendingBlank ? { spacing: { before: 200 } } : {}),
+      children: [new TextRun({ text: line })],
+    }));
+    pendingBlank = false;
+  }
+  return out;
 }
 
 function pageBreak(): Paragraph {
-  return new Paragraph({ children: [new TextRun({ text: '', break: 1 })], pageBreakBefore: true });
+  // pageBreakBefore on the next paragraph is the conventional way to
+  // start a fresh page. The earlier version also set `break: 1` on a
+  // dummy TextRun, which doubled the break in some renderers.
+  return new Paragraph({ pageBreakBefore: true, children: [new TextRun({ text: '' })] });
 }
 
 function labeledLine(label: string, value: string): Paragraph[] {
