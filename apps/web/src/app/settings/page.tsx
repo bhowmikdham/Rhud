@@ -30,6 +30,7 @@ const TABS = [
   { id: 'team',          label: 'Team',           icon: 'Users' as const },
   { id: 'routing',       label: 'Review routing', icon: 'Inbox' as const },
   { id: 'approvals',     label: 'Approvals',      icon: 'Shield' as const },
+  { id: 'proposals',     label: 'Proposal templates', icon: 'FileText' as const },
   { id: 'ai',            label: 'AI',             icon: 'Sparkles' as const },
   { id: 'notifications', label: 'Notifications',  icon: 'Bell' as const },
   { id: 'security',      label: 'Security',       icon: 'Shield' as const },
@@ -118,6 +119,7 @@ function SettingsInner() {
             {tab === 'team' && <TeamPanel currentUserId={user.sub} isAdmin={user.role === 'admin'} />}
             {tab === 'routing' && <RoutingRulesPanel isAdmin={user.role === 'admin'} />}
             {tab === 'approvals' && <ApprovalThresholdsPanel isAdmin={user.role === 'admin'} />}
+            {tab === 'proposals' && <ProposalTemplatesPanel isAdmin={user.role === 'admin'} />}
             {tab === 'ai' && <AiPanel isAdmin={user.role === 'admin'} />}
             {tab === 'notifications' && <NotificationsPanel />}
             {tab === 'security' && <SecurityPanel />}
@@ -1696,4 +1698,274 @@ function ApprovalThresholdsPanel({ isAdmin }: { isAdmin: boolean }) {
       </div>
     </>
   );
+}
+
+// ── Phase D ─────────────────────────────────────────────────────────────────
+// Proposal template defaults. These feed the server-side DOCX renderer so
+// every export starts from the same boilerplate. Methodology + tools are
+// per-category (different prose for VAPT vs Red Team vs GRC); team
+// details + T&C are workspace-wide. The renderer is in
+// apps/api/src/proposal-export/proposal-docx.service.ts — keep field
+// names in sync with packages/shared/src/proposal-defaults.ts.
+
+interface ProposalDefaultsShape {
+  methodologyByCategory?: Record<string, string>;
+  toolsByCategory?: Record<string, string>;
+  teamDetails?: string;
+  termsConditions?: string;
+  coverTagline?: string;
+}
+
+function ProposalTemplatesPanel({ isAdmin }: { isAdmin: boolean }) {
+  const { tenant, refreshTenant } = useAuth();
+  const [tree, setTree] = useState<CategoryTree | null>(null);
+  const [methodology, setMethodology] = useState<Record<string, string>>({});
+  const [tools, setTools] = useState<Record<string, string>>({});
+  const [teamDetails, setTeamDetails] = useState<string>('');
+  const [termsConditions, setTermsConditions] = useState<string>('');
+  const [coverTagline, setCoverTagline] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Pull current defaults out of the tenant config. The server always
+  // returns an object (defaults to `{}` so we never have to handle null).
+  const stored: ProposalDefaultsShape = (tenant?.proposalDefaults ?? {}) as ProposalDefaultsShape;
+
+  useEffect(() => {
+    setMethodology({ ...(stored.methodologyByCategory ?? {}) });
+    setTools({ ...(stored.toolsByCategory ?? {}) });
+    setTeamDetails(stored.teamDetails ?? '');
+    setTermsConditions(stored.termsConditions ?? '');
+    setCoverTagline(stored.coverTagline ?? '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant?.proposalDefaults]);
+
+  useEffect(() => {
+    categories.tree()
+      .then(setTree)
+      .catch(() => setTree({ topLevel: [], childrenByParent: {} }));
+  }, []);
+
+  // Dirty check — any field differs from what's stored? We compare on
+  // the normalised shape (trim → empty == missing) so flipping a
+  // populated field to whitespace + back doesn't enable Save.
+  const normalise = (s: string) => s.trim();
+  const dirty =
+    JSON.stringify(stripEmpties(methodology)) !== JSON.stringify(stored.methodologyByCategory ?? {})
+    || JSON.stringify(stripEmpties(tools)) !== JSON.stringify(stored.toolsByCategory ?? {})
+    || normalise(teamDetails) !== normalise(stored.teamDetails ?? '')
+    || normalise(termsConditions) !== normalise(stored.termsConditions ?? '')
+    || normalise(coverTagline) !== normalise(stored.coverTagline ?? '');
+
+  async function save() {
+    if (!dirty || busy) return;
+    setBusy(true); setErr(null); setSaved(false);
+    try {
+      const next: ProposalDefaultsShape = {
+        methodologyByCategory: stripEmpties(methodology),
+        toolsByCategory: stripEmpties(tools),
+        teamDetails: normalise(teamDetails),
+        termsConditions: normalise(termsConditions),
+        coverTagline: normalise(coverTagline),
+      };
+      // Send through PATCH /tenant/me. The server shallow-merges with
+      // the existing proposalDefaults blob, so we always send the full
+      // current state to keep the UI as the source of truth.
+      await tenantApi.update({ proposalDefaults: next as unknown as Record<string, unknown> });
+      await refreshTenant();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function reset() {
+    setMethodology({ ...(stored.methodologyByCategory ?? {}) });
+    setTools({ ...(stored.toolsByCategory ?? {}) });
+    setTeamDetails(stored.teamDetails ?? '');
+    setTermsConditions(stored.termsConditions ?? '');
+    setCoverTagline(stored.coverTagline ?? '');
+  }
+
+  return (
+    <>
+      {!isAdmin && (
+        <div className="card" style={{
+          padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+          marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          background: 'var(--bg-sunk)',
+        }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — only admins can edit proposal templates.
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 18, marginBottom: 16 }}>
+        <header style={{ marginBottom: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Cover &amp; positioning</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.55 }}>
+            A short tagline that appears under the workspace name on the proposal&apos;s
+            cover page. Optional — leave empty for a minimal cover.
+          </div>
+        </header>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Cover tagline</span>
+          <input
+            className="input"
+            value={coverTagline}
+            onChange={(e) => setCoverTagline(e.target.value)}
+            disabled={!isAdmin || busy}
+            placeholder="e.g. Cybersecurity that earns trust."
+            maxLength={140}
+            style={{ height: 32, fontSize: 13, padding: '0 10px' }}
+          />
+        </label>
+      </div>
+
+      <div className="card" style={{ padding: 18, marginBottom: 16 }}>
+        <header style={{ marginBottom: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Methodology &amp; tools by category</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.55 }}>
+            VAPT, Red Team, and GRC proposals have very different methodology
+            descriptions. Set the boilerplate per category here; the DOCX
+            renderer picks the right one based on the opportunity&apos;s
+            classified category. Leave a category blank to omit those
+            sections from the proposal.
+          </div>
+        </header>
+
+        {tree == null ? (
+          <div className="empty"><span className="spin" /></div>
+        ) : tree.topLevel.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: 'var(--fg-muted)' }}>
+            No categories available yet. Add them under Review routing.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 18 }}>
+            {tree.topLevel.map((cat) => (
+              <div
+                key={cat.slug}
+                style={{
+                  padding: 14,
+                  background: 'var(--bg-sunk)',
+                  borderRadius: 8,
+                  display: 'grid', gap: 10,
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{cat.name}</div>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>
+                    Methodology paragraph (free text — appears under &ldquo;Our Approach&rdquo; in the proposal)
+                  </span>
+                  <textarea
+                    className="input"
+                    rows={5}
+                    value={methodology[cat.slug] ?? ''}
+                    onChange={(e) => setMethodology({ ...methodology, [cat.slug]: e.target.value })}
+                    disabled={!isAdmin || busy}
+                    placeholder={`How your team approaches ${cat.name.toLowerCase()} engagements…`}
+                    style={{ fontSize: 12.5, lineHeight: 1.55, padding: 10, fontFamily: 'inherit' }}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>
+                    Tools / frameworks (one per line — appears under &ldquo;Tools &amp; Techniques&rdquo;)
+                  </span>
+                  <textarea
+                    className="input mono"
+                    rows={4}
+                    value={tools[cat.slug] ?? ''}
+                    onChange={(e) => setTools({ ...tools, [cat.slug]: e.target.value })}
+                    disabled={!isAdmin || busy}
+                    placeholder={'Burp Suite Pro\nNessus Professional\nNmap\n…'}
+                    style={{ fontSize: 12, lineHeight: 1.5, padding: 10 }}
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 18, marginBottom: 16 }}>
+        <header style={{ marginBottom: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Team details</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.55 }}>
+            Describes the people who will deliver the engagement — certifications,
+            team size, headline experience. Same prose for every proposal. Appears
+            under the &ldquo;Our Team&rdquo; section.
+          </div>
+        </header>
+        <textarea
+          className="input"
+          rows={8}
+          value={teamDetails}
+          onChange={(e) => setTeamDetails(e.target.value)}
+          disabled={!isAdmin || busy}
+          placeholder="Our delivery team includes OSCP, CISSP, and CISA-certified specialists with 8+ years of experience across…"
+          style={{ width: '100%', fontSize: 12.5, lineHeight: 1.6, padding: 10, fontFamily: 'inherit' }}
+        />
+      </div>
+
+      <div className="card" style={{ padding: 18, marginBottom: 16 }}>
+        <header style={{ marginBottom: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Terms &amp; conditions</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.55 }}>
+            Boilerplate legal language appended verbatim to every proposal. Keep
+            it short — payment terms, confidentiality, IP, jurisdiction. Anything
+            engagement-specific (assumptions, exclusions, special caveats) goes on
+            the opportunity itself, not here.
+          </div>
+        </header>
+        <textarea
+          className="input"
+          rows={10}
+          value={termsConditions}
+          onChange={(e) => setTermsConditions(e.target.value)}
+          disabled={!isAdmin || busy}
+          placeholder="1. Payment: 50% on signing, 50% on delivery (NET 30).&#10;2. Confidentiality: …&#10;3. Intellectual Property: …"
+          style={{ width: '100%', fontSize: 12.5, lineHeight: 1.6, padding: 10, fontFamily: 'inherit' }}
+        />
+      </div>
+
+      {err && (
+        <div style={{
+          padding: 10, fontSize: 12, marginBottom: 12,
+          background: 'var(--danger-tint)', color: 'var(--danger)',
+          border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
+          borderRadius: 8,
+        }}>{err}</div>
+      )}
+
+      {isAdmin && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center' }}>
+          {saved && <span style={{ fontSize: 12, color: 'var(--ok)' }}><Icon.Check size={12} /> Saved</span>}
+          <button className="btn ghost" disabled={!dirty || busy} onClick={reset}>
+            Reset
+          </button>
+          <button className="btn accent" disabled={!dirty || busy} onClick={save}>
+            {busy ? <span className="spin" /> : <><Icon.Check size={12} /> Save templates</>}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Strip keys whose trimmed value is empty — keeps the stored blob from
+ *  filling up with `{"vapt": ""}` placeholders once an admin clears a
+ *  category they don't sell anymore. */
+function stripEmpties(rec: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rec)) {
+    const t = v.trim();
+    if (t.length > 0) out[k] = t;
+  }
+  return out;
 }

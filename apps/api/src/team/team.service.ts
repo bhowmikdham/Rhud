@@ -19,6 +19,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { randomBytes } from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import { ROLES, isRole, type Role } from '@rhud/shared';
 import { TenantDb } from '../db/with-tenant.js';
 import { UnscopedDb } from '../db/unscoped-db.js';
@@ -68,6 +69,9 @@ export interface TenantConfigDto {
    *  null = that escalation tier disabled. */
   requiresVpApprovalAboveCents: number | null;
   requiresCeoApprovalAboveCents: number | null;
+  /** Phase D — proposal template defaults. Always returned as an
+   *  object (defaults to `{}` server-side, never null). */
+  proposalDefaults: Record<string, unknown>;
 }
 
 @Injectable()
@@ -93,6 +97,7 @@ export class TeamService {
           leadSummaryAutoGenerate: true,
           requiresVpApprovalAboveCents: true,
           requiresCeoApprovalAboveCents: true,
+          proposalDefaults: true,
         },
       });
       if (!row) throw new NotFoundException('tenant_not_found');
@@ -105,6 +110,7 @@ export class TeamService {
           ? null : Number(row.requiresVpApprovalAboveCents),
         requiresCeoApprovalAboveCents: row.requiresCeoApprovalAboveCents == null
           ? null : Number(row.requiresCeoApprovalAboveCents),
+        proposalDefaults: (row.proposalDefaults ?? {}) as Record<string, unknown>,
       };
     });
   }
@@ -117,6 +123,7 @@ export class TeamService {
       leadSummaryAutoGenerate?: boolean;
       requiresVpApprovalAboveCents?: number | null;
       requiresCeoApprovalAboveCents?: number | null;
+      proposalDefaults?: Record<string, unknown>;
     },
   ): Promise<TenantConfigDto> {
     const data: {
@@ -124,6 +131,7 @@ export class TeamService {
       leadSummaryAutoGenerate?: boolean;
       requiresVpApprovalAboveCents?: bigint | null;
       requiresCeoApprovalAboveCents?: bigint | null;
+      proposalDefaults?: Prisma.InputJsonValue;
     } = {};
     if (args.name !== undefined) {
       const trimmed = args.name.trim();
@@ -156,9 +164,27 @@ export class TeamService {
     ) {
       throw new BadRequestException('ceo_threshold_must_be_above_vp');
     }
-    if (Object.keys(data).length === 0) throw new BadRequestException('no_fields_to_update');
+    // Phase D — merge proposalDefaults shallow with whatever's stored
+    // (so the caller can update one key at a time without clobbering
+    // unrelated keys). Empty-string values clear individual keys.
+    let mergeProposalDefaults: Record<string, unknown> | undefined;
+    if (args.proposalDefaults !== undefined) {
+      mergeProposalDefaults = args.proposalDefaults;
+    }
+    if (Object.keys(data).length === 0 && mergeProposalDefaults === undefined) {
+      throw new BadRequestException('no_fields_to_update');
+    }
 
     return this.tenantDb.run(tenantId, async (db) => {
+      // Merge proposalDefaults shallow if provided.
+      if (mergeProposalDefaults !== undefined) {
+        const current = await db.tenant.findUnique({
+          where: { id: tenantId },
+          select: { proposalDefaults: true },
+        });
+        const existing = (current?.proposalDefaults ?? {}) as Record<string, unknown>;
+        data.proposalDefaults = { ...existing, ...mergeProposalDefaults } as Prisma.InputJsonValue;
+      }
       const updated = await db.tenant.update({
         where: { id: tenantId },
         data,
@@ -167,6 +193,7 @@ export class TeamService {
           leadSummaryAutoGenerate: true,
           requiresVpApprovalAboveCents: true,
           requiresCeoApprovalAboveCents: true,
+          proposalDefaults: true,
         },
       });
       this.logger.log(`tenant ${tenantId} updated by ${actor.sub}`);
@@ -179,6 +206,7 @@ export class TeamService {
           ? null : Number(updated.requiresVpApprovalAboveCents),
         requiresCeoApprovalAboveCents: updated.requiresCeoApprovalAboveCents == null
           ? null : Number(updated.requiresCeoApprovalAboveCents),
+        proposalDefaults: (updated.proposalDefaults ?? {}) as Record<string, unknown>,
       };
     });
   }

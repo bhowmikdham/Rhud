@@ -145,6 +145,10 @@ export function ProposalWorkspace({
   // the user can grab the PDF without opening the send flow.
   const [downloading, setDownloading] = useState(false);
   const [downloadErr, setDownloadErr] = useState<string | null>(null);
+  // Phase D — DOCX export is independent of the Gamma PDF path. It's
+  // a pure server-side render so it's available any time there's a
+  // saved draft, even when the PDF link has expired.
+  const [downloadingDocx, setDownloadingDocx] = useState(false);
 
   async function downloadPdf() {
     if (downloading) return;
@@ -159,6 +163,22 @@ export function ProposalWorkspace({
       setDownloadErr(describeError(e));
     } finally {
       setDownloading(false);
+    }
+  }
+
+  async function downloadDocx() {
+    if (downloadingDocx) return;
+    setDownloadingDocx(true);
+    setDownloadErr(null);
+    try {
+      const ok = await proposalDraft.downloadDocx(engagementId);
+      if (!ok) {
+        setDownloadErr('Could not generate the DOCX. Make sure the draft + scope are saved, then retry.');
+      }
+    } catch (e) {
+      setDownloadErr(describeError(e));
+    } finally {
+      setDownloadingDocx(false);
     }
   }
 
@@ -221,6 +241,17 @@ export function ProposalWorkspace({
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            {current?.text && (
+              <button
+                type="button"
+                className="btn sm"
+                onClick={downloadDocx}
+                disabled={downloadingDocx}
+                title="Download a Word-compatible .docx version of this proposal"
+              >
+                {downloadingDocx ? <span className="spin" /> : <><Icon.Download size={11} /> DOCX</>}
+              </button>
+            )}
             {current?.proposalPdfAvailable && (
               <button
                 type="button"
