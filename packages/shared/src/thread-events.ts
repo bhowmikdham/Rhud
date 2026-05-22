@@ -98,6 +98,17 @@ export const THREAD_EVENT_TYPES = [
   /// Manual reassignment by an admin / manager.
   /// Payload: `{ previousReviewerUserId, reviewerUserId, reason? }`.
   'reviewer_reassigned',
+  // Phase C — multi-level approval (PM workflow stage 5).
+  /// Sales manager approved a price that exceeds a tenant threshold;
+  /// escalating to VP or CEO. Payload:
+  ///   { level: 'vp' | 'ceo', approvedPriceCents, thresholdCents }
+  'final_approval_requested',
+  /// VP or CEO greenlit the gated approval.
+  /// Payload: `{ level, approvedPriceCents, approverRole, comment? }`
+  'final_approval_granted',
+  /// VP or CEO rejected the gated approval; status → 'rejected'.
+  /// Payload: `{ level, approverRole, reason }`
+  'final_approval_rejected',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];

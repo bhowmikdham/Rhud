@@ -28,4 +28,19 @@ export class CreateEngagementDto {
   @IsOptional()
   @Matches(UUID_RE, { message: 'salesManagerId must be UUID-formatted' })
   salesManagerId?: string;
+
+  // ── Phase C — client metadata captured at issuance ────────────
+  @IsOptional() @IsString() @MaxLength(200) clientName?: string;
+  @IsOptional() @IsString() @MaxLength(1000) clientAddress?: string;
+  @IsOptional() @IsString() @MaxLength(200) contactName?: string;
+  @IsOptional() @IsString() @MaxLength(50)  contactPhone?: string;
+}
+
+/** PATCH body for /opportunities/:id/client. All fields optional;
+ *  passing null/empty clears the stored value. */
+export class UpdateClientInfoDto {
+  @IsOptional() @IsString() @MaxLength(200) clientName?: string | null;
+  @IsOptional() @IsString() @MaxLength(1000) clientAddress?: string | null;
+  @IsOptional() @IsString() @MaxLength(200) contactName?: string | null;
+  @IsOptional() @IsString() @MaxLength(50)  contactPhone?: string | null;
 }

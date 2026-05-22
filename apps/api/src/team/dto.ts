@@ -37,4 +37,12 @@ export class UpdateTenantDto {
    *  Default is true at row creation; admins can flip in /settings. */
   @IsOptional()
   leadSummaryAutoGenerate?: boolean;
+
+  /** Phase C — multi-level approval thresholds (cents). Pass null to
+   *  clear (= disable that escalation tier). */
+  @IsOptional()
+  requiresVpApprovalAboveCents?: number | null;
+
+  @IsOptional()
+  requiresCeoApprovalAboveCents?: number | null;
 }

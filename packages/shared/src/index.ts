@@ -12,3 +12,4 @@ export * from './odoo.js';
 export * from './lead-management.js';
 export * from './reviewer-actions.js';
 export * from './classification.js';
+export * from './client-info.js';

@@ -59,6 +59,20 @@ class ApproveDto {
   optionalComment?: string;
 }
 
+/** Phase C — final approval action by VP / CEO. */
+class FinalApproveDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  comment?: string;
+}
+
+class FinalRejectDto {
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+}
+
 class RejectDto {
   /** The prediction this rejection is being recorded against. Optional —
    *  a manager may reject before any prediction even exists (e.g. scope
@@ -234,17 +248,49 @@ export class PredictionController {
     const comment =
       dto.choice === 'custom' ? dto.comment : dto.optionalComment;
 
+    // ── Phase C — multi-level approval gating ──────────────────
+    // Look up the tenant's thresholds. If the approved cents exceed
+    // either, we DON'T flip status → 'approved' yet. Instead the
+    // engagement waits for a VP or CEO to final-approve.
+    const tenantConfig = await this.tenantDb.run(req.tenantId, async (db) =>
+      db.tenant.findUnique({
+        where: { id: req.tenantId },
+        select: {
+          requiresVpApprovalAboveCents: true,
+          requiresCeoApprovalAboveCents: true,
+        },
+      }),
+    );
+    const ceoThreshold = tenantConfig?.requiresCeoApprovalAboveCents == null
+      ? null : Number(tenantConfig.requiresCeoApprovalAboveCents);
+    const vpThreshold = tenantConfig?.requiresVpApprovalAboveCents == null
+      ? null : Number(tenantConfig.requiresVpApprovalAboveCents);
+
+    let targetStatus: 'approved' | 'pending_vp_approval' | 'pending_ceo_approval' = 'approved';
+    let finalLevel: 'vp' | 'ceo' | null = null;
+    let finalThreshold: number | null = null;
+    if (ceoThreshold != null && approvedCents > ceoThreshold) {
+      targetStatus = 'pending_ceo_approval';
+      finalLevel = 'ceo';
+      finalThreshold = ceoThreshold;
+    } else if (vpThreshold != null && approvedCents > vpThreshold) {
+      targetStatus = 'pending_vp_approval';
+      finalLevel = 'vp';
+      finalThreshold = vpThreshold;
+    }
+
     const updated = await this.tenantDb.run(req.tenantId, async (db) => {
       const eng = await db.engagement.update({
         where: { id: engagementId },
         data: {
           approvedPriceCents: BigInt(approvedCents),
-          status: 'approved',
+          status: targetStatus,
         },
         select: { id: true, approvedPriceCents: true, status: true },
       });
-      // Mirror onto engagement_quotes too — that's what the legacy quote
-      // approval card reads from. Both rows agree post-approval.
+      // Mirror onto engagement_quotes too. We write the approved price
+      // even when status is pending_*_approval — the manager's choice
+      // is captured; final-approver's act just unblocks the status.
       await db.engagementQuote.updateMany({
         where: { engagementId },
         data: {
@@ -268,6 +314,19 @@ export class PredictionController {
           ...(comment ? { comment } : {}),
         },
       });
+      if (finalLevel) {
+        await this.thread.emitWithin(db, req.tenantId, {
+          engagementId,
+          eventType: 'final_approval_requested',
+          actorType: 'user',
+          actorId: req.user.sub,
+          payload: {
+            level: finalLevel,
+            approvedPriceCents: approvedCents,
+            thresholdCents: finalThreshold,
+          },
+        });
+      }
       return eng;
     });
 
@@ -278,9 +337,23 @@ export class PredictionController {
       actorId: req.user.sub,
       payload: { approvedPriceCents: approvedCents, choice: dto.choice },
     });
+    if (finalLevel) {
+      void this.thread.dispatchAfterCommit(req.tenantId, {
+        engagementId,
+        eventType: 'final_approval_requested',
+        actorType: 'user',
+        actorId: req.user.sub,
+        payload: { level: finalLevel, approvedPriceCents: approvedCents },
+      });
+    }
 
-    // Push the just-approved opportunity to Odoo (no-op when not configured).
-    void this.odoo.maybeAutoSync(req.tenantId, engagementId, 'approved');
+    // Push to Odoo only when truly approved (status = 'approved').
+    // For pending_*_approval, hold off — the final-approve path
+    // re-fires this. Avoids creating a 'won' Odoo lead before the
+    // VP/CEO actually signs off.
+    if (targetStatus === 'approved') {
+      void this.odoo.maybeAutoSync(req.tenantId, engagementId, 'approved');
+    }
 
     return {
       engagementId: updated.id,
@@ -288,6 +361,128 @@ export class PredictionController {
       status: updated.status,
       predictionId: prediction.id,
       choice: dto.choice,
+      /** When non-null, the manager's decision is provisional; the
+       *  named role must final-approve before the engagement advances. */
+      pendingFinalLevel: finalLevel,
+    };
+  }
+
+  // ── Final-approval endpoints (Phase C) ─────────────────────────
+
+  @Post('final-approve')
+  @Roles('admin', 'vp_sales', 'ceo')
+  @HttpCode(200)
+  async finalApprove(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) engagementId: string,
+    @Body() dto: FinalApproveDto,
+  ) {
+    return this.finalDecision(req, engagementId, { kind: 'grant', comment: dto.comment ?? null });
+  }
+
+  @Post('final-reject')
+  @Roles('admin', 'vp_sales', 'ceo')
+  @HttpCode(200)
+  async finalReject(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) engagementId: string,
+    @Body() dto: FinalRejectDto,
+  ) {
+    if (!dto.reason?.trim()) throw new BadRequestException('reason_required');
+    return this.finalDecision(req, engagementId, { kind: 'reject', reason: dto.reason.trim() });
+  }
+
+  /**
+   * Common runner for the two final-decision actions. Enforces:
+   *   - engagement must currently be in pending_*_approval
+   *   - actor role must be allowed at that level (admin always; ceo
+   *     can approve a VP-pending too, the other way around is forbidden)
+   */
+  private async finalDecision(
+    req: AuthedRequest,
+    engagementId: string,
+    args:
+      | { kind: 'grant'; comment: string | null }
+      | { kind: 'reject'; reason: string },
+  ) {
+    const result = await this.tenantDb.run(req.tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true, status: true, approvedPriceCents: true },
+      });
+      if (!eng) throw new BadRequestException('engagement_not_found');
+      const level: 'vp' | 'ceo' | null =
+        eng.status === 'pending_vp_approval'  ? 'vp'
+        : eng.status === 'pending_ceo_approval' ? 'ceo'
+        : null;
+      if (!level) {
+        throw new ConflictException(`not_pending_final_approval:${eng.status}`);
+      }
+      // Role check: ceo > vp. admin always.
+      const role = req.user.role;
+      if (role !== 'admin') {
+        if (level === 'ceo' && role !== 'ceo') {
+          throw new ConflictException('only_ceo_can_final_approve_ceo_pending');
+        }
+        // For vp level: ceo or admin or vp_sales can act. (CEO above VP
+        // — they can approve subordinate gates.)
+        if (level === 'vp' && role !== 'vp_sales' && role !== 'ceo') {
+          throw new ConflictException('only_vp_or_ceo_can_final_approve_vp_pending');
+        }
+      }
+
+      const nextStatus = args.kind === 'grant' ? 'approved' : 'rejected';
+      const updated = await db.engagement.update({
+        where: { id: engagementId },
+        data: {
+          status: nextStatus,
+          // On reject, clear the provisional approved-price.
+          ...(args.kind === 'reject' ? { approvedPriceCents: null } : {}),
+        },
+        select: { id: true, status: true, approvedPriceCents: true },
+      });
+      if (args.kind === 'reject') {
+        await db.engagementQuote.updateMany({
+          where: { engagementId },
+          data: { approvedPriceCents: null, approvedAt: null, approvedBy: null },
+        });
+      }
+      await this.thread.emitWithin(db, req.tenantId, {
+        engagementId,
+        eventType: args.kind === 'grant' ? 'final_approval_granted' : 'final_approval_rejected',
+        actorType: 'user',
+        actorId: req.user.sub,
+        payload: {
+          level,
+          approverRole: role,
+          ...(args.kind === 'grant'
+            ? { approvedPriceCents: Number(eng.approvedPriceCents ?? 0), ...(args.comment ? { comment: args.comment } : {}) }
+            : { reason: args.reason }),
+        },
+      });
+      return { updated, level };
+    });
+
+    void this.thread.dispatchAfterCommit(req.tenantId, {
+      engagementId,
+      eventType: args.kind === 'grant' ? 'final_approval_granted' : 'final_approval_rejected',
+      actorType: 'user',
+      actorId: req.user.sub,
+      payload: {
+        level: result.level,
+        approverRole: req.user.role,
+        ...(args.kind === 'reject' ? { reason: args.reason } : {}),
+      },
+    });
+
+    if (args.kind === 'grant') {
+      void this.odoo.maybeAutoSync(req.tenantId, engagementId, 'approved');
+    }
+
+    return {
+      engagementId: result.updated.id,
+      status: result.updated.status,
+      level: result.level,
     };
   }
 

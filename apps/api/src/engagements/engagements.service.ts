@@ -44,6 +44,12 @@ export interface EngagementSummary {
   classifiedBy: 'llm' | 'manual' | null;
   classifiedAt: string | null;
   assignedReviewerId: string | null;
+  /** Phase C — full client metadata. All nullable; rep can fill in
+   *  at issuance or any time after via PATCH /opportunities/:id/client. */
+  clientName: string | null;
+  clientAddress: string | null;
+  contactName: string | null;
+  contactPhone: string | null;
 }
 
 /**
@@ -101,6 +107,11 @@ export class EngagementsService {
           ...(args.dto.salesManagerId ? { salesManagerId: args.dto.salesManagerId } : {}),
           clientEmail: args.dto.clientEmail,
           ...(args.dto.name ? { name: args.dto.name } : {}),
+          // Phase C — optional client metadata captured at issuance.
+          ...(args.dto.clientName?.trim()    ? { clientName:    args.dto.clientName.trim() }    : {}),
+          ...(args.dto.clientAddress?.trim() ? { clientAddress: args.dto.clientAddress.trim() } : {}),
+          ...(args.dto.contactName?.trim()   ? { contactName:   args.dto.contactName.trim() }   : {}),
+          ...(args.dto.contactPhone?.trim()  ? { contactPhone:  args.dto.contactPhone.trim() }  : {}),
           status: 'issued',
         },
       });
@@ -238,6 +249,66 @@ export class EngagementsService {
    * timeline) so the audit timeline shows what the reviewer touched.
    * Soft-empty: passing `null` or `""` clears the stored value.
    */
+  /**
+   * Phase C — patch the client-metadata fields (name / address /
+   * contact name / phone). All four are optional; passing
+   * `null` or empty string clears the stored value. Editable by
+   * sales rep, manager, admin (any role with engagement-edit rights).
+   * No thread event is emitted: this is "fill in the form" work,
+   * not a workflow transition.
+   */
+  async updateClient(
+    tenantId: string,
+    engagementId: string,
+    args: {
+      clientName?: string | null;
+      clientAddress?: string | null;
+      contactName?: string | null;
+      contactPhone?: string | null;
+    },
+  ): Promise<{
+    id: string;
+    clientName: string | null;
+    clientAddress: string | null;
+    contactName: string | null;
+    contactPhone: string | null;
+  }> {
+    const norm = (v: string | null | undefined): string | null | undefined => {
+      if (v === undefined) return undefined;
+      if (v === null) return null;
+      const t = v.trim();
+      return t.length === 0 ? null : t;
+    };
+    const data: Record<string, string | null> = {};
+    const n1 = norm(args.clientName);    if (n1 !== undefined) data.clientName    = n1;
+    const n2 = norm(args.clientAddress); if (n2 !== undefined) data.clientAddress = n2;
+    const n3 = norm(args.contactName);   if (n3 !== undefined) data.contactName   = n3;
+    const n4 = norm(args.contactPhone);  if (n4 !== undefined) data.contactPhone  = n4;
+    if (Object.keys(data).length === 0) {
+      // No-op — return current state.
+      return this.tenantDb.run(tenantId, async (db) => {
+        const row = await db.engagement.findUnique({
+          where: { id: engagementId },
+          select: { id: true, clientName: true, clientAddress: true, contactName: true, contactPhone: true },
+        });
+        if (!row) throw new NotFoundException('engagement_not_found');
+        return row;
+      });
+    }
+    return this.tenantDb.run(tenantId, async (db) => {
+      const exists = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true },
+      });
+      if (!exists) throw new NotFoundException('engagement_not_found');
+      return db.engagement.update({
+        where: { id: engagementId },
+        data,
+        select: { id: true, clientName: true, clientAddress: true, contactName: true, contactPhone: true },
+      });
+    });
+  }
+
   async updateScope(
     tenantId: string,
     engagementId: string,
@@ -379,6 +450,11 @@ function rowToSummary(r: {
   classifiedBy?: string | null;
   classifiedAt?: Date | null;
   assignedReviewerId?: string | null;
+  // Phase C — client metadata.
+  clientName?: string | null;
+  clientAddress?: string | null;
+  contactName?: string | null;
+  contactPhone?: string | null;
 }): EngagementSummary {
   return {
     id: r.id,
@@ -401,5 +477,9 @@ function rowToSummary(r: {
     classifiedBy: (r.classifiedBy ?? null) as 'llm' | 'manual' | null,
     classifiedAt: r.classifiedAt ? r.classifiedAt.toISOString() : null,
     assignedReviewerId: r.assignedReviewerId ?? null,
+    clientName: r.clientName ?? null,
+    clientAddress: r.clientAddress ?? null,
+    contactName: r.contactName ?? null,
+    contactPhone: r.contactPhone ?? null,
   };
 }

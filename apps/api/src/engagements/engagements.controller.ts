@@ -16,7 +16,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
 import { EngagementsService } from './engagements.service.js';
-import { CreateEngagementDto } from './dto.js';
+import { CreateEngagementDto, UpdateClientInfoDto } from './dto.js';
 
 /** PATCH body for the reviewer-fillable scope fields (assumptions,
  *  exclusions, delivery timeline override). Phase A. All optional —
@@ -90,5 +90,16 @@ export class EngagementsController {
     @Body() dto: UpdateScopeDto,
   ) {
     return this.svc.updateScope(req.tenantId, id, req.user.sub, dto);
+  }
+
+  /** Phase C — update the client metadata (name / address / contact). */
+  @Patch(':id/client')
+  @Roles('admin', 'sales_manager', 'sales_employee', 'tech_team')
+  updateClient(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateClientInfoDto,
+  ) {
+    return this.svc.updateClient(req.tenantId, id, dto);
   }
 }

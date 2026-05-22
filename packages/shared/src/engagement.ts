@@ -21,6 +21,14 @@ export const ENGAGEMENT_STATUSES = [
   'awaiting_clarification',
   /// Reviewer escalated to a sales manager / admin.
   'escalated',
+  // Phase C — multi-level approval (PM workflow stage 5).
+  /// Sales manager approved a price above the tenant's VP threshold;
+  /// a vp_sales (or admin) user must final-approve before the
+  /// engagement can advance to 'approved'.
+  'pending_vp_approval',
+  /// Same as above but above the tenant's CEO threshold (which sits
+  /// above VP threshold). Requires ceo (or admin) final-approval.
+  'pending_ceo_approval',
 ] as const;
 
 export type EngagementStatus = (typeof ENGAGEMENT_STATUSES)[number];

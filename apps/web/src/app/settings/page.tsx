@@ -29,6 +29,7 @@ const TABS = [
   { id: 'workspace',     label: 'Workspace',      icon: 'Globe' as const },
   { id: 'team',          label: 'Team',           icon: 'Users' as const },
   { id: 'routing',       label: 'Review routing', icon: 'Inbox' as const },
+  { id: 'approvals',     label: 'Approvals',      icon: 'Shield' as const },
   { id: 'ai',            label: 'AI',             icon: 'Sparkles' as const },
   { id: 'notifications', label: 'Notifications',  icon: 'Bell' as const },
   { id: 'security',      label: 'Security',       icon: 'Shield' as const },
@@ -116,6 +117,7 @@ function SettingsInner() {
             {tab === 'workspace' && <WorkspacePanel isAdmin={user.role === 'admin'} />}
             {tab === 'team' && <TeamPanel currentUserId={user.sub} isAdmin={user.role === 'admin'} />}
             {tab === 'routing' && <RoutingRulesPanel isAdmin={user.role === 'admin'} />}
+            {tab === 'approvals' && <ApprovalThresholdsPanel isAdmin={user.role === 'admin'} />}
             {tab === 'ai' && <AiPanel isAdmin={user.role === 'admin'} />}
             {tab === 'notifications' && <NotificationsPanel />}
             {tab === 'security' && <SecurityPanel />}
@@ -384,6 +386,8 @@ const ROLE_LABELS: Record<Role, string> = {
   sales_manager: 'Sales manager',
   sales_employee: 'Sales rep',
   tech_team: 'Tech team',
+  vp_sales: 'VP Sales',
+  ceo: 'CEO',
 };
 
 function TeamPanel({ currentUserId, isAdmin }: { currentUserId: string; isAdmin: boolean }) {
@@ -1550,4 +1554,146 @@ function labelForSlug(slug: string, tree: CategoryTree | null): string {
   if (!tree) return slug;
   const all = [...tree.topLevel, ...Object.values(tree.childrenByParent).flat()];
   return all.find((c) => c.slug === slug)?.name ?? slug;
+}
+
+// ─── Phase C: Approval thresholds (VP / CEO escalation tiers) ─────────
+
+function ApprovalThresholdsPanel({ isAdmin }: { isAdmin: boolean }) {
+  const { tenant, refreshTenant } = useAuth();
+  // We work in "major units" (rupees, dollars) for the UI, then convert
+  // to cents at save. The server stores cents.
+  const [vpMajor, setVpMajor] = useState<string>('');
+  const [ceoMajor, setCeoMajor] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setVpMajor(tenant?.requiresVpApprovalAboveCents != null
+      ? String(tenant.requiresVpApprovalAboveCents / 100) : '');
+    setCeoMajor(tenant?.requiresCeoApprovalAboveCents != null
+      ? String(tenant.requiresCeoApprovalAboveCents / 100) : '');
+  }, [tenant?.requiresVpApprovalAboveCents, tenant?.requiresCeoApprovalAboveCents]);
+
+  const vpFromTenantMajor = tenant?.requiresVpApprovalAboveCents != null
+    ? tenant.requiresVpApprovalAboveCents / 100 : null;
+  const ceoFromTenantMajor = tenant?.requiresCeoApprovalAboveCents != null
+    ? tenant.requiresCeoApprovalAboveCents / 100 : null;
+  const vpInputMajor = vpMajor.trim() === '' ? null : Number(vpMajor);
+  const ceoInputMajor = ceoMajor.trim() === '' ? null : Number(ceoMajor);
+  const dirty = vpInputMajor !== vpFromTenantMajor || ceoInputMajor !== ceoFromTenantMajor;
+
+  async function save() {
+    if (!dirty || busy) return;
+    setBusy(true); setErr(null); setSaved(false);
+    try {
+      const vpCents = vpInputMajor == null
+        ? null
+        : Math.round(vpInputMajor * 100);
+      const ceoCents = ceoInputMajor == null
+        ? null
+        : Math.round(ceoInputMajor * 100);
+      if (vpCents != null && !Number.isFinite(vpCents)) throw new Error('VP threshold is invalid');
+      if (ceoCents != null && !Number.isFinite(ceoCents)) throw new Error('CEO threshold is invalid');
+      if (vpCents != null && ceoCents != null && ceoCents < vpCents) {
+        throw new Error('CEO threshold must be at or above VP threshold');
+      }
+      await tenantApi.update({
+        requiresVpApprovalAboveCents: vpCents,
+        requiresCeoApprovalAboveCents: ceoCents,
+      });
+      await refreshTenant();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {!isAdmin && (
+        <div className="card" style={{
+          padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+          marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          background: 'var(--bg-sunk)',
+        }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — only admins can edit approval thresholds.
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 18 }}>
+        <header style={{ marginBottom: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Multi-level approval</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.55 }}>
+            When a sales manager approves a price above the threshold, the opportunity is
+            held for VP Sales or CEO sign-off before going to the client. Leave a field empty to
+            disable that escalation tier.
+          </div>
+        </header>
+
+        <div style={{ display: 'grid', gap: 14, maxWidth: 480 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>VP Sales sign-off above</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="1000"
+                value={vpMajor}
+                onChange={(e) => setVpMajor(e.target.value)}
+                disabled={!isAdmin || busy}
+                placeholder="e.g. 1000000 (= 10 lakh)"
+                style={{ flex: 1, height: 32, fontSize: 13, fontVariantNumeric: 'tabular-nums' }}
+              />
+              <span style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>major units</span>
+            </div>
+          </label>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>CEO sign-off above</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="1000"
+                value={ceoMajor}
+                onChange={(e) => setCeoMajor(e.target.value)}
+                disabled={!isAdmin || busy}
+                placeholder="e.g. 5000000 (= 50 lakh)"
+                style={{ flex: 1, height: 32, fontSize: 13, fontVariantNumeric: 'tabular-nums' }}
+              />
+              <span style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>major units</span>
+            </div>
+          </label>
+
+          {err && <div style={{ color: 'var(--danger)', fontSize: 12 }}>{err}</div>}
+        </div>
+
+        {isAdmin && (
+          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center' }}>
+            {saved && <span style={{ fontSize: 12, color: 'var(--ok)' }}><Icon.Check size={12} /> Saved</span>}
+            <button
+              className="btn ghost"
+              disabled={!dirty || busy}
+              onClick={() => {
+                setVpMajor(vpFromTenantMajor != null ? String(vpFromTenantMajor) : '');
+                setCeoMajor(ceoFromTenantMajor != null ? String(ceoFromTenantMajor) : '');
+              }}
+            >
+              Reset
+            </button>
+            <button className="btn accent" disabled={!dirty || busy} onClick={save}>
+              {busy ? <span className="spin" /> : <><Icon.Check size={12} /> Save thresholds</>}
+            </button>
+          </div>
+        )}
+      </div>
+    </>
+  );
 }
