@@ -298,6 +298,12 @@ export interface EngagementSummary {
   assumptions?: string | null;
   exclusions?: string | null;
   deliveryTimelineOverride?: string | null;
+  /** Phase B — opportunity classification + assigned reviewer. */
+  categorySlug?: string | null;
+  subCategorySlug?: string | null;
+  classifiedBy?: 'llm' | 'manual' | null;
+  classifiedAt?: string | null;
+  assignedReviewerId?: string | null;
 }
 
 /** Legacy alias used by older imports. */
@@ -398,6 +404,59 @@ export type QuoteLineItemKind = _QuoteLineItemKind;
 export type QuoteTotalsBreakdown = _QuoteTotalsBreakdown;
 export type CreateQuoteLineItemInput = _CreateQuoteLineItemInput;
 export type UpdateQuoteLineItemInput = _UpdateQuoteLineItemInput;
+
+// ── Phase B: classification + routing ───────────────────────────────
+
+import type {
+  CategoryTree as _CategoryTree,
+  OpportunityCategoryRow as _OpportunityCategoryRow,
+  ClassificationResult as _ClassificationResult,
+  ManualClassifyInput as _ManualClassifyInput,
+  RoutingRuleRow as _RoutingRuleRow,
+  UpsertRoutingRuleInput as _UpsertRoutingRuleInput,
+  ReassignReviewerInput as _ReassignReviewerInput,
+} from '@rhud/shared';
+export type CategoryTree = _CategoryTree;
+export type OpportunityCategoryRow = _OpportunityCategoryRow;
+export type ClassificationResult = _ClassificationResult;
+export type ManualClassifyInput = _ManualClassifyInput;
+export type RoutingRuleRow = _RoutingRuleRow;
+export type UpsertRoutingRuleInput = _UpsertRoutingRuleInput;
+export type ReassignReviewerInput = _ReassignReviewerInput;
+
+export const categories = {
+  tree: () => request<CategoryTree>(`/opportunity-categories`),
+};
+
+export const classification = {
+  current: (engagementId: string) =>
+    request<ClassificationResult>(`/opportunities/${engagementId}/classification`),
+  classifyManual: (engagementId: string, input: ManualClassifyInput) =>
+    request<ClassificationResult>(`/opportunities/${engagementId}/classify`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  classifyAuto: (engagementId: string) =>
+    request<ClassificationResult>(`/opportunities/${engagementId}/classify/auto`, {
+      method: 'POST',
+    }),
+  reassignReviewer: (engagementId: string, input: ReassignReviewerInput) =>
+    request<{ assignedReviewerId: string | null }>(`/opportunities/${engagementId}/reviewer`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+};
+
+export const routingRules = {
+  list: () => request<RoutingRuleRow[]>(`/tenant/routing-rules`),
+  upsert: (input: UpsertRoutingRuleInput) =>
+    request<RoutingRuleRow>(`/tenant/routing-rules`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  remove: (id: string) =>
+    request<void>(`/tenant/routing-rules/${id}`, { method: 'DELETE' }),
+};
 
 export const quoteLineItems = {
   list: (engagementId: string) =>

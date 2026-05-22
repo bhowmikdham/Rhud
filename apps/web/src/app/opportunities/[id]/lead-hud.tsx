@@ -27,6 +27,7 @@ import { Icon } from '@/components/icon';
 import { Portal } from '@/components/portal';
 import { LeadManagementSection } from './lead-management';
 import { OdooSyncCard } from './odoo-sync-card';
+import { CategoryChip, ReviewerChip } from './classification-chips';
 
 type Drawer = 'lead' | 'odoo' | null;
 // Summary lives inline above the body now (LeadSummaryInline); the
@@ -38,9 +39,25 @@ interface Props {
   engagementId: string;
   status: string;
   userRole: string;
+  /** Phase B — current classification (from engagement detail). */
+  classification?: {
+    categorySlug: string | null;
+    subCategorySlug: string | null;
+    classifiedBy: 'llm' | 'manual' | null;
+    classifiedAt: string | null;
+  } | null;
+  /** Phase B — current reviewer assignment. */
+  assignedReviewerId?: string | null;
+  /** Called when category or reviewer changes via the chips — let the
+   *  parent refresh the engagement detail. */
+  onClassificationChange?(): void;
 }
 
-export function LeadHud({ engagementId, status, userRole }: Props) {
+export function LeadHud({
+  engagementId, status, userRole,
+  classification, assignedReviewerId,
+  onClassificationChange,
+}: Props) {
   // Compact glanceables for tickets / follow-ups / Odoo (summary
   // lives inline above the body — see LeadSummaryInline).
   const [tickets, setTickets] = useState<TicketRow[] | null>(null);
@@ -104,6 +121,18 @@ export function LeadHud({ engagementId, status, userRole }: Props) {
           flexShrink: 0,
         }}
       >
+        <CategoryChip
+          engagementId={engagementId}
+          userRole={userRole}
+          classification={classification ?? null}
+          onChange={() => onClassificationChange?.()}
+        />
+        <ReviewerChip
+          engagementId={engagementId}
+          userRole={userRole}
+          assignedReviewerId={assignedReviewerId ?? null}
+          onChange={() => onClassificationChange?.()}
+        />
         <TicketsChip
           openCount={openTickets.length}
           urgent={urgentTickets.length > 0}

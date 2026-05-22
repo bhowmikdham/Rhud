@@ -29,6 +29,7 @@ import { MlService } from '../ml/ml.service.js';
 import { ExtractionService } from '../extraction/extraction.service.js';
 import { QuoteService } from '../pricing/quote.service.js';
 import { OdooService } from '../integrations/odoo/odoo.service.js';
+import { ClassificationService } from '../classification/classification.service.js';
 import { deviceFingerprint, fingerprintsEqual, verifyToken } from './token.util.js';
 
 export interface RequestContext {
@@ -158,6 +159,7 @@ export class GatheringService {
     private readonly quotes: QuoteService,
     private readonly extraction: ExtractionService,
     private readonly odoo: OdooService,
+    private readonly classification: ClassificationService,
   ) {}
 
   // ── Token resolution ─────────────────────────────────────────────────────
@@ -997,6 +999,11 @@ export class GatheringService {
     // service silently swallows errors so a flaky Odoo doesn't fail
     // a submission.
     void this.odoo.maybeAutoSync(t.tenantId, t.engagementId, 'submitted');
+
+    // Phase B: auto-classify + auto-route. Silent failure (LLM down,
+    // tenant on manual mode, no matching rule) leaves the engagement
+    // unclassified — the UI surfaces a manual "Classify" button.
+    void this.classification.classifyOnSubmit(t.tenantId, t.engagementId);
 
     return result;
   }
