@@ -12,6 +12,8 @@ import { TenantPricingConfigService } from './tenant-pricing-config.service.js';
 import { TenantPricingConfigController } from './tenant-pricing-config.controller.js';
 import { RateCardFieldMapperService } from './rate-card-mapper.service.js';
 import { RateCardHintSynthesizerService } from './rate-card-hint-synthesizer.service.js';
+import { QuoteLineItemsService } from './quote-line-items.service.js';
+import { QuoteLineItemsController } from './quote-line-items.controller.js';
 import { IntegrationsModule } from '../integrations/integrations.module.js';
 
 @Module({
@@ -26,6 +28,7 @@ import { IntegrationsModule } from '../integrations/integrations.module.js';
     QuoteController,
     PredictionController,
     TenantPricingConfigController,
+    QuoteLineItemsController,
   ],
   providers: [
     PricingService,
@@ -34,6 +37,7 @@ import { IntegrationsModule } from '../integrations/integrations.module.js';
     TenantPricingConfigService,
     RateCardFieldMapperService,
     RateCardHintSynthesizerService,
+    QuoteLineItemsService,
   ],
   exports: [
     PricingService,
@@ -42,6 +46,7 @@ import { IntegrationsModule } from '../integrations/integrations.module.js';
     TenantPricingConfigService,
     RateCardFieldMapperService,
     RateCardHintSynthesizerService,
+    QuoteLineItemsService,
   ],
 })
 export class PricingModule {}

@@ -64,6 +64,26 @@ export const THREAD_EVENT_TYPES = [
   /// AI lead summary was generated or manually saved.
   /// Payload: `{ generatedBy, riskLevel, recommendedFollowUpDays, model? }`.
   'summary_generated',
+  // Phase A — reviewer action events.
+  /// Technical reviewer clicked "Send Back to Sales" with a reason.
+  /// Payload: `{ reason }`. Status transitions to 'returned_to_sales'.
+  'scope_returned_to_sales',
+  /// Reviewer asked sales/client a clarifying question.
+  /// Payload: `{ question }`. Status transitions to 'awaiting_clarification'.
+  'clarification_requested',
+  /// Reviewer escalated to a manager / admin.
+  /// Payload: `{ reason, escalatedToRole }`. Status → 'escalated'.
+  'scope_escalated',
+  /// Reviewer edited the assumptions field. Payload: `{ length }`.
+  'scope_assumptions_updated',
+  /// Reviewer edited the exclusions field. Payload: `{ length }`.
+  'scope_exclusions_updated',
+  /// New quote line item added (travel/tool/resource/discount/custom).
+  /// Payload: `{ lineItemId, kind, label, amountCents }`.
+  'quote_line_item_added',
+  /// Quote line item removed.
+  /// Payload: `{ lineItemId, kind, label, amountCents }`.
+  'quote_line_item_removed',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];

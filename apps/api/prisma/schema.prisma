@@ -171,6 +171,17 @@ model Engagement {
   // The runtime updates this as the responder enters/exits each loop;
   // findCurrentNode reads it to know which body iteration to show.
   loopState           Json     @default("{}") @map("loop_state")
+  /// Free-text assumptions added by the technical reviewer during pricing
+  /// review (PM workflow stage 4). Surfaced verbatim in the generated
+  /// proposal. Null until a reviewer touches it.
+  assumptions               String? @map("assumptions")
+  /// Free-text exclusions / "out of scope" items added during review.
+  /// Same treatment as assumptions — copied into the proposal verbatim.
+  exclusions                String? @map("exclusions")
+  /// Reviewer-overridden delivery timeline string (e.g. "10 working days
+  /// from PO, excluding Saturdays"). Falls back to the template's default
+  /// timeline when null.
+  deliveryTimelineOverride  String? @map("delivery_timeline_override")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   submittedAt         DateTime? @map("submitted_at") @db.Timestamptz
   closedAt            DateTime? @map("closed_at") @db.Timestamptz
@@ -259,10 +270,45 @@ model EngagementQuote {
 
   engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
   rateCard   RateCard?  @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
+  lineItems  EngagementQuoteLineItem[]
 
   @@index([tenantId])
   @@index([rateCardId])
   @@map("engagement_quotes")
+}
+
+/// Reviewer-added extras on a quote — travel costs, tool licenses,
+/// resource costs, discounts, custom rows. Folded into the displayed
+/// total at read time (the base from the rate card stays intact).
+///
+/// Discount semantics: store amount_cents as signed (negative for a
+/// discount). When the reviewer expresses a discount as a percentage
+/// (e.g. "10% off"), the percentage is also kept in `percentageBps`
+/// so the UI can show "10% off (= −₹12,500)" instead of just the
+/// resolved cents number.
+model EngagementQuoteLineItem {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId            String   @map("tenant_id") @db.Uuid
+  engagementQuoteId   String   @map("engagement_quote_id") @db.Uuid
+  /// 'travel' | 'tool' | 'resource' | 'discount' | 'custom'
+  kind                String
+  /// User-facing label ("Mumbai onsite — 2 trips", "Burp Suite Pro license"…)
+  label               String
+  /// Signed cents. Positive = additional charge, negative = discount.
+  amountCents         BigInt   @map("amount_cents")
+  /// When the reviewer typed a percentage discount, the % is preserved
+  /// in basis points (1250 = 12.5%) for display. Null otherwise.
+  percentageBps       Int?     @map("percentage_bps")
+  position            Int      @default(0)
+  createdBy           String?  @map("created_by") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  quote EngagementQuote @relation(fields: [engagementQuoteId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([engagementQuoteId, position])
+  @@map("engagement_quote_line_items")
 }
 
 model GatheringToken {

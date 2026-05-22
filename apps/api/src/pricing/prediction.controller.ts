@@ -424,4 +424,142 @@ export class PredictionController {
       return { engagementId: updated.id, status: updated.status };
     });
   }
+
+  // ── Phase A: Reviewer action endpoints ────────────────────────────
+  //
+  // Three actions a technical reviewer can take instead of approve/reject:
+  //   • Send Back to Sales       — scope needs work; sales must edit + resubmit
+  //   • Request Clarification    — one question for sales/client; hold pending
+  //   • Escalate                 — kick to sales_manager / admin
+  //
+  // All three:
+  //   • take a `reason` (required, max 2000 chars)
+  //   • transition engagement.status to a reviewer-hold state
+  //   • emit a dedicated thread event so the timeline + notification
+  //     fan-out picks it up
+  //   • return the new status to the caller
+
+  @Post('send-back')
+  @Roles('admin', 'sales_manager', 'tech_team')
+  @HttpCode(200)
+  async sendBack(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) engagementId: string,
+    @Body() dto: ReviewerActionDto,
+  ) {
+    if (!dto.reason?.trim()) throw new BadRequestException('reason_required');
+    return this.runReviewerHold(req, engagementId, {
+      targetStatus: 'returned_to_sales',
+      eventType: 'scope_returned_to_sales',
+      reason: dto.reason.trim(),
+    });
+  }
+
+  @Post('request-clarification')
+  @Roles('admin', 'sales_manager', 'tech_team')
+  @HttpCode(200)
+  async requestClarification(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) engagementId: string,
+    @Body() dto: ReviewerActionDto,
+  ) {
+    if (!dto.reason?.trim()) throw new BadRequestException('reason_required');
+    return this.runReviewerHold(req, engagementId, {
+      targetStatus: 'awaiting_clarification',
+      eventType: 'clarification_requested',
+      reason: dto.reason.trim(),
+    });
+  }
+
+  @Post('escalate')
+  @Roles('admin', 'sales_manager', 'tech_team')
+  @HttpCode(200)
+  async escalate(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) engagementId: string,
+    @Body() dto: ReviewerActionDto,
+  ) {
+    if (!dto.reason?.trim()) throw new BadRequestException('reason_required');
+    return this.runReviewerHold(req, engagementId, {
+      targetStatus: 'escalated',
+      eventType: 'scope_escalated',
+      reason: dto.reason.trim(),
+      escalateToRole: dto.escalateToRole ?? 'sales_manager',
+    });
+  }
+
+  /**
+   * Common runner for the three reviewer-hold actions. Guards against
+   * applying a hold from a terminal state (closed/sent/expired).
+   */
+  private async runReviewerHold(
+    req: AuthedRequest,
+    engagementId: string,
+    args: {
+      targetStatus: 'returned_to_sales' | 'awaiting_clarification' | 'escalated';
+      eventType: 'scope_returned_to_sales' | 'clarification_requested' | 'scope_escalated';
+      reason: string;
+      escalateToRole?: 'sales_manager' | 'admin';
+    },
+  ) {
+    const result = await this.tenantDb.run(req.tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true, status: true },
+      });
+      if (!eng) throw new BadRequestException('engagement_not_found');
+      // Holds make no sense once an opportunity is sealed.
+      if (['closed', 'sent', 'expired', 'rejected'].includes(eng.status)) {
+        throw new ConflictException(`cannot_hold_from_status:${eng.status}`);
+      }
+      // Same-state idempotency: clicking Send Back twice shouldn't
+      // emit a duplicate event. Surface a clear conflict.
+      if (eng.status === args.targetStatus) {
+        throw new ConflictException(`already_in_status:${args.targetStatus}`);
+      }
+      const updated = await db.engagement.update({
+        where: { id: engagementId },
+        data: { status: args.targetStatus },
+        select: { id: true, status: true },
+      });
+      await this.thread.emitWithin(db, req.tenantId, {
+        engagementId,
+        eventType: args.eventType,
+        actorType: 'user',
+        actorId: req.user.sub,
+        payload: {
+          reason: args.reason,
+          fromStatus: eng.status,
+          ...(args.escalateToRole ? { escalateToRole: args.escalateToRole } : {}),
+        },
+      });
+      return updated;
+    });
+
+    void this.thread.dispatchAfterCommit(req.tenantId, {
+      engagementId,
+      eventType: args.eventType,
+      actorType: 'user',
+      actorId: req.user.sub,
+      payload: {
+        reason: args.reason,
+        ...(args.escalateToRole ? { escalateToRole: args.escalateToRole } : {}),
+      },
+    });
+
+    return { engagementId: result.id, status: result.status };
+  }
+}
+
+/** Body for the three reviewer-hold endpoints. */
+class ReviewerActionDto {
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+
+  /** Optional: who you're escalating to. Defaults to 'sales_manager'.
+   *  Ignored by send-back and request-clarification. */
+  @IsOptional()
+  @IsIn(['sales_manager', 'admin'])
+  escalateToRole?: 'sales_manager' | 'admin';
 }

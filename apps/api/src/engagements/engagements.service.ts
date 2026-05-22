@@ -32,6 +32,11 @@ export interface EngagementSummary {
    * mixed-currency tenants.
    */
   currency: string | null;
+  /** Phase A — reviewer-fillable scope fields. Surfaced on detail page
+   *  and on the printed proposal. Null until a reviewer touches them. */
+  assumptions: string | null;
+  exclusions: string | null;
+  deliveryTimelineOverride: string | null;
 }
 
 /**
@@ -219,6 +224,126 @@ export class EngagementsService {
       await db.engagement.delete({ where: { id } });
     });
   }
+
+  /**
+   * Phase A — patch the reviewer-fillable scope fields. Emits one
+   * thread event per non-trivial change (assumptions / exclusions /
+   * timeline) so the audit timeline shows what the reviewer touched.
+   * Soft-empty: passing `null` or `""` clears the stored value.
+   */
+  async updateScope(
+    tenantId: string,
+    engagementId: string,
+    actorUserId: string,
+    args: {
+      assumptions?: string | null;
+      exclusions?: string | null;
+      deliveryTimelineOverride?: string | null;
+    },
+  ): Promise<{
+    id: string;
+    assumptions: string | null;
+    exclusions: string | null;
+    deliveryTimelineOverride: string | null;
+  }> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      const existing = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: {
+          id: true,
+          assumptions: true,
+          exclusions: true,
+          deliveryTimelineOverride: true,
+        },
+      });
+      if (!existing) throw new NotFoundException('engagement_not_found');
+
+      // Normalise — treat empty / whitespace-only as null.
+      const normalise = (v: string | null | undefined): string | null | undefined => {
+        if (v === undefined) return undefined;
+        if (v === null) return null;
+        const t = v.trim();
+        return t.length === 0 ? null : t;
+      };
+      const next = {
+        assumptions: normalise(args.assumptions),
+        exclusions: normalise(args.exclusions),
+        deliveryTimelineOverride: normalise(args.deliveryTimelineOverride),
+      };
+
+      // Filter to actual changes — no point writing if nothing changed.
+      const data: Record<string, string | null> = {};
+      const changed: Array<'assumptions' | 'exclusions' | 'delivery_timeline_override'> = [];
+      if (next.assumptions !== undefined && next.assumptions !== existing.assumptions) {
+        data.assumptions = next.assumptions;
+        changed.push('assumptions');
+      }
+      if (next.exclusions !== undefined && next.exclusions !== existing.exclusions) {
+        data.exclusions = next.exclusions;
+        changed.push('exclusions');
+      }
+      if (
+        next.deliveryTimelineOverride !== undefined &&
+        next.deliveryTimelineOverride !== existing.deliveryTimelineOverride
+      ) {
+        data.deliveryTimelineOverride = next.deliveryTimelineOverride;
+        changed.push('delivery_timeline_override');
+      }
+
+      if (changed.length === 0) {
+        // No-op: just return the current state without emitting events.
+        return {
+          id: existing.id,
+          assumptions: existing.assumptions,
+          exclusions: existing.exclusions,
+          deliveryTimelineOverride: existing.deliveryTimelineOverride,
+        };
+      }
+
+      const updated = await db.engagement.update({
+        where: { id: engagementId },
+        data,
+        select: {
+          id: true,
+          assumptions: true,
+          exclusions: true,
+          deliveryTimelineOverride: true,
+        },
+      });
+
+      // One thread event per changed field. The notification routing
+      // for these is empty by default (informational), but the audit
+      // chain records the diff.
+      for (const field of changed) {
+        const eventType =
+          field === 'assumptions' ? 'scope_assumptions_updated'
+          : field === 'exclusions' ? 'scope_exclusions_updated'
+          : 'scope_assumptions_updated'; // delivery_timeline: piggyback on assumptions event for now
+        const lengthBefore =
+          field === 'assumptions' ? (existing.assumptions?.length ?? 0)
+          : field === 'exclusions' ? (existing.exclusions?.length ?? 0)
+          : (existing.deliveryTimelineOverride?.length ?? 0);
+        const lengthAfter =
+          field === 'assumptions' ? (updated.assumptions?.length ?? 0)
+          : field === 'exclusions' ? (updated.exclusions?.length ?? 0)
+          : (updated.deliveryTimelineOverride?.length ?? 0);
+        if (field === 'delivery_timeline_override') {
+          // We don't have a dedicated event type for timeline — skip
+          // emitting (the change is observable in the engagement itself).
+          continue;
+        }
+        await this.thread.emitWithin(db, tenantId, {
+          engagementId,
+          eventType,
+          actorType: 'user',
+          actorId: actorUserId,
+          payload: { lengthBefore, lengthAfter },
+        });
+      }
+
+      return updated;
+    });
+  }
 }
 
 function rowToSummary(r: {
@@ -236,6 +361,11 @@ function rowToSummary(r: {
   // Optional — only populated when callers `include: { quote: ... }`.
   // Single-record `getById` keeps it absent; `list` opts in.
   quote?: { currency: string } | null;
+  // Phase A — these may be missing on list queries that don't select
+  // them; treat undefined as null so the response shape is consistent.
+  assumptions?: string | null;
+  exclusions?: string | null;
+  deliveryTimelineOverride?: string | null;
 }): EngagementSummary {
   return {
     id: r.id,
@@ -250,5 +380,8 @@ function rowToSummary(r: {
     priceLowCents: r.priceLowCents == null ? null : Number(r.priceLowCents),
     priceHighCents: r.priceHighCents == null ? null : Number(r.priceHighCents),
     currency: r.quote?.currency ?? null,
+    assumptions: r.assumptions ?? null,
+    exclusions: r.exclusions ?? null,
+    deliveryTimelineOverride: r.deliveryTimelineOverride ?? null,
   };
 }
