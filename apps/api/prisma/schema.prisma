@@ -61,6 +61,8 @@ model Tenant {
   engagementTickets EngagementTicket[]
   engagementFollowUps EngagementFollowUp[]
   engagementSummaries EngagementSummary[]
+  opportunityCategories OpportunityCategory[]
+  opportunityRoutingRules OpportunityRoutingRule[]
 
   @@map("tenants")
 }
@@ -182,6 +184,19 @@ model Engagement {
   /// from PO, excluding Saturdays"). Falls back to the template's default
   /// timeline when null.
   deliveryTimelineOverride  String? @map("delivery_timeline_override")
+  /// Phase B — opportunity classification. `categorySlug` references
+  /// `opportunity_categories.slug` (system or tenant-defined); when set,
+  /// the routing service uses it to pick a reviewer.
+  categorySlug        String?   @map("category_slug")
+  /// Subcategory under the chosen category (e.g. 'vapt' under
+  /// 'security_testing'). Null when the category has no children.
+  subCategorySlug     String?   @map("sub_category_slug")
+  /// How the category was set: 'llm' (auto on submit) or 'manual'.
+  classifiedBy        String?   @map("classified_by")
+  classifiedAt        DateTime? @map("classified_at") @db.Timestamptz
+  /// The user the routing service assigned to review this opportunity.
+  /// Null when no routing rule matched.
+  assignedReviewerId  String?   @map("assigned_reviewer_id") @db.Uuid
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   submittedAt         DateTime? @map("submitted_at") @db.Timestamptz
   closedAt            DateTime? @map("closed_at") @db.Timestamptz
@@ -642,6 +657,7 @@ model User {
   tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   magicLinks   MagicLink[]
   integrations UserIntegration[]
+  routingRules OpportunityRoutingRule[] @relation("RoutingReviewer")
 
   // Email is globally unique. Even across tenants we don't want two users
   // sharing an email — simpler mental model for the MVP.
@@ -1280,4 +1296,58 @@ model EngagementSummary {
   @@index([tenantId])
   @@index([tenantId, riskLevel])
   @@map("engagement_summaries")
+}
+
+// ── Phase B: opportunity classification + routing ─────────────────────
+
+/// One row per category in the taxonomy.
+///
+/// Dual scoping via `tenantId`:
+///   - `tenantId = null` rows are SYSTEM categories seeded by the
+///     migration. They're readable by every tenant, immutable from
+///     application code (RLS WITH CHECK requires tenant_id match).
+///   - `tenantId = <tenant>` rows are that tenant's custom additions.
+///
+/// The PM-defined taxonomy is seeded as system rows. Tenants can add
+/// custom categories on top.
+model OpportunityCategory {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Null for system rows; populated for tenant-defined custom rows.
+  tenantId   String?  @map("tenant_id") @db.Uuid
+  /// Stable identifier ('security_testing', 'vapt', 'grc', …). The LLM
+  /// classifier emits this string; the routing rules key on it.
+  slug       String
+  /// Display name shown in the UI.
+  name       String
+  /// For subcategories, the parent's slug. Null for top-level rows.
+  parentSlug String?  @map("parent_slug")
+  position   Int      @default(0)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([parentSlug])
+  @@map("opportunity_categories")
+}
+
+/// Tenant-defined routing rule: when an opportunity is classified with
+/// this category, the matched reviewer is assigned. Multiple users may
+/// be listed for the same category — `position` is the preference order
+/// (lower wins for first-match assignment). MVP picks the first match;
+/// future logic can round-robin / load-balance.
+model OpportunityRoutingRule {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  categorySlug    String   @map("category_slug")
+  reviewerUserId  String   @map("reviewer_user_id") @db.Uuid
+  position        Int      @default(0)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  reviewer User   @relation("RoutingReviewer", fields: [reviewerUserId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, categorySlug, reviewerUserId], map: "opportunity_routing_rules_uniq")
+  @@index([tenantId, categorySlug, position])
+  @@map("opportunity_routing_rules")
 }

@@ -12,18 +12,23 @@ import {
   tenant as tenantApi,
   team,
   llm,
+  categories,
+  routingRules,
   describeError,
   type InviteSummary,
   type LlmConfig,
   type LlmProviderName,
   type Role,
   type UserSummary,
+  type CategoryTree,
+  type RoutingRuleRow,
 } from '@/lib/api';
 
 const TABS = [
   { id: 'account',       label: 'Account',        icon: 'User' as const },
   { id: 'workspace',     label: 'Workspace',      icon: 'Globe' as const },
   { id: 'team',          label: 'Team',           icon: 'Users' as const },
+  { id: 'routing',       label: 'Review routing', icon: 'Inbox' as const },
   { id: 'ai',            label: 'AI',             icon: 'Sparkles' as const },
   { id: 'notifications', label: 'Notifications',  icon: 'Bell' as const },
   { id: 'security',      label: 'Security',       icon: 'Shield' as const },
@@ -110,6 +115,7 @@ function SettingsInner() {
             {tab === 'account' && <AccountPanel email={user.email} role={user.role} />}
             {tab === 'workspace' && <WorkspacePanel isAdmin={user.role === 'admin'} />}
             {tab === 'team' && <TeamPanel currentUserId={user.sub} isAdmin={user.role === 'admin'} />}
+            {tab === 'routing' && <RoutingRulesPanel isAdmin={user.role === 'admin'} />}
             {tab === 'ai' && <AiPanel isAdmin={user.role === 'admin'} />}
             {tab === 'notifications' && <NotificationsPanel />}
             {tab === 'security' && <SecurityPanel />}
@@ -1349,4 +1355,199 @@ function roleColor(role?: string): string {
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// ─── Phase B: Routing rules ──────────────────────────────────────────
+
+function RoutingRulesPanel({ isAdmin }: { isAdmin: boolean }) {
+  const confirm = useConfirm();
+  const [rules, setRules] = useState<RoutingRuleRow[] | null>(null);
+  const [tree, setTree] = useState<CategoryTree | null>(null);
+  const [users, setUsers] = useState<UserSummary[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [newCategory, setNewCategory] = useState<string>('');
+  const [newReviewer, setNewReviewer] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(() => {
+    Promise.all([
+      routingRules.list().catch(() => []),
+      categories.tree().catch(() => ({ topLevel: [], childrenByParent: {} })),
+      team.listUsers().catch(() => []),
+    ]).then(([r, t, u]) => { setRules(r); setTree(t); setUsers(u); });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const eligibleUsers = (users ?? []).filter((u) =>
+    u.role === 'admin' || u.role === 'sales_manager' || u.role === 'tech_team',
+  );
+
+  async function addRule() {
+    if (!newCategory || !newReviewer) return;
+    setBusy(true); setErr(null);
+    try {
+      await routingRules.upsert({ categorySlug: newCategory, reviewerUserId: newReviewer });
+      setNewCategory(''); setNewReviewer('');
+      refresh();
+    } catch (e) { setErr(describeError(e)); }
+    finally { setBusy(false); }
+  }
+
+  async function remove(rule: RoutingRuleRow) {
+    const cat = labelForSlug(rule.categorySlug, tree);
+    const ok = await confirm({
+      title: 'Remove routing rule?',
+      body: `Reviews of ${cat} opportunities won't be auto-assigned to ${rule.reviewerEmail ?? 'this user'} anymore.`,
+      tone: 'danger',
+      confirmLabel: 'Remove',
+    });
+    if (!ok) return;
+    try {
+      await routingRules.remove(rule.id);
+      refresh();
+    } catch (e) { setErr(describeError(e)); }
+  }
+
+  if (rules == null || tree == null || users == null) {
+    return <div className="empty"><span className="spin" /></div>;
+  }
+
+  // Group rules by category for cleaner display.
+  const rulesByCategory: Record<string, RoutingRuleRow[]> = {};
+  for (const r of rules) {
+    (rulesByCategory[r.categorySlug] ?? (rulesByCategory[r.categorySlug] = [])).push(r);
+  }
+
+  return (
+    <>
+      {!isAdmin && (
+        <div className="card" style={{
+          padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+          marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          background: 'var(--bg-sunk)',
+        }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — only admins can edit routing rules.
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 18 }}>
+        <header style={{ marginBottom: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Review routing</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4 }}>
+            When an opportunity is submitted, the classifier picks a category. The rule below
+            routes it to a teammate for technical review. If no rule matches a category,
+            opportunities stay unassigned and any tech_team user can claim them.
+          </div>
+        </header>
+
+        {tree.topLevel.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: 'var(--fg-muted)' }}>
+            No categories available yet.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 8 }}>
+            {tree.topLevel.map((cat) => {
+              const catRules = rulesByCategory[cat.slug] ?? [];
+              return (
+                <div
+                  key={cat.slug}
+                  style={{
+                    padding: 12,
+                    background: 'var(--bg-sunk)',
+                    borderRadius: 8,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{cat.name}</div>
+                  {catRules.length === 0 ? (
+                    <div style={{ fontSize: 12, color: 'var(--fg-muted)', padding: '4px 0' }}>
+                      No reviewer assigned. Submissions in this category land unassigned.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      {catRules.map((r) => (
+                        <div
+                          key={r.id}
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                            padding: '6px 10px',
+                            background: 'var(--bg)',
+                            borderRadius: 6,
+                            fontSize: 12.5,
+                          }}
+                        >
+                          <span><Icon.User size={11} /> {r.reviewerEmail ?? r.reviewerUserId}</span>
+                          {isAdmin && (
+                            <button className="btn sm danger ghost" onClick={() => remove(r)}>
+                              <Icon.X size={11} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {isAdmin && (
+          <div style={{
+            marginTop: 16,
+            padding: 12,
+            background: 'var(--bg-sunk)',
+            borderRadius: 8,
+            display: 'grid', gap: 8,
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Add rule
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8 }}>
+              <select
+                className="input"
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+                style={{ height: 32, fontSize: 13 }}
+              >
+                <option value="">— Category —</option>
+                {tree.topLevel.map((c) => (
+                  <option key={c.slug} value={c.slug}>{c.name}</option>
+                ))}
+              </select>
+              <select
+                className="input"
+                value={newReviewer}
+                onChange={(e) => setNewReviewer(e.target.value)}
+                style={{ height: 32, fontSize: 13 }}
+              >
+                <option value="">— Reviewer —</option>
+                {eligibleUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.email} ({u.role})</option>
+                ))}
+              </select>
+              <button
+                className="btn sm accent"
+                disabled={busy || !newCategory || !newReviewer}
+                onClick={addRule}
+              >
+                {busy ? <span className="spin" /> : <><Icon.Plus size={11} /> Add</>}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {err && (
+          <div style={{ marginTop: 10, padding: 8, fontSize: 12, color: 'var(--danger)' }}>{err}</div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function labelForSlug(slug: string, tree: CategoryTree | null): string {
+  if (!tree) return slug;
+  const all = [...tree.topLevel, ...Object.values(tree.childrenByParent).flat()];
+  return all.find((c) => c.slug === slug)?.name ?? slug;
 }

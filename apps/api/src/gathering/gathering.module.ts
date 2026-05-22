@@ -4,9 +4,10 @@ import { GatheringService } from './gathering.service.js';
 import { PricingModule } from '../pricing/pricing.module.js';
 import { ExtractionModule } from '../extraction/extraction.module.js';
 import { IntegrationsModule } from '../integrations/integrations.module.js';
+import { ClassificationModule } from '../classification/classification.module.js';
 
 @Module({
-  imports: [PricingModule, ExtractionModule, IntegrationsModule],
+  imports: [PricingModule, ExtractionModule, IntegrationsModule, ClassificationModule],
   controllers: [GatheringController],
   providers: [GatheringService],
   exports: [GatheringService],

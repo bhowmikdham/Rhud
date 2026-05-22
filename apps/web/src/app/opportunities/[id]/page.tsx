@@ -338,7 +338,19 @@ export default function OpportunityDetailPage() {
             <Link href="/opportunities" className="btn sm"><Icon.ChevronLeft size={12} />All opportunities</Link>
           </div>
           {user && (
-            <LeadHud engagementId={eng.id} status={eng.status} userRole={user.role} />
+            <LeadHud
+              engagementId={eng.id}
+              status={eng.status}
+              userRole={user.role}
+              classification={{
+                categorySlug: eng.categorySlug ?? null,
+                subCategorySlug: eng.subCategorySlug ?? null,
+                classifiedBy: eng.classifiedBy ?? null,
+                classifiedAt: eng.classifiedAt ?? null,
+              }}
+              assignedReviewerId={eng.assignedReviewerId ?? null}
+              onClassificationChange={() => { void refreshAfterDecision(); }}
+            />
           )}
           <div className="artifact-body">
             {user && (

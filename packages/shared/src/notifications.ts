@@ -93,6 +93,13 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   scope_exclusions_updated:  [],
   quote_line_item_added:     [],
   quote_line_item_removed:   [],
+  // Phase B — classification + routing.
+  // Classification itself is silent (informational, surfaced as a chip).
+  // Reviewer assignment fans out to manager so they see who took it.
+  engagement_classified:     [],
+  engagement_reclassified:   [],
+  reviewer_assigned:         ['sales_manager'],
+  reviewer_reassigned:       ['sales_manager'],
 };
 
 /**

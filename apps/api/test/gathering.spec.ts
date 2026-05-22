@@ -92,8 +92,13 @@ describe('Gathering / engagement flow (sprint 3)', () => {
   // Stub OdooService — auto-sync hook is a no-op when Odoo isn't
   // configured (which it isn't in test).
   const odooSvc = new OdooService(tenantDb);
+  // Stub ClassificationService — Phase B's auto-classify is fire-and-
+  // forget on submit. Returning undefined matches its void return.
+  const classificationStub = {
+    classifyOnSubmit: async () => undefined,
+  } as unknown as import('../src/classification/classification.service.js').ClassificationService;
   const gatheringSvc = new GatheringService(
-    unscoped, tenantDb, thread, s3, mlSvc, quoteSvc, extractionStub, odooSvc,
+    unscoped, tenantDb, thread, s3, mlSvc, quoteSvc, extractionStub, odooSvc, classificationStub,
   );
 
   // Seeded template ids per tenant (4 nodes A→B→C→END for clarity).

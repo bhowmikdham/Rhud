@@ -30,6 +30,13 @@ export interface EngagementSummary {
   assumptions: string | null;
   exclusions: string | null;
   deliveryTimelineOverride: string | null;
+  /** Phase B — classification + auto-assigned reviewer. Null until the
+   *  classifier runs (auto on submit; manual via the chip). */
+  categorySlug: string | null;
+  subCategorySlug: string | null;
+  classifiedBy: 'llm' | 'manual' | null;
+  classifiedAt: string | null;
+  assignedReviewerId: string | null;
 }
 
 /**
@@ -347,6 +354,12 @@ function rowToSummary(r: {
   assumptions?: string | null;
   exclusions?: string | null;
   deliveryTimelineOverride?: string | null;
+  // Phase B — same nullable-default treatment.
+  categorySlug?: string | null;
+  subCategorySlug?: string | null;
+  classifiedBy?: string | null;
+  classifiedAt?: Date | null;
+  assignedReviewerId?: string | null;
 }): EngagementSummary {
   return {
     id: r.id,
@@ -363,5 +376,10 @@ function rowToSummary(r: {
     assumptions: r.assumptions ?? null,
     exclusions: r.exclusions ?? null,
     deliveryTimelineOverride: r.deliveryTimelineOverride ?? null,
+    categorySlug: r.categorySlug ?? null,
+    subCategorySlug: r.subCategorySlug ?? null,
+    classifiedBy: (r.classifiedBy ?? null) as 'llm' | 'manual' | null,
+    classifiedAt: r.classifiedAt ? r.classifiedAt.toISOString() : null,
+    assignedReviewerId: r.assignedReviewerId ?? null,
   };
 }

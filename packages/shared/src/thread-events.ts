@@ -84,6 +84,20 @@ export const THREAD_EVENT_TYPES = [
   /// Quote line item removed.
   /// Payload: `{ lineItemId, kind, label, amountCents }`.
   'quote_line_item_removed',
+  // Phase B — classification + routing.
+  /// First classification (LLM or manual). Payload:
+  /// `{ categorySlug, subCategorySlug?, source: 'llm' | 'manual', model? }`.
+  'engagement_classified',
+  /// Reclassification — category changed after a previous one was set.
+  /// Same payload as `engagement_classified` plus
+  /// `previousCategorySlug` + `previousSubCategorySlug`.
+  'engagement_reclassified',
+  /// Reviewer auto-assigned by the routing service.
+  /// Payload: `{ reviewerUserId, categorySlug, ruleId }`.
+  'reviewer_assigned',
+  /// Manual reassignment by an admin / manager.
+  /// Payload: `{ previousReviewerUserId, reviewerUserId, reason? }`.
+  'reviewer_reassigned',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];
