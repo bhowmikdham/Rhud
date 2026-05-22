@@ -100,6 +100,16 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   engagement_reclassified:   [],
   reviewer_assigned:         ['sales_manager'],
   reviewer_reassigned:       ['sales_manager'],
+  // Phase C — multi-level approval.
+  // Escalation pings the sales manager (so they know it's now waiting
+  // on VP/CEO) and the rep (so they can see the next step is gated).
+  // VP/CEO email routing happens by `assigned_reviewer_id` / explicit
+  // VP/CEO user lookups inside the notification dispatcher when we
+  // add a 'vp_sales'/'ceo' recipient role; for now we rely on the
+  // dashboard widget + the in-app HUD to surface pending finals.
+  final_approval_requested:  ['sales_employee', 'sales_manager'],
+  final_approval_granted:    ['sales_employee', 'sales_manager'],
+  final_approval_rejected:   ['sales_employee', 'sales_manager'],
 };
 
 /**

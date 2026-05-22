@@ -32,22 +32,25 @@ export class TeamController {
    *  workspace's name + plan. Used by the shell for branding (sidebar,
    *  topbar) and by the Settings → Workspace tab. */
   @Get('me')
-  getTenant(@Req() req: AuthedRequest): Promise<{ id: string; name: string; plan: string; leadSummaryAutoGenerate: boolean }> {
+  getTenant(@Req() req: AuthedRequest) {
     return this.svc.getTenant(req.tenantId);
   }
 
-  /** Mutate workspace identity + per-tenant feature toggles. Admin-only
-   *  — non-admins shouldn't be able to rename the workspace or flip
-   *  spend-affecting toggles like the AI auto-summariser. */
+  /** Mutate workspace identity + per-tenant feature toggles + approval
+   *  thresholds. Admin-only — non-admins shouldn't be able to rename
+   *  the workspace, flip spend-affecting toggles like the AI auto-
+   *  summariser, or change the approval thresholds. */
   @Patch('me')
   @Roles('admin')
   updateTenant(
     @Req() req: AuthedRequest,
     @Body() dto: UpdateTenantDto,
-  ): Promise<{ id: string; name: string; plan: string; leadSummaryAutoGenerate: boolean }> {
+  ) {
     return this.svc.updateTenant(req.tenantId, req.user, {
       ...(dto.name !== undefined ? { name: dto.name } : {}),
       ...(dto.leadSummaryAutoGenerate !== undefined ? { leadSummaryAutoGenerate: dto.leadSummaryAutoGenerate } : {}),
+      ...(dto.requiresVpApprovalAboveCents !== undefined ? { requiresVpApprovalAboveCents: dto.requiresVpApprovalAboveCents } : {}),
+      ...(dto.requiresCeoApprovalAboveCents !== undefined ? { requiresCeoApprovalAboveCents: dto.requiresCeoApprovalAboveCents } : {}),
     });
   }
 

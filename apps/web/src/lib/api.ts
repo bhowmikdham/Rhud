@@ -344,6 +344,11 @@ export const opportunities = {
     clientEmail: string;
     name?: string;
     expiresInDays?: number;
+    // Phase C — optional client metadata captured at issuance.
+    clientName?: string;
+    clientAddress?: string;
+    contactName?: string;
+    contactPhone?: string;
   }) =>
     request<IssuedLink>('/opportunities', { method: 'POST', body: JSON.stringify(dto) }),
   remove: (id: string) =>
@@ -385,6 +390,27 @@ export const opportunities = {
       `/opportunities/${id}/escalate`,
       { method: 'POST', body: JSON.stringify({ reason, escalateToRole }) },
     ),
+
+  // ── Phase C: client metadata edit ────────────────────────────────
+  updateClient: (
+    id: string,
+    input: {
+      clientName?: string | null;
+      clientAddress?: string | null;
+      contactName?: string | null;
+      contactPhone?: string | null;
+    },
+  ) =>
+    request<{
+      id: string;
+      clientName: string | null;
+      clientAddress: string | null;
+      contactName: string | null;
+      contactPhone: string | null;
+    }>(`/opportunities/${id}/client`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
 };
 
 // ── Phase A: quote line items (travel, tools, resource, discount, custom) ───
@@ -721,6 +747,22 @@ export const predictions = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  // ── Phase C: final approval (VP / CEO) ───────────────────────────
+  /** VP / CEO grants the gated approval. Engagement status flips from
+   *  pending_vp_approval | pending_ceo_approval → 'approved'. */
+  finalApprove: (engagementId: string, comment?: string) =>
+    request<{ engagementId: string; status: string; level: 'vp' | 'ceo' }>(
+      `/opportunities/${engagementId}/final-approve`,
+      { method: 'POST', body: JSON.stringify(comment ? { comment } : {}) },
+    ),
+  /** VP / CEO rejects. Engagement status → 'rejected', the
+   *  approvedPriceCents is cleared. */
+  finalReject: (engagementId: string, reason: string) =>
+    request<{ engagementId: string; status: string; level: 'vp' | 'ceo' }>(
+      `/opportunities/${engagementId}/final-reject`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
 };
 
 // ── Tenant pricing config (regime thresholds + loyalty rules) ───────────────
@@ -751,7 +793,7 @@ export interface TenantPricingConfig {
 
 // ── Team management (admin) ─────────────────────────────────────────────────
 
-export type Role = 'admin' | 'sales_manager' | 'sales_employee' | 'tech_team';
+export type Role = 'admin' | 'sales_manager' | 'sales_employee' | 'tech_team' | 'vp_sales' | 'ceo';
 
 export interface UserSummary {
   id: string;
@@ -777,11 +819,20 @@ export interface TenantInfo {
   /** Auto-regenerate the AI lead summary when an opportunity is opened
    *  and new activity has happened since the last summary. */
   leadSummaryAutoGenerate: boolean;
+  /** Phase C — multi-level approval thresholds (cents). null = tier
+   *  disabled. CEO threshold must be >= VP threshold when both set. */
+  requiresVpApprovalAboveCents: number | null;
+  requiresCeoApprovalAboveCents: number | null;
 }
 
 export const tenant = {
   me: () => request<TenantInfo>('/tenant/me'),
-  update: (dto: { name?: string; leadSummaryAutoGenerate?: boolean }) =>
+  update: (dto: {
+    name?: string;
+    leadSummaryAutoGenerate?: boolean;
+    requiresVpApprovalAboveCents?: number | null;
+    requiresCeoApprovalAboveCents?: number | null;
+  }) =>
     request<TenantInfo>('/tenant/me', { method: 'PATCH', body: JSON.stringify(dto) }),
 };
 

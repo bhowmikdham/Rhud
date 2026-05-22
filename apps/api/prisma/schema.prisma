@@ -28,6 +28,13 @@ model Tenant {
   /// Generate button (existing flow). Default on so a fresh tenant
   /// gets the "summary is already there" experience.
   leadSummaryAutoGenerate Boolean @default(true) @map("lead_summary_auto_generate")
+  /// Phase C — multi-level approval thresholds (cents).
+  /// When `requiresVpApprovalAboveCents` is set and the sales-manager-
+  /// approved price exceeds it, status → 'pending_vp_approval' instead
+  /// of 'approved'. A vp_sales user must then final-approve. Same
+  /// pattern for CEO. Both null = single-stage approval (existing).
+  requiresVpApprovalAboveCents  BigInt? @map("requires_vp_approval_above_cents")
+  requiresCeoApprovalAboveCents BigInt? @map("requires_ceo_approval_above_cents")
   // JSONB configs for external integrations; secrets live in KMS/Doppler,
   // these columns hold non-secret pointers (urls, workspace ids, etc.).
   odooConfig         Json?    @map("odoo_config")
@@ -197,6 +204,14 @@ model Engagement {
   /// The user the routing service assigned to review this opportunity.
   /// Null when no routing rule matched.
   assignedReviewerId  String?   @map("assigned_reviewer_id") @db.Uuid
+  /// Phase C — full client metadata. Captured at issuance (sales rep
+  /// fills in) and editable from the opportunity detail page.
+  /// `clientEmail` is the canonical identifier; these are display +
+  /// proposal-content fields.
+  clientName          String?   @map("client_name")
+  clientAddress       String?   @map("client_address")
+  contactName         String?   @map("contact_name")
+  contactPhone        String?   @map("contact_phone")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   submittedAt         DateTime? @map("submitted_at") @db.Timestamptz
   closedAt            DateTime? @map("closed_at") @db.Timestamptz

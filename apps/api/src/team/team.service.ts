@@ -58,6 +58,18 @@ export interface UserSummary {
   createdAt: string;
 }
 
+/** Public tenant config object returned by GET /tenant/me + PATCH /tenant/me. */
+export interface TenantConfigDto {
+  id: string;
+  name: string;
+  plan: string;
+  leadSummaryAutoGenerate: boolean;
+  /** Phase C — multi-level approval thresholds in cents.
+   *  null = that escalation tier disabled. */
+  requiresVpApprovalAboveCents: number | null;
+  requiresCeoApprovalAboveCents: number | null;
+}
+
 @Injectable()
 export class TeamService {
   private readonly logger = new Logger(TeamService.name);
@@ -72,23 +84,47 @@ export class TeamService {
 
   // ── Tenant identity ─────────────────────────────────────────────────────
 
-  async getTenant(tenantId: string): Promise<{ id: string; name: string; plan: string; leadSummaryAutoGenerate: boolean }> {
+  async getTenant(tenantId: string): Promise<TenantConfigDto> {
     return this.tenantDb.run(tenantId, async (db) => {
       const row = await db.tenant.findUnique({
         where: { id: tenantId },
-        select: { id: true, name: true, plan: true, leadSummaryAutoGenerate: true },
+        select: {
+          id: true, name: true, plan: true,
+          leadSummaryAutoGenerate: true,
+          requiresVpApprovalAboveCents: true,
+          requiresCeoApprovalAboveCents: true,
+        },
       });
       if (!row) throw new NotFoundException('tenant_not_found');
-      return row;
+      return {
+        id: row.id,
+        name: row.name,
+        plan: row.plan,
+        leadSummaryAutoGenerate: row.leadSummaryAutoGenerate,
+        requiresVpApprovalAboveCents: row.requiresVpApprovalAboveCents == null
+          ? null : Number(row.requiresVpApprovalAboveCents),
+        requiresCeoApprovalAboveCents: row.requiresCeoApprovalAboveCents == null
+          ? null : Number(row.requiresCeoApprovalAboveCents),
+      };
     });
   }
 
   async updateTenant(
     tenantId: string,
     actor: JwtPayload,
-    args: { name?: string; leadSummaryAutoGenerate?: boolean },
-  ): Promise<{ id: string; name: string; plan: string; leadSummaryAutoGenerate: boolean }> {
-    const data: { name?: string; leadSummaryAutoGenerate?: boolean } = {};
+    args: {
+      name?: string;
+      leadSummaryAutoGenerate?: boolean;
+      requiresVpApprovalAboveCents?: number | null;
+      requiresCeoApprovalAboveCents?: number | null;
+    },
+  ): Promise<TenantConfigDto> {
+    const data: {
+      name?: string;
+      leadSummaryAutoGenerate?: boolean;
+      requiresVpApprovalAboveCents?: bigint | null;
+      requiresCeoApprovalAboveCents?: bigint | null;
+    } = {};
     if (args.name !== undefined) {
       const trimmed = args.name.trim();
       if (trimmed.length === 0) throw new BadRequestException('name_required');
@@ -98,16 +134,52 @@ export class TeamService {
     if (args.leadSummaryAutoGenerate !== undefined) {
       data.leadSummaryAutoGenerate = !!args.leadSummaryAutoGenerate;
     }
+    if (args.requiresVpApprovalAboveCents !== undefined) {
+      const v = args.requiresVpApprovalAboveCents;
+      if (v !== null && (!Number.isFinite(v) || v < 0)) {
+        throw new BadRequestException('vp_threshold_invalid');
+      }
+      data.requiresVpApprovalAboveCents = v == null ? null : BigInt(Math.round(v));
+    }
+    if (args.requiresCeoApprovalAboveCents !== undefined) {
+      const v = args.requiresCeoApprovalAboveCents;
+      if (v !== null && (!Number.isFinite(v) || v < 0)) {
+        throw new BadRequestException('ceo_threshold_invalid');
+      }
+      data.requiresCeoApprovalAboveCents = v == null ? null : BigInt(Math.round(v));
+    }
+    // Sanity: CEO threshold must be >= VP threshold if both are set.
+    if (
+      data.requiresVpApprovalAboveCents != null
+      && data.requiresCeoApprovalAboveCents != null
+      && data.requiresCeoApprovalAboveCents < data.requiresVpApprovalAboveCents
+    ) {
+      throw new BadRequestException('ceo_threshold_must_be_above_vp');
+    }
     if (Object.keys(data).length === 0) throw new BadRequestException('no_fields_to_update');
 
     return this.tenantDb.run(tenantId, async (db) => {
       const updated = await db.tenant.update({
         where: { id: tenantId },
         data,
-        select: { id: true, name: true, plan: true, leadSummaryAutoGenerate: true },
+        select: {
+          id: true, name: true, plan: true,
+          leadSummaryAutoGenerate: true,
+          requiresVpApprovalAboveCents: true,
+          requiresCeoApprovalAboveCents: true,
+        },
       });
-      this.logger.log(`tenant ${tenantId} updated by ${actor.sub}: ${JSON.stringify(data)}`);
-      return updated;
+      this.logger.log(`tenant ${tenantId} updated by ${actor.sub}`);
+      return {
+        id: updated.id,
+        name: updated.name,
+        plan: updated.plan,
+        leadSummaryAutoGenerate: updated.leadSummaryAutoGenerate,
+        requiresVpApprovalAboveCents: updated.requiresVpApprovalAboveCents == null
+          ? null : Number(updated.requiresVpApprovalAboveCents),
+        requiresCeoApprovalAboveCents: updated.requiresCeoApprovalAboveCents == null
+          ? null : Number(updated.requiresCeoApprovalAboveCents),
+      };
     });
   }
 

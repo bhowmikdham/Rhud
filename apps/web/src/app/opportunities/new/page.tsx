@@ -28,6 +28,10 @@ export default function NewOpportunityPage() {
   const [clientEmail, setClientEmail] = useState('');
   const [companyHint, setCompanyHint] = useState('');
   const [title, setTitle] = useState('');
+  // Phase C — additional client metadata captured at issuance.
+  const [clientAddress, setClientAddress] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
 
   // Step 2
   const [templateId, setTemplateId] = useState('');
@@ -61,6 +65,12 @@ export default function NewOpportunityPage() {
         templateId,
         clientEmail,
         ...(title.trim() ? { name: title.trim() } : {}),
+        // Phase C — bind the form's Client company → clientName and
+        // include the new fields when provided.
+        ...(companyHint.trim()   ? { clientName:    companyHint.trim() }   : {}),
+        ...(clientAddress.trim() ? { clientAddress: clientAddress.trim() } : {}),
+        ...(contactName.trim()   ? { contactName:   contactName.trim() }   : {}),
+        ...(contactPhone.trim()  ? { contactPhone:  contactPhone.trim() }  : {}),
         expiresInDays: ttl,
       });
       setIssued(r);
@@ -111,6 +121,22 @@ export default function NewOpportunityPage() {
               </Field>
               <Field label="Opportunity name" hint="Short, internal — shown in the thread and dashboard.">
                 <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Acme Q3 Security Assessment" />
+              </Field>
+              <div style={{
+                fontSize: 11, fontWeight: 600, letterSpacing: 0.4,
+                color: 'var(--fg-muted)', textTransform: 'uppercase',
+                marginTop: 8,
+              }}>
+                Client details (optional)
+              </div>
+              <Field label="Client address" hint="Postal / billing address. Prints on the proposal.">
+                <input className="input" value={clientAddress} onChange={(e) => setClientAddress(e.target.value)} placeholder="Building name, street, city, state" />
+              </Field>
+              <Field label="Contact name" hint="Decision-maker or main point of contact.">
+                <input className="input" value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="e.g. Priya Sharma" />
+              </Field>
+              <Field label="Contact phone" hint="With country code, e.g. +91 98xxxxxxxx">
+                <input className="input" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="+91 98xxxxxxxx" />
               </Field>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 24 }}>

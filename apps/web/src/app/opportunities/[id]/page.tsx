@@ -51,6 +51,7 @@ import {
   QuoteLineItemsCard,
   ReviewerHoldActions,
 } from './reviewer-panels';
+import { FinalApprovalCard } from './final-approval-card';
 
 const EVENT_LABELS: Record<string, string> = {
   link_issued: 'Link issued to client',
@@ -359,6 +360,16 @@ export default function OpportunityDetailPage() {
               </div>
             )}
             <div ref={predictionSectionRef} style={{ scrollMarginTop: 80 }}>
+            {user && (eng.status === 'pending_vp_approval' || eng.status === 'pending_ceo_approval') && (
+              <FinalApprovalCard
+                engagementId={eng.id}
+                level={eng.status === 'pending_ceo_approval' ? 'ceo' : 'vp'}
+                approvedPriceCents={quote?.approvedPriceCents ?? null}
+                currency={quote?.currency ?? 'INR'}
+                userRole={user.role}
+                onChanged={() => { void refreshAfterDecision(); }}
+              />
+            )}
             {prediction && user && (
               <ApprovalCard
                 prediction={prediction}
