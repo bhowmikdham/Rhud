@@ -75,6 +75,24 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   // Summary generation is silent — it's a UI-side digest, not an
   // event the team needs in their inbox.
   summary_generated:         [],
+  // Phase A — reviewer actions. Routing:
+  //   send-back / clarification → sales rep + sales manager so the
+  //     ball is back in sales' court explicitly
+  //   escalate → sales manager + admin (escalation by definition
+  //     skips the rep)
+  scope_returned_to_sales:   ['sales_employee', 'sales_manager'],
+  clarification_requested:   ['sales_employee', 'sales_manager'],
+  // Escalation routes to the sales_manager only — admins consume the
+  // same inbox the manager does and the email-resolver doesn't have
+  // an "admin" mapping yet. If we ever wire a dedicated admin email
+  // route, add 'admin' to RECIPIENT_ROLES first.
+  scope_escalated:           ['sales_manager'],
+  // Field edits and quote line-item changes are silent in notifications
+  // — they're informational, surfaced in the timeline only.
+  scope_assumptions_updated: [],
+  scope_exclusions_updated:  [],
+  quote_line_item_added:     [],
+  quote_line_item_removed:   [],
 };
 
 /**

@@ -289,6 +289,12 @@ export interface EngagementSummary {
   predictedPriceCents: number | null;
   priceLowCents: number | null;
   priceHighCents: number | null;
+  /** Phase A — reviewer-fillable scope fields. Null until a reviewer
+   *  touches them. Sent on detail responses; absent (undefined) on
+   *  list responses to keep payload size small. */
+  assumptions?: string | null;
+  exclusions?: string | null;
+  deliveryTimelineOverride?: string | null;
 }
 
 /** Legacy alias used by older imports. */
@@ -336,6 +342,77 @@ export const opportunities = {
     request<IssuedLink>('/opportunities', { method: 'POST', body: JSON.stringify(dto) }),
   remove: (id: string) =>
     request<void>(`/opportunities/${id}`, { method: 'DELETE' }),
+
+  // ── Phase A: reviewer-fillable scope fields ─────────────────────
+  updateScope: (
+    id: string,
+    input: {
+      assumptions?: string | null;
+      exclusions?: string | null;
+      deliveryTimelineOverride?: string | null;
+    },
+  ) =>
+    request<{
+      id: string;
+      assumptions: string | null;
+      exclusions: string | null;
+      deliveryTimelineOverride: string | null;
+    }>(`/opportunities/${id}/scope`, { method: 'PATCH', body: JSON.stringify(input) }),
+
+  // ── Phase A: reviewer hold actions ──────────────────────────────
+  sendBack: (id: string, reason: string) =>
+    request<{ engagementId: string; status: string }>(
+      `/opportunities/${id}/send-back`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+  requestClarification: (id: string, reason: string) =>
+    request<{ engagementId: string; status: string }>(
+      `/opportunities/${id}/request-clarification`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+  escalate: (
+    id: string,
+    reason: string,
+    escalateToRole: 'sales_manager' | 'admin' = 'sales_manager',
+  ) =>
+    request<{ engagementId: string; status: string }>(
+      `/opportunities/${id}/escalate`,
+      { method: 'POST', body: JSON.stringify({ reason, escalateToRole }) },
+    ),
+};
+
+// ── Phase A: quote line items (travel, tools, resource, discount, custom) ───
+
+import type {
+  QuoteLineItemRow as _QuoteLineItemRow,
+  QuoteLineItemKind as _QuoteLineItemKind,
+  QuoteTotalsBreakdown as _QuoteTotalsBreakdown,
+  CreateQuoteLineItemInput as _CreateQuoteLineItemInput,
+  UpdateQuoteLineItemInput as _UpdateQuoteLineItemInput,
+} from '@rhud/shared';
+export type QuoteLineItemRow = _QuoteLineItemRow;
+export type QuoteLineItemKind = _QuoteLineItemKind;
+export type QuoteTotalsBreakdown = _QuoteTotalsBreakdown;
+export type CreateQuoteLineItemInput = _CreateQuoteLineItemInput;
+export type UpdateQuoteLineItemInput = _UpdateQuoteLineItemInput;
+
+export const quoteLineItems = {
+  list: (engagementId: string) =>
+    request<QuoteTotalsBreakdown>(`/opportunities/${engagementId}/quote/line-items`),
+  create: (engagementId: string, input: CreateQuoteLineItemInput) =>
+    request<QuoteLineItemRow>(`/opportunities/${engagementId}/quote/line-items`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  update: (engagementId: string, itemId: string, input: UpdateQuoteLineItemInput) =>
+    request<QuoteLineItemRow>(`/opportunities/${engagementId}/quote/line-items/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  remove: (engagementId: string, itemId: string) =>
+    request<void>(`/opportunities/${engagementId}/quote/line-items/${itemId}`, {
+      method: 'DELETE',
+    }),
 };
 
 /** Backwards-compat alias — prefer `opportunities` in new code. */

@@ -46,6 +46,11 @@ import { DeleteConfirmModal } from '@/components/delete-confirm-modal';
 import { useConfirm } from '@/components/confirm';
 import { LeadHud } from './lead-hud';
 import { LeadSummaryInline } from './lead-summary-inline';
+import {
+  AssumptionsExclusionsCard,
+  QuoteLineItemsCard,
+  ReviewerHoldActions,
+} from './reviewer-panels';
 
 const EVENT_LABELS: Record<string, string> = {
   link_issued: 'Link issued to client',
@@ -366,6 +371,28 @@ export default function OpportunityDetailPage() {
               />
             )}
 
+            {user && (eng.status === 'submitted' || eng.status === 'pending_approval' || eng.status === 'predicted') && (
+              <div style={{
+                margin: '12px 0',
+                padding: '10px 14px',
+                background: 'var(--bg-elev)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 10,
+              }}>
+                <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                  Need to pause before approving?
+                </span>
+                <ReviewerHoldActions
+                  engagementId={eng.id}
+                  userRole={user.role}
+                  status={eng.status}
+                  onStatusChange={() => { void refreshAfterDecision(); }}
+                />
+              </div>
+            )}
+
             {!prediction && quote && user && (
               <NoPredictionCta
                 quote={quote}
@@ -440,6 +467,27 @@ export default function OpportunityDetailPage() {
             />
 
             <ExtractedPointsCard engagementId={eng.id} />
+
+            {user && (
+              <AssumptionsExclusionsCard
+                engagementId={eng.id}
+                userRole={user.role}
+                initial={{
+                  assumptions: eng.assumptions ?? null,
+                  exclusions: eng.exclusions ?? null,
+                  deliveryTimelineOverride: eng.deliveryTimelineOverride ?? null,
+                }}
+                onSaved={() => { void refreshAfterDecision(); }}
+              />
+            )}
+
+            {quote && user && (
+              <QuoteLineItemsCard
+                engagementId={eng.id}
+                userRole={user.role}
+                currency={quote.currency}
+              />
+            )}
 
             {quote && <JustificationCard engagementId={eng.id} clientEmail={eng.clientEmail} />}
 

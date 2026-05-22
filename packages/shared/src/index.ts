@@ -10,3 +10,4 @@ export * from './document.js';
 export * from './site-enumeration.js';
 export * from './odoo.js';
 export * from './lead-management.js';
+export * from './reviewer-actions.js';

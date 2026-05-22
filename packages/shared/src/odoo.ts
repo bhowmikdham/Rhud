@@ -97,11 +97,16 @@ export interface UpsertOdooFieldMapping {
  *  hasn't customised anything. The API exposes these so the web app
  *  can render them as "currently active by default" without a save. */
 export const ODOO_DEFAULT_MAPPINGS: ReadonlyArray<Omit<OdooFieldMapping, 'id' | 'updatedAt'>> = [
-  // Engagement → crm.lead
+  // Engagement → crm.lead.
+  // Note: we deliberately do NOT map Rhud `status` to `crm.lead.kanban_state`.
+  // That field was removed from crm.lead in Odoo 18+ (it was a kanban-only
+  // UI thing) and breaks search_read on those versions. Stage transitions
+  // in Odoo are now driven by `stage_id`, which a tenant maps explicitly
+  // if they want it (the default mapping leaves stage_id alone — the
+  // Odoo-side default stage applies on create).
   { rhudEntity: 'engagement', rhudField: 'name',                odooModel: 'crm.lead',    odooField: 'name',              transform: null,              required: true,  direction: 'push' },
   { rhudEntity: 'engagement', rhudField: 'clientEmail',         odooModel: 'crm.lead',    odooField: 'email_from',        transform: null,              required: false, direction: 'push' },
   { rhudEntity: 'engagement', rhudField: 'approvedPriceCents',  odooModel: 'crm.lead',    odooField: 'expected_revenue',  transform: 'cents_to_currency', required: false, direction: 'push' },
-  { rhudEntity: 'engagement', rhudField: 'status',              odooModel: 'crm.lead',    odooField: 'kanban_state',      transform: null,              required: false, direction: 'push' },
   // Engagement → res.partner (the contact)
   { rhudEntity: 'engagement', rhudField: 'clientEmail',         odooModel: 'res.partner', odooField: 'email',             transform: null,              required: true,  direction: 'push' },
 ];

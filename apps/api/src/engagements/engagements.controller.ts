@@ -6,15 +6,27 @@ import {
   HttpCode,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
 import { EngagementsService } from './engagements.service.js';
 import { CreateEngagementDto } from './dto.js';
+
+/** PATCH body for the reviewer-fillable scope fields (assumptions,
+ *  exclusions, delivery timeline override). Phase A. All optional —
+ *  send only the keys the reviewer changed; null/empty clears the
+ *  stored value. */
+class UpdateScopeDto {
+  @IsOptional() @IsString() @MaxLength(8000) assumptions?: string | null;
+  @IsOptional() @IsString() @MaxLength(8000) exclusions?: string | null;
+  @IsOptional() @IsString() @MaxLength(2000) deliveryTimelineOverride?: string | null;
+}
 
 // Mounted at both routes so the rebrand is purely cosmetic for clients:
 // new code calls /opportunities, in-flight integrations + older tests still
@@ -63,5 +75,20 @@ export class EngagementsController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<void> {
     await this.svc.remove(req.tenantId, id);
+  }
+
+  /**
+   * Phase A — update the reviewer-fillable scope fields. Manager, admin,
+   * and tech_team can edit; sales reps read-only on these (they're
+   * meant to be the reviewer's voice on the proposal).
+   */
+  @Patch(':id/scope')
+  @Roles('admin', 'sales_manager', 'tech_team')
+  updateScope(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateScopeDto,
+  ) {
+    return this.svc.updateScope(req.tenantId, id, req.user.sub, dto);
   }
 }

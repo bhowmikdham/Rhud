@@ -63,7 +63,21 @@ import type {
  *  Lead-summary cool-down is in summary.service.ts. */
 const ECHO_SUPPRESSION_WINDOW_MS = 30_000;
 
-/** Fields we always pull from crm.lead during a poll/refresh. */
+/**
+ * Fields we always pull from crm.lead during a poll / refresh.
+ *
+ * Compatible with Odoo 16 → 19. Notably absent:
+ *   - `kanban_state`  — removed from crm.lead in Odoo 18+ (was always a
+ *      kanban-only UI field; replaced with a per-stage `is_won` flag).
+ *      Including it makes search_read raise a `ValueError: Invalid
+ *      field 'kanban_state' on 'crm.lead'` and abort the whole pull.
+ *   - `lost_reason`   — renamed `lost_reason_id` in Odoo 17, so requesting
+ *      either by exact name fails on the other side.
+ *
+ * If a customer needs a custom field we don't request here, they
+ * should add it via the field-mapping admin UI; the mapping engine
+ * pulls additional fields on demand.
+ */
 const CRM_LEAD_DEFAULT_FIELDS = [
   'id',
   'name',
@@ -84,7 +98,6 @@ const CRM_LEAD_DEFAULT_FIELDS = [
   'date_deadline',
   'date_open',
   'date_closed',
-  'kanban_state',
   'active',
   'write_date',
   'create_date',
