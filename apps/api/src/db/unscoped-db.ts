@@ -197,4 +197,125 @@ export class UnscopedDb {
       accessCount: r.access_count,
     }));
   }
+
+  /**
+   * Phase E — active (unrevoked, unexpired) partner tokens for the public
+   * /partner-intake/:token POST. Same shape as findActiveGatheringTokens:
+   * the caller scans + argon2-verifies the plaintext to discover the
+   * tenant before hopping into TenantDb.
+   */
+  async findActivePartnerTokens(limit = 200): Promise<
+    Array<{
+      id: string;
+      tenantId: string;
+      tokenHash: string;
+      defaultTemplateId: string | null;
+      defaultSalesOwnerId: string | null;
+    }>
+  > {
+    type Row = {
+      id: string;
+      tenant_id: string;
+      token_hash: string;
+      default_template_id: string | null;
+      default_sales_owner_id: string | null;
+    };
+    const rows = await this.prisma.$queryRaw<Row[]>`
+      SELECT id, tenant_id, token_hash, default_template_id, default_sales_owner_id
+        FROM partner_tokens
+       WHERE revoked_at IS NULL
+         AND (expires_at IS NULL OR expires_at > now())
+       ORDER BY created_at DESC
+       LIMIT ${limit}`;
+    return rows.map((r: Row) => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      tokenHash: r.token_hash,
+      defaultTemplateId: r.default_template_id,
+      defaultSalesOwnerId: r.default_sales_owner_id,
+    }));
+  }
+
+  /**
+   * Phase E — tenant lookup for the inbound email webhook. The recipient
+   * local-part (e.g. 'acme-sales' from acme-sales@inbound.rhud.net) is
+   * globally unique across tenants, so a single SELECT … LIMIT 1 is
+   * enough — no scan + verify dance needed.
+   */
+  async findTenantByInboundLocal(local: string): Promise<{
+    tenantId: string;
+    defaultTemplateId: string | null;
+    defaultSalesOwnerId: string | null;
+  } | null> {
+    type Row = {
+      id: string;
+      default_template_id: string | null;
+      default_sales_owner_id: string | null;
+    };
+    const rows = await this.prisma.$queryRaw<Row[]>`
+      SELECT id, default_template_id, default_sales_owner_id
+        FROM tenants
+       WHERE inbound_email_local = ${local}::citext
+       LIMIT 1`;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      tenantId: r.id,
+      defaultTemplateId: r.default_template_id,
+      defaultSalesOwnerId: r.default_sales_owner_id,
+    };
+  }
+
+  /**
+   * Phase E — idempotency check for Postmark inbound webhook retries.
+   * Returns the previously-recorded engagement (or null when we dropped
+   * the message) so the controller can short-circuit a retry with
+   * `{ status: 'duplicate', engagementId }`.
+   */
+  async findInboundEmailDedup(messageId: string): Promise<{
+    engagementId: string | null;
+    tenantId: string | null;
+  } | null> {
+    type Row = { engagement_id: string | null; tenant_id: string | null };
+    const rows = await this.prisma.$queryRaw<Row[]>`
+      SELECT engagement_id, tenant_id
+        FROM inbound_email_dedup
+       WHERE message_id = ${messageId}
+       LIMIT 1`;
+    const r = rows[0];
+    if (!r) return null;
+    return { engagementId: r.engagement_id, tenantId: r.tenant_id };
+  }
+
+  /**
+   * Phase E — insert the dedup row up front, BEFORE any downstream work.
+   * Returns `true` when the row was actually inserted; `false` when a
+   * concurrent Postmark retry beat us to it (ON CONFLICT DO NOTHING).
+   * The caller treats `false` as "this was a duplicate, look up the
+   * existing row via findInboundEmailDedup() and short-circuit".
+   */
+  async claimInboundEmailDedup(messageId: string): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<Array<{ inserted: boolean }>>`
+      INSERT INTO inbound_email_dedup (message_id)
+        VALUES (${messageId})
+      ON CONFLICT (message_id) DO NOTHING
+      RETURNING true as inserted`;
+    return rows.length > 0;
+  }
+
+  /**
+   * Phase E — once we've created an engagement for a previously-claimed
+   * dedup row, write the back-refs so future support queries can answer
+   * "what happened to message <id>?".
+   */
+  async updateInboundEmailDedup(
+    messageId: string,
+    args: { engagementId: string | null; tenantId: string | null },
+  ): Promise<void> {
+    await this.prisma.$executeRaw`
+      UPDATE inbound_email_dedup
+         SET engagement_id = ${args.engagementId}::uuid,
+             tenant_id     = ${args.tenantId}::uuid
+       WHERE message_id = ${messageId}`;
+  }
 }

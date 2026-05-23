@@ -32,6 +32,24 @@ export const envSchema = z.object({
   // must paste into Microsoft Entra). Defaults to localhost; set
   // explicitly in prod so the displayed URI matches what's reachable.
   API_PUBLIC_URL: z.string().url().default('http://localhost:8000'),
+
+  // ── Phase E — inbound ingestion ────────────────────────────────
+  // Postmark inbound webhook is gated by HTTP Basic Auth (Postmark
+  // sends Authorization: Basic <user:pass> if configured in their
+  // server settings). EmailIntakeController fail-closes in production
+  // when these are unset and warns at boot otherwise.
+  POSTMARK_INBOUND_BASIC_USER: z.string().optional(),
+  POSTMARK_INBOUND_BASIC_PASS: z.string().optional(),
+  // The catch-all domain Postmark forwards mail FROM (e.g.
+  // 'inbound.rhud.net'). The tenant's `inbound_email_local` is the
+  // local part: <local>@<this-domain>. Default lines up with rhud.net.
+  POSTMARK_INBOUND_DOMAIN: z.string().default('inbound.rhud.net'),
+  // Minimum decoded body length (chars) — below this we drop the
+  // message as a likely auto-reply / vacation response. 0 disables.
+  INBOUND_MIN_BODY_LENGTH: z.coerce.number().int().nonnegative().default(40),
+  // Base URL shown in the admin UI when copying a partner's
+  // /partner-intake/:token URL. Defaults to API_PUBLIC_URL.
+  PARTNER_INTAKE_BASE_URL: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

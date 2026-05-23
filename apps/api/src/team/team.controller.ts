@@ -52,6 +52,9 @@ export class TeamController {
       ...(dto.requiresVpApprovalAboveCents !== undefined ? { requiresVpApprovalAboveCents: dto.requiresVpApprovalAboveCents } : {}),
       ...(dto.requiresCeoApprovalAboveCents !== undefined ? { requiresCeoApprovalAboveCents: dto.requiresCeoApprovalAboveCents } : {}),
       ...(dto.proposalDefaults !== undefined ? { proposalDefaults: dto.proposalDefaults } : {}),
+      ...(dto.inboundEmailLocal !== undefined ? { inboundEmailLocal: dto.inboundEmailLocal } : {}),
+      ...(dto.defaultTemplateId !== undefined ? { defaultTemplateId: dto.defaultTemplateId } : {}),
+      ...(dto.defaultSalesOwnerId !== undefined ? { defaultSalesOwnerId: dto.defaultSalesOwnerId } : {}),
     });
   }
 

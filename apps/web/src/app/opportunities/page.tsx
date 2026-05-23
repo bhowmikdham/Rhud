@@ -365,7 +365,10 @@ function ListRow({
     <tr onClick={() => location.assign(`/opportunities/${e.id}`)}>
       <td><span className="cell-mono">{e.id.slice(0, 8)}</span></td>
       <td>
-        <div className="cell-strong">{e.name ?? e.clientEmail}</div>
+        <div className="cell-strong" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>{e.name ?? e.clientEmail}</span>
+          <SourceChip source={e.source} partnerName={e.partnerName ?? null} />
+        </div>
         <div className="cell-muted" style={{ fontSize: 12 }}>
           {e.name ? `${e.clientEmail} · ${e.templateName}` : e.templateName}
         </div>
@@ -626,9 +629,11 @@ function KanbanCard({
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{
             fontSize: 13, fontWeight: 600, color: 'var(--fg)',
+            display: 'flex', alignItems: 'center', gap: 6,
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>
-            {title}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</span>
+            <SourceChip source={e.source} partnerName={e.partnerName ?? null} />
           </div>
           <div style={{
             fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 2,
@@ -715,6 +720,41 @@ function KanbanCard({
         <span className="mono" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{relativeTime(updatedAt)}</span>
       </div>
     </div>
+  );
+}
+
+/** Phase E — small "via X" chip rendered next to the opportunity title
+ *  on the list + kanban views. Hidden for source='manual' (the implicit
+ *  default — no chip = sales-rep-created). The chip exists so reps can
+ *  at-a-glance distinguish leads they captured themselves from those
+ *  that arrived through an integration. */
+function SourceChip({
+  source,
+  partnerName,
+}: {
+  source?: EngagementSummary['source'];
+  partnerName: string | null;
+}) {
+  if (!source || source === 'manual') return null;
+  const label =
+    source === 'inbound_email' ? 'via email' :
+    source === 'partner_api'   ? `via ${partnerName ?? 'partner'}` :
+    source === 'odoo'          ? 'via Odoo' :
+    'via integration';
+  const icon =
+    source === 'inbound_email' ? <Icon.Mail size={9} /> :
+    source === 'partner_api'   ? <Icon.Link size={9} /> :
+    source === 'odoo'          ? <Icon.Globe size={9} /> :
+    null;
+  return (
+    <span
+      className="chip outline"
+      style={{ fontSize: 10, fontWeight: 500, gap: 4, flexShrink: 0 }}
+      title={`Opportunity arrived ${label}`}
+    >
+      {icon}
+      <span>{label}</span>
+    </span>
   );
 }
 

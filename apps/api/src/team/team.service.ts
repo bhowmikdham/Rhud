@@ -72,6 +72,17 @@ export interface TenantConfigDto {
   /** Phase D — proposal template defaults. Always returned as an
    *  object (defaults to `{}` server-side, never null). */
   proposalDefaults: Record<string, unknown>;
+  /** Phase E — per-tenant inbound email local part (e.g. `acme-sales`
+   *  for `acme-sales@inbound.rhud.net`). Globally unique across
+   *  tenants. Null until an admin sets it in Settings → Inbound. */
+  inboundEmailLocal: string | null;
+  /** Phase E — fallback template + sales owner used by inbound
+   *  ingestion when neither the partner token nor the request body
+   *  provides an override. Null when the admin hasn't configured
+   *  inbound yet; partner intake then 400s with `template_not_configured`
+   *  / `sales_owner_not_configured`. */
+  defaultTemplateId: string | null;
+  defaultSalesOwnerId: string | null;
 }
 
 @Injectable()
@@ -98,6 +109,9 @@ export class TeamService {
           requiresVpApprovalAboveCents: true,
           requiresCeoApprovalAboveCents: true,
           proposalDefaults: true,
+          inboundEmailLocal: true,
+          defaultTemplateId: true,
+          defaultSalesOwnerId: true,
         },
       });
       if (!row) throw new NotFoundException('tenant_not_found');
@@ -111,6 +125,9 @@ export class TeamService {
         requiresCeoApprovalAboveCents: row.requiresCeoApprovalAboveCents == null
           ? null : Number(row.requiresCeoApprovalAboveCents),
         proposalDefaults: (row.proposalDefaults ?? {}) as Record<string, unknown>,
+        inboundEmailLocal: row.inboundEmailLocal,
+        defaultTemplateId: row.defaultTemplateId,
+        defaultSalesOwnerId: row.defaultSalesOwnerId,
       };
     });
   }
@@ -124,6 +141,9 @@ export class TeamService {
       requiresVpApprovalAboveCents?: number | null;
       requiresCeoApprovalAboveCents?: number | null;
       proposalDefaults?: Record<string, unknown>;
+      inboundEmailLocal?: string | null;
+      defaultTemplateId?: string | null;
+      defaultSalesOwnerId?: string | null;
     },
   ): Promise<TenantConfigDto> {
     const data: {
@@ -132,6 +152,9 @@ export class TeamService {
       requiresVpApprovalAboveCents?: bigint | null;
       requiresCeoApprovalAboveCents?: bigint | null;
       proposalDefaults?: Prisma.InputJsonValue;
+      inboundEmailLocal?: string | null;
+      defaultTemplateId?: string | null;
+      defaultSalesOwnerId?: string | null;
     } = {};
     if (args.name !== undefined) {
       const trimmed = args.name.trim();
@@ -171,6 +194,28 @@ export class TeamService {
     if (args.proposalDefaults !== undefined) {
       mergeProposalDefaults = args.proposalDefaults;
     }
+    // Phase E — inbound ingestion defaults. Validate the local part
+    // matches a conservative slug pattern (alnum + dashes + underscores)
+    // so we don't accept arbitrary characters that might break the
+    // Postmark inbound address. Empty string → null (clear).
+    if (args.inboundEmailLocal !== undefined) {
+      const raw = args.inboundEmailLocal;
+      if (raw === null || raw === '') {
+        data.inboundEmailLocal = null;
+      } else {
+        const trimmed = raw.trim().toLowerCase();
+        if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(trimmed)) {
+          throw new BadRequestException('inbound_email_local_invalid');
+        }
+        data.inboundEmailLocal = trimmed;
+      }
+    }
+    if (args.defaultTemplateId !== undefined) {
+      data.defaultTemplateId = args.defaultTemplateId === '' ? null : args.defaultTemplateId;
+    }
+    if (args.defaultSalesOwnerId !== undefined) {
+      data.defaultSalesOwnerId = args.defaultSalesOwnerId === '' ? null : args.defaultSalesOwnerId;
+    }
     if (Object.keys(data).length === 0 && mergeProposalDefaults === undefined) {
       throw new BadRequestException('no_fields_to_update');
     }
@@ -194,6 +239,9 @@ export class TeamService {
           requiresVpApprovalAboveCents: true,
           requiresCeoApprovalAboveCents: true,
           proposalDefaults: true,
+          inboundEmailLocal: true,
+          defaultTemplateId: true,
+          defaultSalesOwnerId: true,
         },
       });
       this.logger.log(`tenant ${tenantId} updated by ${actor.sub}`);
@@ -207,6 +255,9 @@ export class TeamService {
         requiresCeoApprovalAboveCents: updated.requiresCeoApprovalAboveCents == null
           ? null : Number(updated.requiresCeoApprovalAboveCents),
         proposalDefaults: (updated.proposalDefaults ?? {}) as Record<string, unknown>,
+        inboundEmailLocal: updated.inboundEmailLocal,
+        defaultTemplateId: updated.defaultTemplateId,
+        defaultSalesOwnerId: updated.defaultSalesOwnerId,
       };
     });
   }

@@ -14,6 +14,8 @@ import {
   llm,
   categories,
   routingRules,
+  partners,
+  templates,
   describeError,
   type InviteSummary,
   type LlmConfig,
@@ -22,6 +24,8 @@ import {
   type UserSummary,
   type CategoryTree,
   type RoutingRuleRow,
+  type PartnerTokenSummary,
+  type Template,
 } from '@/lib/api';
 
 const TABS = [
@@ -31,6 +35,8 @@ const TABS = [
   { id: 'routing',       label: 'Review routing', icon: 'Inbox' as const },
   { id: 'approvals',     label: 'Approvals',      icon: 'Shield' as const },
   { id: 'proposals',     label: 'Proposal templates', icon: 'FileText' as const },
+  { id: 'inbound',       label: 'Inbound email',  icon: 'Mail' as const },
+  { id: 'partners',      label: 'Partner integrations', icon: 'Link' as const },
   { id: 'ai',            label: 'AI',             icon: 'Sparkles' as const },
   { id: 'notifications', label: 'Notifications',  icon: 'Bell' as const },
   { id: 'security',      label: 'Security',       icon: 'Shield' as const },
@@ -120,6 +126,8 @@ function SettingsInner() {
             {tab === 'routing' && <RoutingRulesPanel isAdmin={user.role === 'admin'} />}
             {tab === 'approvals' && <ApprovalThresholdsPanel isAdmin={user.role === 'admin'} />}
             {tab === 'proposals' && <ProposalTemplatesPanel isAdmin={user.role === 'admin'} />}
+            {tab === 'inbound' && <InboundEmailPanel isAdmin={user.role === 'admin'} />}
+            {tab === 'partners' && <PartnerIntegrationsPanel isAdmin={user.role === 'admin'} />}
             {tab === 'ai' && <AiPanel isAdmin={user.role === 'admin'} />}
             {tab === 'notifications' && <NotificationsPanel />}
             {tab === 'security' && <SecurityPanel />}
@@ -1968,4 +1976,598 @@ function stripEmpties(rec: Record<string, string>): Record<string, string> {
     if (t.length > 0) out[k] = t;
   }
   return out;
+}
+
+// ── Phase E ─────────────────────────────────────────────────────────────────
+// Inbound email + partner integrations.
+//
+// Both panels share a hard fact: an inbound opportunity needs a
+// template + a sales owner to land at status='issued'. The
+// InboundEmailPanel sets the workspace-wide fallback; the
+// PartnerIntegrationsPanel lets admins create per-partner tokens
+// (optionally with their own override).
+//
+// The inbound email domain comes from the API server env
+// (POSTMARK_INBOUND_DOMAIN). We mirror it client-side via the
+// NEXT_PUBLIC_INBOUND_EMAIL_DOMAIN env (defaults to inbound.rhud.net,
+// which matches the API default).
+
+const INBOUND_DOMAIN =
+  process.env.NEXT_PUBLIC_INBOUND_EMAIL_DOMAIN ?? 'inbound.rhud.net';
+
+function InboundEmailPanel({ isAdmin }: { isAdmin: boolean }) {
+  const { tenant, refreshTenant } = useAuth();
+  const [local, setLocal] = useState<string>('');
+  const [templateId, setTemplateId] = useState<string>('');
+  const [salesOwnerId, setSalesOwnerId] = useState<string>('');
+  const [templatesList, setTemplatesList] = useState<Template[] | null>(null);
+  const [users, setUsers] = useState<UserSummary[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Bind initial values to whatever the server has, and refresh when
+  // the tenant changes (refreshTenant after save).
+  useEffect(() => {
+    setLocal(tenant?.inboundEmailLocal ?? '');
+    setTemplateId(tenant?.defaultTemplateId ?? '');
+    setSalesOwnerId(tenant?.defaultSalesOwnerId ?? '');
+  }, [tenant?.inboundEmailLocal, tenant?.defaultTemplateId, tenant?.defaultSalesOwnerId]);
+
+  useEffect(() => {
+    Promise.all([
+      templates.list().catch(() => []),
+      team.listUsers().catch(() => []),
+    ]).then(([t, u]) => {
+      setTemplatesList(t);
+      setUsers(u);
+    });
+  }, []);
+
+  // Eligible sales owners — admins can route inbound to any of the
+  // sales-facing roles. Tech team / VP / CEO would receive an inbound
+  // they have no workflow to handle, so we filter them out.
+  const eligibleOwners = (users ?? []).filter((u) =>
+    u.role === 'admin' || u.role === 'sales_manager' || u.role === 'sales_employee',
+  );
+
+  const trimmed = local.trim().toLowerCase();
+  const localValid =
+    trimmed === '' || /^[a-z0-9][a-z0-9._-]{0,62}$/.test(trimmed);
+  const localFromTenant = tenant?.inboundEmailLocal ?? '';
+  const dirty =
+    trimmed !== localFromTenant
+    || templateId !== (tenant?.defaultTemplateId ?? '')
+    || salesOwnerId !== (tenant?.defaultSalesOwnerId ?? '');
+
+  async function save() {
+    if (!dirty || busy || !localValid) return;
+    setBusy(true); setErr(null); setSaved(false);
+    try {
+      await tenantApi.update({
+        inboundEmailLocal: trimmed === '' ? null : trimmed,
+        defaultTemplateId: templateId === '' ? null : templateId,
+        defaultSalesOwnerId: salesOwnerId === '' ? null : salesOwnerId,
+      });
+      await refreshTenant();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      const msg = describeError(e);
+      // The server returns inbound_email_local_invalid (slug check) and
+      // a P2002 unique violation when the local is already taken.
+      if (msg.includes('inbound_email_local_invalid')) {
+        setErr('Local part must start with a letter or digit and contain only letters, digits, dot, underscore, or dash.');
+      } else if (msg.toLowerCase().includes('unique')) {
+        setErr('That inbound address is already taken by another workspace. Try a different local part.');
+      } else {
+        setErr(msg);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {!isAdmin && (
+        <div className="card" style={{
+          padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+          marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          background: 'var(--bg-sunk)',
+        }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — only admins can configure inbound email.
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 18, marginBottom: 16 }}>
+        <header style={{ marginBottom: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Inbound address</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.55 }}>
+            Choose a local part for your workspace&apos;s inbound email address. Mail
+            sent to this address creates a new opportunity, runs through the same
+            scope-extraction + classification pipeline as a manually uploaded
+            document, and lands in the default owner&apos;s queue.
+          </div>
+        </header>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+            Inbound address
+          </span>
+          <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, maxWidth: 540 }}>
+            <input
+              className="input"
+              type="text"
+              value={local}
+              onChange={(e) => setLocal(e.target.value)}
+              disabled={!isAdmin || busy}
+              placeholder="acme-sales"
+              maxLength={63}
+              style={{
+                flex: 1, height: 32, fontSize: 13, padding: '0 10px',
+                borderTopRightRadius: 0, borderBottomRightRadius: 0,
+              }}
+            />
+            <div style={{
+              padding: '0 12px', display: 'flex', alignItems: 'center',
+              fontSize: 13, color: 'var(--fg-muted)',
+              background: 'var(--bg-sunk)',
+              border: '1px solid var(--divider)', borderLeft: 'none',
+              borderTopRightRadius: 6, borderBottomRightRadius: 6,
+            }}>
+              @{INBOUND_DOMAIN}
+            </div>
+          </div>
+          {!localValid && (
+            <span style={{ fontSize: 11.5, color: 'var(--danger)' }}>
+              Must start with a letter or digit; only letters, digits, dot, underscore, or dash.
+            </span>
+          )}
+        </label>
+      </div>
+
+      <div className="card" style={{ padding: 18, marginBottom: 16 }}>
+        <header style={{ marginBottom: 14 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Defaults for inbound opportunities</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.55 }}>
+            Inbound channels (email and partner API) don&apos;t carry an active user.
+            Pick the template every inbound opportunity uses, and the owner it lands on.
+            Partner tokens can override these per partner.
+          </div>
+        </header>
+        <div style={{ display: 'grid', gap: 14, maxWidth: 540 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Default template</span>
+            <select
+              className="input"
+              value={templateId}
+              onChange={(e) => setTemplateId(e.target.value)}
+              disabled={!isAdmin || busy || templatesList == null}
+              style={{ height: 32, fontSize: 13, padding: '0 8px' }}
+            >
+              <option value="">— Select a template —</option>
+              {(templatesList ?? []).map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Default sales owner</span>
+            <select
+              className="input"
+              value={salesOwnerId}
+              onChange={(e) => setSalesOwnerId(e.target.value)}
+              disabled={!isAdmin || busy || users == null}
+              style={{ height: 32, fontSize: 13, padding: '0 8px' }}
+            >
+              <option value="">— Select a teammate —</option>
+              {eligibleOwners.map((u) => (
+                <option key={u.id} value={u.id}>{u.email} ({u.role})</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      {err && (
+        <div style={{
+          padding: 10, fontSize: 12, marginBottom: 12,
+          background: 'var(--danger-tint)', color: 'var(--danger)',
+          border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
+          borderRadius: 8,
+        }}>{err}</div>
+      )}
+
+      {isAdmin && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center' }}>
+          {saved && <span style={{ fontSize: 12, color: 'var(--ok)' }}><Icon.Check size={12} /> Saved</span>}
+          <button
+            className="btn ghost"
+            disabled={!dirty || busy}
+            onClick={() => {
+              setLocal(tenant?.inboundEmailLocal ?? '');
+              setTemplateId(tenant?.defaultTemplateId ?? '');
+              setSalesOwnerId(tenant?.defaultSalesOwnerId ?? '');
+            }}
+          >
+            Reset
+          </button>
+          <button className="btn accent" disabled={!dirty || busy || !localValid} onClick={save}>
+            {busy ? <span className="spin" /> : <><Icon.Check size={12} /> Save</>}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function PartnerIntegrationsPanel({ isAdmin }: { isAdmin: boolean }) {
+  const confirm = useConfirm();
+  const [rows, setRows] = useState<PartnerTokenSummary[] | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  /** One-time plaintext token shown immediately after create / rotate.
+   *  Cleared once the admin dismisses it; never persisted client-side. */
+  const [oneTimeToken, setOneTimeToken] = useState<{ id: string; name: string; token: string } | null>(null);
+
+  const refresh = useCallback(() => {
+    partners.list().then(setRows).catch((e) => setErr(describeError(e)));
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function revoke(row: PartnerTokenSummary) {
+    const ok = await confirm({
+      title: 'Revoke partner token?',
+      body: `Submissions from "${row.name}" will stop being accepted. You can create a new token any time.`,
+      tone: 'danger',
+      confirmLabel: 'Revoke',
+    });
+    if (!ok) return;
+    try {
+      await partners.revoke(row.id);
+      refresh();
+    } catch (e) { setErr(describeError(e)); }
+  }
+
+  async function rotate(row: PartnerTokenSummary) {
+    const ok = await confirm({
+      title: 'Rotate token?',
+      body: `The current token for "${row.name}" will stop working. A new one is generated; copy + share it with the partner.`,
+      tone: 'warn',
+      confirmLabel: 'Rotate',
+      icon: 'Refresh',
+    });
+    if (!ok) return;
+    try {
+      const res = await partners.rotate(row.id);
+      setOneTimeToken({ id: res.partner.id, name: res.partner.name, token: res.token });
+      refresh();
+    } catch (e) { setErr(describeError(e)); }
+  }
+
+  if (rows == null) return <div className="empty"><span className="spin" /></div>;
+
+  return (
+    <>
+      {!isAdmin && (
+        <div className="card" style={{
+          padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+          marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          background: 'var(--bg-sunk)',
+        }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — only admins can manage partner integrations.
+        </div>
+      )}
+
+      {oneTimeToken && (
+        <OneTimePartnerTokenBanner
+          name={oneTimeToken.name}
+          token={oneTimeToken.token}
+          onDismiss={() => setOneTimeToken(null)}
+        />
+      )}
+
+      <div className="card" style={{ padding: 18 }}>
+        <header style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 12, marginBottom: 14,
+        }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Partner integrations</h2>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4, lineHeight: 1.55 }}>
+              Each partner gets a unique token to POST opportunities into your
+              workspace via <code style={{ fontSize: 11 }}>POST /partner-intake/:token</code>.
+              The token is the auth — no other credentials are needed.
+            </div>
+          </div>
+          {isAdmin && (
+            <button className="btn accent" onClick={() => setShowCreate(true)}>
+              <Icon.Plus size={12} /> New partner
+            </button>
+          )}
+        </header>
+
+        {err && (
+          <div style={{
+            padding: 10, fontSize: 12, marginBottom: 12,
+            background: 'var(--danger-tint)', color: 'var(--danger)',
+            border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
+            borderRadius: 8,
+          }}>{err}</div>
+        )}
+
+        {rows.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: 'var(--fg-muted)', padding: '14px 0' }}>
+            No partners yet. Add one to enable inbound opportunity submissions.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 8 }}>
+            {rows.map((r) => (
+              <div
+                key={r.id}
+                style={{
+                  padding: 12,
+                  background: 'var(--bg-sunk)',
+                  borderRadius: 8,
+                  display: 'grid', gridTemplateColumns: '1fr auto', gap: 12,
+                  alignItems: 'center',
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    fontSize: 13, fontWeight: 600,
+                  }}>
+                    {r.name}
+                    <PartnerStatusChip status={r.status} />
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4 }}>
+                    {r.lastUsedAt
+                      ? <>Last used {new Date(r.lastUsedAt).toLocaleString()}</>
+                      : 'Never used'}
+                    {r.expiresAt && <> · Expires {new Date(r.expiresAt).toLocaleDateString()}</>}
+                  </div>
+                </div>
+                {isAdmin && r.status === 'active' && (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn sm ghost" onClick={() => rotate(r)} title="Rotate token">
+                      <Icon.Refresh size={11} /> Rotate
+                    </button>
+                    <button className="btn sm ghost" onClick={() => revoke(r)} title="Revoke token">
+                      <Icon.X size={11} /> Revoke
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {showCreate && (
+        <CreatePartnerTokenModal
+          onCreated={(res) => {
+            setOneTimeToken({ id: res.partner.id, name: res.partner.name, token: res.token });
+            refresh();
+            setShowCreate(false);
+          }}
+          onCancel={() => setShowCreate(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function PartnerStatusChip({ status }: { status: PartnerTokenSummary['status'] }) {
+  const map: Record<PartnerTokenSummary['status'], { label: string; tone: string }> = {
+    active:  { label: 'Active',  tone: 'ok' },
+    revoked: { label: 'Revoked', tone: 'danger' },
+    expired: { label: 'Expired', tone: 'warn' },
+  };
+  const m = map[status];
+  return <span className={'chip ' + m.tone} style={{ fontSize: 10.5 }}>{m.label}</span>;
+}
+
+function OneTimePartnerTokenBanner({
+  name, token, onDismiss,
+}: { name: string; token: string; onDismiss(): void }) {
+  const [copied, setCopied] = useState(false);
+  // The full URL the partner needs to POST to. We surface the base URL
+  // from the env, falling back to the API origin when not set; for dev
+  // we use the same origin as the web app.
+  const baseUrl = process.env.NEXT_PUBLIC_PARTNER_INTAKE_BASE_URL
+    ?? 'http://localhost:8000';
+  const url = `${baseUrl.replace(/\/$/, '')}/partner-intake/${token}`;
+  return (
+    <div className="card" style={{
+      padding: 14, marginBottom: 14,
+      background: 'var(--accent-tint)',
+      border: '1px solid color-mix(in oklch, var(--accent) 22%, transparent)',
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--accent)' }}>
+        Token for &ldquo;{name}&rdquo; created — copy now
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', lineHeight: 1.5, marginBottom: 10 }}>
+        This is the only time you&apos;ll see the plaintext token. Share it with the
+        partner. If you lose it, rotate the token to mint a new one.
+      </div>
+      <div style={{
+        padding: 10, background: 'var(--bg)', borderRadius: 6,
+        fontFamily: 'var(--mono, monospace)', fontSize: 11.5, wordBreak: 'break-all',
+        border: '1px solid var(--divider)',
+      }}>
+        {url}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+        <button className="btn sm ghost" onClick={onDismiss}>Dismiss</button>
+        <button
+          className="btn sm accent"
+          onClick={async () => {
+            await navigator.clipboard.writeText(url);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+        >
+          {copied ? <><Icon.Check size={11} /> Copied</> : <><Icon.Copy size={11} /> Copy URL</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CreatePartnerTokenModal({
+  onCreated, onCancel,
+}: {
+  onCreated(res: { partner: PartnerTokenSummary; token: string }): void;
+  onCancel(): void;
+}) {
+  const [name, setName] = useState('');
+  const [expiresInDays, setExpiresInDays] = useState<string>('');
+  const [defaultTemplateId, setDefaultTemplateId] = useState<string>('');
+  const [defaultSalesOwnerId, setDefaultSalesOwnerId] = useState<string>('');
+  const [templatesList, setTemplatesList] = useState<Template[] | null>(null);
+  const [users, setUsers] = useState<UserSummary[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([
+      templates.list().catch(() => []),
+      team.listUsers().catch(() => []),
+    ]).then(([t, u]) => { setTemplatesList(t); setUsers(u); });
+  }, []);
+
+  const eligibleOwners = (users ?? []).filter((u) =>
+    u.role === 'admin' || u.role === 'sales_manager' || u.role === 'sales_employee',
+  );
+
+  async function submit() {
+    const trimmed = name.trim();
+    if (trimmed.length === 0 || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      const expiresInDaysNum = expiresInDays.trim() === '' ? undefined : Number(expiresInDays);
+      const res = await partners.create({
+        name: trimmed,
+        ...(expiresInDaysNum && Number.isFinite(expiresInDaysNum) && expiresInDaysNum > 0
+          ? { expiresInDays: expiresInDaysNum } : {}),
+        ...(defaultTemplateId ? { defaultTemplateId } : {}),
+        ...(defaultSalesOwnerId ? { defaultSalesOwnerId } : {}),
+      });
+      onCreated(res);
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Portal>
+      <div
+        onClick={onCancel}
+        style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)',
+          display: 'grid', placeItems: 'center', zIndex: 1000,
+        }}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="card"
+          style={{
+            padding: 22, width: 'min(500px, 92vw)', maxHeight: '90vh', overflowY: 'auto',
+          }}
+        >
+          <h2 style={{ margin: '0 0 14px', fontSize: 16, fontWeight: 600 }}>New partner integration</h2>
+
+          <div style={{ display: 'grid', gap: 14 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Partner name</span>
+              <input
+                className="input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={busy}
+                placeholder="Acme Reseller"
+                maxLength={120}
+                style={{ height: 32, fontSize: 13, padding: '0 10px' }}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                Expires in (days) — optional
+              </span>
+              <input
+                className="input"
+                type="number"
+                min="1"
+                value={expiresInDays}
+                onChange={(e) => setExpiresInDays(e.target.value)}
+                disabled={busy}
+                placeholder="e.g. 365 (no expiry if empty)"
+                style={{ height: 32, fontSize: 13, padding: '0 10px' }}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                Template override — optional (falls back to workspace default)
+              </span>
+              <select
+                className="input"
+                value={defaultTemplateId}
+                onChange={(e) => setDefaultTemplateId(e.target.value)}
+                disabled={busy || templatesList == null}
+                style={{ height: 32, fontSize: 13, padding: '0 8px' }}
+              >
+                <option value="">— Use workspace default —</option>
+                {(templatesList ?? []).map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                Sales owner override — optional
+              </span>
+              <select
+                className="input"
+                value={defaultSalesOwnerId}
+                onChange={(e) => setDefaultSalesOwnerId(e.target.value)}
+                disabled={busy || users == null}
+                style={{ height: 32, fontSize: 13, padding: '0 8px' }}
+              >
+                <option value="">— Use workspace default —</option>
+                {eligibleOwners.map((u) => (
+                  <option key={u.id} value={u.id}>{u.email} ({u.role})</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {err && (
+            <div style={{
+              padding: 10, fontSize: 12, marginTop: 14,
+              background: 'var(--danger-tint)', color: 'var(--danger)',
+              border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
+              borderRadius: 8,
+            }}>{err}</div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+            <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+            <button
+              className="btn accent"
+              onClick={submit}
+              disabled={busy || name.trim().length === 0}
+            >
+              {busy ? <span className="spin" /> : <><Icon.Plus size={12} /> Create token</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Portal>
+  );
 }

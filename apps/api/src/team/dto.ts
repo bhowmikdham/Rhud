@@ -51,4 +51,22 @@ export class UpdateTenantDto {
    *  so individual fields can be updated without clobbering others. */
   @IsOptional()
   proposalDefaults?: Record<string, unknown>;
+
+  /** Phase E — inbound ingestion defaults. Empty string clears the
+   *  field. Slug validation (alnum + . _ -) happens server-side. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(63)
+  inboundEmailLocal?: string | null;
+
+  /** Phase E — default template used by inbound ingestion when neither
+   *  the partner token nor the request body specifies one. */
+  @IsOptional()
+  @IsString()
+  defaultTemplateId?: string | null;
+
+  /** Phase E — default sales owner used by inbound ingestion. */
+  @IsOptional()
+  @IsString()
+  defaultSalesOwnerId?: string | null;
 }

@@ -66,6 +66,27 @@ export class S3Service {
   }
 
   /**
+   * Phase E — server-side upload helper. Used by IntakeService when we
+   * already have the bytes in process (Postmark webhook base64-decoded
+   * attachments, partner multipart files): there's no client to hand a
+   * presigned URL to. Single `PutObjectCommand` — no retry loop because
+   * a failure here is the caller's signal to surface a 5xx so Postmark
+   * will retry the whole webhook.
+   */
+  async uploadBytes(opts: {
+    key: string;
+    contentType: string;
+    bytes: Buffer;
+  }): Promise<void> {
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: opts.key,
+      Body: opts.bytes,
+      ContentType: opts.contentType,
+    }));
+  }
+
+  /**
    * Fetch the raw bytes of an object server-side. Used by the document
    * extraction pipeline — the API needs to read the file to feed it
    * through pdf-parse / exceljs / the LLM. Streamed via the SDK so we

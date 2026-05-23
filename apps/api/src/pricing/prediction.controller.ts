@@ -114,6 +114,23 @@ class TechAdjustDto {
  * UI can use either name (the rename last sprint kept the engagements
  * route as a back-compat alias).
  */
+
+/** Body for the three reviewer-hold endpoints. Hoisted above the
+ *  controller so `@Body() dto: ReviewerActionDto` references resolve at
+ *  module-load time on Node ≥ 23 (where the TDZ around class
+ *  declarations is enforced more strictly). */
+class ReviewerActionDto {
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+
+  /** Optional: who you're escalating to. Defaults to 'sales_manager'.
+   *  Ignored by send-back and request-clarification. */
+  @IsOptional()
+  @IsIn(['sales_manager', 'admin'])
+  escalateToRole?: 'sales_manager' | 'admin';
+}
+
 @Controller([
   'opportunities/:id',
   'engagements/:id',
@@ -746,15 +763,6 @@ export class PredictionController {
   }
 }
 
-/** Body for the three reviewer-hold endpoints. */
-class ReviewerActionDto {
-  @IsString()
-  @MaxLength(2000)
-  reason!: string;
-
-  /** Optional: who you're escalating to. Defaults to 'sales_manager'.
-   *  Ignored by send-back and request-clarification. */
-  @IsOptional()
-  @IsIn(['sales_manager', 'admin'])
-  escalateToRole?: 'sales_manager' | 'admin';
-}
+// ReviewerActionDto is declared above the controller so its runtime
+// class reference exists when @Body() decorator metadata is captured.
+// See the hoisted declaration near the top of this file.

@@ -50,6 +50,13 @@ export interface EngagementSummary {
   clientAddress: string | null;
   contactName: string | null;
   contactPhone: string | null;
+  /** Phase E — provenance for the "via X" chip on the opportunities
+   *  list. 'manual' for sales-rep-created opportunities. */
+  source: 'manual' | 'inbound_email' | 'partner_api' | 'odoo';
+  /** Resolved partner name when source='partner_api'. Joined off
+   *  partner_tokens.name in the list query so the chip can show
+   *  "via partner Acme Reseller" without a second round-trip. */
+  partnerName: string | null;
 }
 
 /**
@@ -158,6 +165,100 @@ export class EngagementsService {
     };
   }
 
+  /**
+   * Phase E — inbound counterpart to `issue()`. Used by IntakeService
+   * when an opportunity is created from a non-UI channel (Postmark
+   * inbound webhook or partner POST). Same atomic transaction:
+   *   - create engagement at status='issued' with source + partner_token_id
+   *   - emit the intake_email / intake_partner thread event with provenance
+   *
+   * Skips the gathering-token mint — the inbound payload IS the scoping
+   * data, so there's no client walk to send. The caller (IntakeService)
+   * handles attachment upload + extraction kickoff after this returns.
+   */
+  async issueForIntake(args: {
+    tenantId: string;
+    salesEmployeeId: string;
+    templateId: string;
+    source: 'inbound_email' | 'partner_api';
+    partnerTokenId?: string;
+    clientEmail: string;
+    name?: string | null;
+    clientName?: string | null;
+    clientAddress?: string | null;
+    contactName?: string | null;
+    contactPhone?: string | null;
+    intakeEvent: {
+      eventType: 'intake_email' | 'intake_partner';
+      payload: Record<string, unknown>;
+    };
+  }): Promise<{ engagementId: string }> {
+    return this.tenantDb.run(args.tenantId, async (db) => {
+      // Validate the template exists + is published (mirrors `issue()`).
+      const tmpl = await db.template.findUnique({
+        where: { id: args.templateId },
+        select: { id: true, version: true, status: true },
+      });
+      if (!tmpl) throw new NotFoundException('template_not_found');
+      if (tmpl.status !== 'published') {
+        throw new BadRequestException('template_not_published');
+      }
+      // Sanity: salesEmployeeId must exist in this tenant (avoids a
+      // confusing FK error if the tenant default has been deleted).
+      const owner = await db.user.findUnique({
+        where: { id: args.salesEmployeeId },
+        select: { id: true },
+      });
+      if (!owner) throw new BadRequestException('sales_owner_not_found');
+
+      const created = await db.engagement.create({
+        data: {
+          tenantId: args.tenantId,
+          templateId: tmpl.id,
+          templateVersion: tmpl.version,
+          salesEmployeeId: args.salesEmployeeId,
+          clientEmail: args.clientEmail,
+          ...(args.name?.trim()           ? { name:           args.name.trim() }           : {}),
+          ...(args.clientName?.trim()     ? { clientName:     args.clientName.trim() }     : {}),
+          ...(args.clientAddress?.trim()  ? { clientAddress:  args.clientAddress.trim() }  : {}),
+          ...(args.contactName?.trim()    ? { contactName:    args.contactName.trim() }    : {}),
+          ...(args.contactPhone?.trim()   ? { contactPhone:   args.contactPhone.trim() }   : {}),
+          status: 'issued',
+          source: args.source,
+          ...(args.partnerTokenId ? { partnerTokenId: args.partnerTokenId } : {}),
+        },
+      });
+
+      // Provenance event — actorType=integration so audit consumers can
+      // distinguish from a logged-in user creating the same record.
+      await this.thread.emitWithin(db, args.tenantId, {
+        engagementId: created.id,
+        eventType: args.intakeEvent.eventType,
+        actorType: 'integration',
+        actorId: args.partnerTokenId
+          ? `partner_token:${args.partnerTokenId}`
+          : 'postmark_inbound',
+        payload: args.intakeEvent.payload,
+      });
+
+      return { engagementId: created.id };
+    }).then(async (result) => {
+      // Fire-and-forget post-commit notification dispatch. Mirrors the
+      // pattern from `issue()` — failures are logged inside the
+      // dispatcher and don't fail the request.
+      void this.thread.dispatchAfterCommit(args.tenantId, {
+        engagementId: result.engagementId,
+        eventType: args.intakeEvent.eventType,
+        actorType: 'integration',
+        actorId: args.partnerTokenId
+          ? `partner_token:${args.partnerTokenId}`
+          : 'postmark_inbound',
+        payload: args.intakeEvent.payload,
+      });
+      return result;
+    });
+  }
+
   async list(tenantId: string): Promise<EngagementSummary[]> {
     return this.tenantDb.run(tenantId, async (db) => {
       const rows = await db.engagement.findMany({
@@ -168,6 +269,9 @@ export class EngagementsService {
           // list endpoint can surface the right currency symbol on
           // each row without exposing the whole quote payload.
           quote: { select: { currency: true } },
+          // Phase E — partner provenance: render "via partner Acme" chip.
+          // Null for source != 'partner_api'; that's fine for the join.
+          partnerToken: { select: { name: true } },
         },
       });
       return rows.map(rowToSummary);
@@ -455,6 +559,9 @@ function rowToSummary(r: {
   clientAddress?: string | null;
   contactName?: string | null;
   contactPhone?: string | null;
+  // Phase E — provenance + joined partner name.
+  source?: string | null;
+  partnerToken?: { name: string } | null;
 }): EngagementSummary {
   return {
     id: r.id,
@@ -481,5 +588,9 @@ function rowToSummary(r: {
     clientAddress: r.clientAddress ?? null,
     contactName: r.contactName ?? null,
     contactPhone: r.contactPhone ?? null,
+    // Phase E. Cast through the shared union so a malformed DB row
+    // would surface during typing rather than silently downstream.
+    source: ((r.source ?? 'manual') as EngagementSummary['source']),
+    partnerName: r.partnerToken?.name ?? null,
   };
 }

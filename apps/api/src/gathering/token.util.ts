@@ -57,7 +57,10 @@ export function deviceFingerprint(parts: {
     .digest('hex');
 }
 
-function ipNetworkPrefix(ip: string): string {
+/** Reduce a client IP to a /24 (v4) or /48 (v6) prefix for audit
+ *  payloads — full IPs are PII in some jurisdictions. Exported for
+ *  Phase E partner intake which logs the source IP into thread events. */
+export function ipNetworkPrefix(ip: string): string {
   // IPv4 → /24
   const v4 = ip.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
   if (v4) return v4[1] + '.0/24';

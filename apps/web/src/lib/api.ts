@@ -304,6 +304,11 @@ export interface EngagementSummary {
   classifiedBy?: 'llm' | 'manual' | null;
   classifiedAt?: string | null;
   assignedReviewerId?: string | null;
+  /** Phase E — provenance. Renders a small "via X" chip on the
+   *  opportunities list when not 'manual'. `partnerName` is joined off
+   *  partner_tokens.name so the chip can read "via partner Acme". */
+  source?: 'manual' | 'inbound_email' | 'partner_api' | 'odoo';
+  partnerName?: string | null;
 }
 
 /** Legacy alias used by older imports. */
@@ -831,6 +836,14 @@ export interface TenantInfo {
    *  in @rhud/shared.ProposalDefaults, but we keep this open here so
    *  forward-compatible extensions don't require an api.ts bump. */
   proposalDefaults: Record<string, unknown>;
+  /** Phase E — inbound email local-part. The full address is
+   *  `<local>@inbound.rhud.net`. Null until an admin configures it. */
+  inboundEmailLocal: string | null;
+  /** Phase E — fallback template + owner used when an inbound source
+   *  (email or partner API) creates an opportunity. Both must be set
+   *  before inbound ingestion will succeed. */
+  defaultTemplateId: string | null;
+  defaultSalesOwnerId: string | null;
 }
 
 export const tenant = {
@@ -841,6 +854,9 @@ export const tenant = {
     requiresVpApprovalAboveCents?: number | null;
     requiresCeoApprovalAboveCents?: number | null;
     proposalDefaults?: Record<string, unknown>;
+    inboundEmailLocal?: string | null;
+    defaultTemplateId?: string | null;
+    defaultSalesOwnerId?: string | null;
   }) =>
     request<TenantInfo>('/tenant/me', { method: 'PATCH', body: JSON.stringify(dto) }),
 };
@@ -864,6 +880,43 @@ export const team = {
     request<{ devToken?: string }>(`/tenant/invites/${id}/resend`, { method: 'POST' }),
   revokeInvite: (id: string) =>
     request<void>(`/tenant/invites/${id}`, { method: 'DELETE' }),
+};
+
+// ── Partner integrations (admin) ──────────────────────────────────────────
+// Phase E — named partner tokens for the public POST /partner-intake/:token
+// endpoint. Plaintext token returned ONCE in create/rotate responses;
+// admins copy it and paste into the partner's integration setup.
+
+export interface PartnerTokenSummary {
+  id: string;
+  name: string;
+  status: 'active' | 'revoked' | 'expired';
+  defaultTemplateId: string | null;
+  defaultSalesOwnerId: string | null;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+export const partners = {
+  list: () => request<PartnerTokenSummary[]>('/tenant/partner-tokens'),
+  create: (dto: {
+    name: string;
+    expiresInDays?: number;
+    defaultTemplateId?: string;
+    defaultSalesOwnerId?: string;
+  }) =>
+    request<{ partner: PartnerTokenSummary; token: string }>(
+      '/tenant/partner-tokens',
+      { method: 'POST', body: JSON.stringify(dto) },
+    ),
+  rotate: (id: string) =>
+    request<{ partner: PartnerTokenSummary; token: string }>(
+      `/tenant/partner-tokens/${id}/rotate`,
+      { method: 'POST' },
+    ),
+  revoke: (id: string) =>
+    request<void>(`/tenant/partner-tokens/${id}`, { method: 'DELETE' }),
 };
 
 // ── LLM (admin) ─────────────────────────────────────────────────────────────

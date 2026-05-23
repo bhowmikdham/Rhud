@@ -110,6 +110,12 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   final_approval_requested:  ['sales_employee', 'sales_manager'],
   final_approval_granted:    ['sales_employee', 'sales_manager'],
   final_approval_rejected:   ['sales_employee', 'sales_manager'],
+  // Phase E — inbound ingestion. Ping the default sales owner (already
+  // attributed as `salesEmployeeId` on the engagement; routes via
+  // sales_employee). Sales manager copy keeps shift-leads aware that a
+  // new lead landed in the queue without anyone clicking "New".
+  intake_email:              ['sales_employee', 'sales_manager'],
+  intake_partner:            ['sales_employee', 'sales_manager'],
 };
 
 /**

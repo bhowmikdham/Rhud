@@ -40,6 +40,17 @@ model Tenant {
   /// team details, terms & conditions. See packages/shared/src/
   /// proposal-defaults.ts for the shape.
   proposalDefaults              Json    @default("{}") @map("proposal_defaults")
+  /// Phase E — inbound ingestion defaults.
+  /// inboundEmailLocal: per-tenant local-part of the Postmark inbound
+  /// catch-all (e.g. 'acme-sales' for acme-sales@inbound.rhud.net).
+  /// Globally unique (partial index) — two tenants can't share 'sales'.
+  /// defaultTemplate / defaultSalesOwner: used when an inbound source
+  /// (email or partner API) creates an engagement without an override.
+  inboundEmailLocal    String? @map("inbound_email_local") @db.Citext
+  defaultTemplateId    String? @map("default_template_id") @db.Uuid
+  defaultSalesOwnerId  String? @map("default_sales_owner_id") @db.Uuid
+  defaultTemplate      Template? @relation("TenantDefaultTemplate", fields: [defaultTemplateId], references: [id], onDelete: SetNull)
+  defaultSalesOwner    User?     @relation("TenantDefaultSalesOwner", fields: [defaultSalesOwnerId], references: [id], onDelete: SetNull)
   // JSONB configs for external integrations; secrets live in KMS/Doppler,
   // these columns hold non-secret pointers (urls, workspace ids, etc.).
   odooConfig         Json?    @map("odoo_config")
@@ -75,6 +86,7 @@ model Tenant {
   engagementSummaries EngagementSummary[]
   opportunityCategories OpportunityCategory[]
   opportunityRoutingRules OpportunityRoutingRule[]
+  partnerTokens   PartnerToken[]
 
   @@map("tenants")
 }
@@ -142,6 +154,9 @@ model Template {
   rateCard    RateCard?      @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
   nodes       TemplateNode[]
   engagements Engagement[]
+  // Phase E — back-relations for tenant + partner-token default template.
+  tenantsAsDefault       Tenant[]       @relation("TenantDefaultTemplate")
+  partnerTokensAsDefault PartnerToken[] @relation("PartnerTokenDefaultTemplate")
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -217,6 +232,14 @@ model Engagement {
   clientAddress       String?   @map("client_address")
   contactName         String?   @map("contact_name")
   contactPhone        String?   @map("contact_phone")
+  /// Phase E — provenance. 'manual' for sales-rep-created opportunities,
+  /// 'inbound_email' for Postmark webhook arrivals, 'partner_api' for
+  /// partner-token POSTs, 'odoo' for Odoo-sync mirrors. Drives the UI
+  /// "via X" chip and audit attribution. DB-side CHECK whitelist.
+  source              String    @default("manual")
+  /// Back-ref to the partner_tokens row when source='partner_api'.
+  /// SET NULL on delete so we don't dangling-FK the engagement.
+  partnerTokenId      String?   @map("partner_token_id") @db.Uuid
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   submittedAt         DateTime? @map("submitted_at") @db.Timestamptz
   closedAt            DateTime? @map("closed_at") @db.Timestamptz
@@ -262,10 +285,12 @@ model Engagement {
   followUps       EngagementFollowUp[]
   summary         EngagementSummary?
   siteEnumeration SiteEnumeration?
+  partnerToken    PartnerToken?      @relation(fields: [partnerTokenId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([salesEmployeeId])
+  @@index([partnerTokenId])
   @@map("engagements")
 }
 
@@ -678,6 +703,11 @@ model User {
   magicLinks   MagicLink[]
   integrations UserIntegration[]
   routingRules OpportunityRoutingRule[] @relation("RoutingReviewer")
+  // Phase E — back-relations: tenant default sales owner + partner-token
+  // default sales owner + partner tokens created by this user.
+  tenantsAsDefaultOwner       Tenant[]       @relation("TenantDefaultSalesOwner")
+  partnerTokensAsDefaultOwner PartnerToken[] @relation("PartnerTokenDefaultOwner")
+  partnerTokensCreated        PartnerToken[] @relation("PartnerTokenCreator")
 
   // Email is globally unique. Even across tenants we don't want two users
   // sharing an email — simpler mental model for the MVP.
@@ -1371,3 +1401,65 @@ model OpportunityRoutingRule {
   @@index([tenantId, categorySlug, position])
   @@map("opportunity_routing_rules")
 }
+
+// ── Phase E: inbound ingestion (email + partner API) ───────────────────────
+
+/// Named partner token. The plaintext token is shown to the admin once
+/// (when created or rotated) and stored only as an argon2id hash. The
+/// public `/partner-intake/:token` endpoint resolves the token by
+/// scanning all active rows via UnscopedDb (RLS bypass) before hopping
+/// into TenantDb.run for the actual work. Mirrors the gathering-token
+/// + invite-token patterns.
+model PartnerToken {
+  id                     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId               String   @map("tenant_id") @db.Uuid
+  /// Human label shown in the admin UI ("Acme Reseller").
+  name                   String
+  /// argon2id hash of the plaintext token. Plaintext is in the 201
+  /// response and never persisted.
+  tokenHash              String   @map("token_hash")
+  /// Per-partner overrides. NULL → fall back to the tenant defaults.
+  /// Used by IntakeService to fill the engagement's templateId +
+  /// salesEmployeeId when neither the request body nor the partner-
+  /// token row specifies them.
+  defaultTemplateId      String?  @map("default_template_id") @db.Uuid
+  defaultSalesOwnerId    String?  @map("default_sales_owner_id") @db.Uuid
+  expiresAt              DateTime? @map("expires_at") @db.Timestamptz
+  revokedAt              DateTime? @map("revoked_at") @db.Timestamptz
+  createdByUserId        String   @map("created_by_user_id") @db.Uuid
+  lastUsedAt             DateTime? @map("last_used_at") @db.Timestamptz
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant            Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  defaultTemplate   Template?  @relation("PartnerTokenDefaultTemplate", fields: [defaultTemplateId], references: [id], onDelete: SetNull)
+  defaultSalesOwner User?      @relation("PartnerTokenDefaultOwner", fields: [defaultSalesOwnerId], references: [id], onDelete: SetNull)
+  createdBy         User       @relation("PartnerTokenCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  engagements       Engagement[]
+
+  @@index([tenantId])
+  @@map("partner_tokens")
+}
+
+/// Global (non-tenant-scoped) Postmark MessageID dedup. Insert-first
+/// pattern in EmailIntakeController: we write the row before any
+/// downstream work, so a 5xx that triggers a Postmark retry hits the
+/// PRIMARY KEY conflict and returns `{ status: 'duplicate' }` instead
+/// of double-creating the engagement.
+///
+/// Lives outside tenant scope because dedup happens before recipient
+/// resolution. No RLS — table is global. Read access not granted to
+/// rhud_app; admin queries (support tickets) can shell into the
+/// superuser if needed.
+model InboundEmailDedup {
+  messageId    String   @id @map("message_id")
+  /// Set after we create the engagement; null when we dropped the
+  /// message (no tenant match, oversize, etc.). Useful for support.
+  engagementId String?  @map("engagement_id") @db.Uuid
+  tenantId     String?  @map("tenant_id") @db.Uuid
+  receivedAt   DateTime @default(now()) @map("received_at") @db.Timestamptz
+
+  @@index([receivedAt])
+  @@map("inbound_email_dedup")
+}
+

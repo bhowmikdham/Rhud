@@ -20,6 +20,7 @@ import { SiteEnumModule } from './site-enum/site-enum.module.js';
 import { LeadManagementModule } from './lead-management/lead-management.module.js';
 import { ClassificationModule } from './classification/classification.module.js';
 import { ProposalExportModule } from './proposal-export/proposal-export.module.js';
+import { IntakeModule } from './intake/intake.module.js';
 import { HealthController } from './health.controller.js';
 
 @Module({
@@ -50,6 +51,7 @@ import { HealthController } from './health.controller.js';
     LeadManagementModule,
     ClassificationModule,
     ProposalExportModule,
+    IntakeModule,
   ],
   controllers: [HealthController],
 })

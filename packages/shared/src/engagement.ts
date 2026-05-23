@@ -32,3 +32,20 @@ export const ENGAGEMENT_STATUSES = [
 ] as const;
 
 export type EngagementStatus = (typeof ENGAGEMENT_STATUSES)[number];
+
+// Phase E — opportunity provenance. Set at engagement creation and
+// rendered as a "via X" chip in the opportunities list. Whitelisted on
+// the engagements_source_check DB constraint; keep this list in sync.
+export const ENGAGEMENT_SOURCES = [
+  /// Created by a logged-in user via the "New opportunity" form.
+  'manual',
+  /// Created by the Postmark inbound webhook from a customer email.
+  'inbound_email',
+  /// Created by POST /partner-intake/:token. `partnerTokenId` carries
+  /// the back-ref so the UI can show "via partner Acme Reseller".
+  'partner_api',
+  /// Mirror of an Odoo crm.lead picked up by the polling sync.
+  'odoo',
+] as const;
+
+export type EngagementSource = (typeof ENGAGEMENT_SOURCES)[number];

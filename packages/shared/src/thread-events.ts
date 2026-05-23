@@ -109,6 +109,16 @@ export const THREAD_EVENT_TYPES = [
   /// VP or CEO rejected the gated approval; status → 'rejected'.
   /// Payload: `{ level, approverRole, reason }`
   'final_approval_rejected',
+  // Phase E — inbound ingestion (PM workflow stage 1).
+  /// An inbound email landed and an engagement was created from it.
+  /// Payload: `{ fromEmail, subject, attachmentCount, postmarkMessageId }`.
+  /// Actor: `{ actorType: 'integration', actorId: 'postmark_inbound' }`.
+  'intake_email',
+  /// A partner POSTed a new opportunity via the public partner-intake
+  /// endpoint. Payload: `{ partnerTokenId, partnerName, attachmentCount,
+  /// sourceIp }` (sourceIp truncated to /24 for PII safety).
+  /// Actor: `{ actorType: 'integration', actorId: 'partner_token:<id>' }`.
+  'intake_partner',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];
