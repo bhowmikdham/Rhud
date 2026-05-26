@@ -43,6 +43,12 @@ RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
 COPY packages/shared packages/shared
 COPY apps/api apps/api
 
+# Compile @rhud/shared first — both api and web import from its `dist/`
+# (see packages/shared/package.json "main" and "exports"). Without this
+# step the api build can resolve the package name via pnpm workspace
+# linking but the type-check / runtime import fails because dist/ is empty.
+RUN pnpm --filter @rhud/shared build
+
 # Generate the Prisma client (writes to node_modules/.prisma/client + @prisma/client).
 RUN pnpm --filter @rhud/api exec prisma generate
 

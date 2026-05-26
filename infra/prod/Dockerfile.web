@@ -33,6 +33,12 @@ RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
 COPY packages/shared packages/shared
 COPY apps/web apps/web
 
+# Build the shared package first — its package.json points main/exports
+# at ./dist/, so Next's webpack can't resolve @rhud/shared until tsc has
+# emitted dist/. transpilePackages alone isn't enough because Next still
+# reads main from package.json during module resolution.
+RUN pnpm --filter @rhud/shared build
+
 RUN pnpm --filter @rhud/web build
 
 # ────────────────────────────────────────────────────────────────────

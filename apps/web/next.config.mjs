@@ -10,9 +10,12 @@ const nextConfig = {
   // Emit a minimal self-contained server bundle for the Docker runtime image.
   // See https://nextjs.org/docs/app/api-reference/next-config-js/output
   output: 'standalone',
-  // Tell Next that the workspace root is two levels up so file tracing
-  // captures @rhud/shared and other monorepo deps in the standalone bundle.
-  outputFileTracingRoot: path.join(__dirname, '../../'),
+  experimental: {
+    // Tell Next that the workspace root is two levels up so file tracing
+    // captures @rhud/shared and other monorepo deps in the standalone bundle.
+    // Lives under `experimental` in Next 14.2.x (top-level was unrecognised).
+    outputFileTracingRoot: path.join(__dirname, '../../'),
+  },
 };
 
 export default nextConfig;
