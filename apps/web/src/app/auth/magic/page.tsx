@@ -8,9 +8,14 @@
  * api, store the returned JWT via the auth context, then redirect to the
  * dashboard. On invalid/expired we show a clear message with a way back to
  * /login.
+ *
+ * Implementation note: `useSearchParams()` makes a route dynamic. Next 14
+ * requires the component that calls it to be wrapped in <Suspense>, or the
+ * production build fails on the prerender pass. The default export is the
+ * Suspense wrapper; the inner component does the actual work.
  */
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { auth, describeError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -18,6 +23,14 @@ import { useAuth } from '@/lib/auth-context';
 type Phase = 'verifying' | 'success' | 'error';
 
 export default function MagicLinkConsumePage() {
+  return (
+    <Suspense fallback={<ConsumeShell phase="verifying" />}>
+      <ConsumeInner />
+    </Suspense>
+  );
+}
+
+function ConsumeInner() {
   const router = useRouter();
   const params = useSearchParams();
   const { signIn } = useAuth();
@@ -55,6 +68,10 @@ export default function MagicLinkConsumePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  return <ConsumeShell phase={phase} errorMsg={errorMsg} />;
+}
+
+function ConsumeShell({ phase, errorMsg }: { phase: Phase; errorMsg?: string | null }) {
   return (
     <div
       style={{
