@@ -131,20 +131,25 @@ export default function LoginPage() {
             </button>
           </div>
 
-          <div className="login-demo">
-            <div className="login-demo-label">Dev · sign in as</div>
-            <div className="login-demo-row">
-              {DEMO_USERS.map((u) => (
-                <button key={u.email} type="button" className="login-demo-card" onClick={() => fillDemo(u)}>
-                  <div className="avatar sm" style={{ background: u.color }}>{u.initials}</div>
-                  <div>
-                    <div className="login-demo-name">{u.firstName}</div>
-                    <div className="login-demo-role">{u.role}</div>
-                  </div>
-                </button>
-              ))}
+          {/* DEV-only demo signin panel. process.env.NODE_ENV is inlined by
+              Next at build time — in a prod build (`next build`) webpack
+              dead-code-eliminates this entire JSX subtree. */}
+          {process.env.NODE_ENV !== 'production' && (
+            <div className="login-demo">
+              <div className="login-demo-label">Dev · sign in as</div>
+              <div className="login-demo-row">
+                {DEMO_USERS.map((u) => (
+                  <button key={u.email} type="button" className="login-demo-card" onClick={() => fillDemo(u)}>
+                    <div className="avatar sm" style={{ background: u.color }}>{u.initials}</div>
+                    <div>
+                      <div className="login-demo-name">{u.firstName}</div>
+                      <div className="login-demo-role">{u.role}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="login-foot">
             New to Rhud? <a href="#" className="login-link">Create an account</a>
