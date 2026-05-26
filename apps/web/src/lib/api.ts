@@ -211,6 +211,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
+export interface AuthMe {
+  sub: string;
+  tid: string;
+  role: string;
+  email: string;
+  /** Optional display name. Null when the user hasn't set one — UI
+   *  falls back to the email local-part. */
+  name: string | null;
+}
+
 export const auth = {
   async login(email: string, password: string) {
     return request<{ token: string; user: { sub: string; tid: string; role: string; email: string } }>(
@@ -219,7 +229,14 @@ export const auth = {
     );
   },
   async me() {
-    return request<{ sub: string; tid: string; role: string; email: string }>('/auth/me');
+    return request<AuthMe>('/auth/me');
+  },
+  /** Update the signed-in user's own profile. Send `name: ''` to clear. */
+  async updateMe(patch: { name?: string }) {
+    return request<AuthMe>('/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
   },
   /**
    * Request a magic sign-in link. Always resolves successfully — the API

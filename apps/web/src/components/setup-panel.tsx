@@ -16,6 +16,7 @@
  */
 
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -30,8 +31,19 @@ import { Icon } from './icon';
 
 const STORAGE_KEY = 'rhud.setup.collapsed';
 
+/**
+ * Routes where the floating pill would obscure footer action buttons
+ * (Save changes, etc.) and adds no value (the user is already in the
+ * settings flow). Suppress on the entire /settings tree.
+ */
+function isSuppressedRoute(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return pathname === '/settings' || pathname.startsWith('/settings/');
+}
+
 export function SetupPanel() {
   const { user } = useAuth();
+  const pathname = usePathname();
   const [cards, setCards] = useState<RateCardSummary[] | null>(null);
   const [tmpls, setTmpls] = useState<Template[] | null>(null);
   const [opps, setOpps] = useState<EngagementSummary[] | null>(null);
@@ -55,6 +67,7 @@ export function SetupPanel() {
   }, []);
 
   if (!user) return null;
+  if (isSuppressedRoute(pathname)) return null;
   if (cards === null || tmpls === null || opps === null) return null;
 
   const isAdmin = user.role === 'admin';

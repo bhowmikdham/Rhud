@@ -9,6 +9,7 @@ import { Toggle } from '@/components/toggle';
 import { Portal } from '@/components/portal';
 import { useConfirm } from '@/components/confirm';
 import {
+  auth as authApi,
   tenant as tenantApi,
   team,
   llm,
@@ -113,7 +114,7 @@ function SettingsInner() {
           </aside>
 
           <div style={{ minWidth: 0 }}>
-            {tab === 'account' && <AccountPanel email={user.email} role={user.role} />}
+            {tab === 'account' && <AccountPanel />}
             {tab === 'workspace' && <WorkspacePanel isAdmin={user.role === 'admin'} />}
             {tab === 'team' && <TeamPanel currentUserId={user.sub} isAdmin={user.role === 'admin'} />}
             {tab === 'routing' && <RoutingRulesPanel isAdmin={user.role === 'admin'} />}
@@ -181,63 +182,93 @@ function SectionCard({ title, desc, children, actions }: {
 
 // ─── Account ─────────────────────────────
 
-function AccountPanel({ email, role }: { email: string; role: string }) {
+function AccountPanel() {
+  const { user, refreshUser } = useAuth();
+  const initialName = user?.name ?? '';
+  const [name, setName] = useState<string>(initialName);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Re-sync local state when the cached user changes (e.g. after a
+  // refresh kicked off elsewhere).
+  useEffect(() => {
+    setName(user?.name ?? '');
+  }, [user?.name]);
+
+  if (!user) return null;
+
+  const dirty = name.trim() !== (user.name ?? '').trim();
+  const email = user.email;
+  const role = user.role;
   const initials = email.slice(0, 2).toUpperCase();
-  const firstName = capitalize(email.split('@')[0]?.split('.')[0] ?? '');
+
+  async function save() {
+    if (!dirty || busy) return;
+    setBusy(true); setErr(null); setSaved(false);
+    try {
+      await authApi.updateMe({ name: name.trim() });
+      await refreshUser();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancel() {
+    setName(user?.name ?? '');
+    setErr(null);
+    setSaved(false);
+  }
+
   return (
     <>
       <SectionCard title="Profile" desc="How you appear to teammates and clients.">
-        <Row label="Photo" sub="PNG or JPG, max 2 MB.">
+        <Row label="Photo" sub="Coming soon — file uploads aren't wired yet.">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div className="avatar lg" style={{ background: roleColor(role), width: 52, height: 52, fontSize: 16 }}>
               {initials}
             </div>
-            <button className="btn sm">Upload</button>
-            <button className="btn sm ghost">Remove</button>
+            <button className="btn sm" disabled>Upload</button>
+            <button className="btn sm ghost" disabled>Remove</button>
           </div>
         </Row>
-        <Row label="Full name">
-          <input className="input" defaultValue={firstName} style={{ maxWidth: 360 }} />
+        <Row label="Full name" sub="Shown in the sidebar, topbar, and to your teammates.">
+          <input
+            className="input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={busy}
+            maxLength={120}
+            placeholder={capitalize(email.split('@')[0]?.split('.')[0] ?? '')}
+            style={{ maxWidth: 360 }}
+          />
         </Row>
-        <Row label="Email" sub="Used for sign-in and notifications.">
-          <input className="input" defaultValue={email} style={{ maxWidth: 360 }} />
+        <Row label="Email" sub="Used for sign-in and notifications. Contact an admin to change.">
+          <input className="input" value={email} disabled style={{ maxWidth: 360 }} />
         </Row>
-        <Row label="Role" sub="Permissions scoped to this role.">
-          <select className="input" defaultValue={role} style={{ maxWidth: 220 }}>
-            <option value="sales_employee">Sales employee</option>
-            <option value="sales_manager">Sales manager</option>
-            <option value="admin">Admin</option>
-          </select>
-        </Row>
-        <Row label="Timezone" last>
-          <select className="input" defaultValue="Europe/Berlin" style={{ maxWidth: 220 }}>
-            <option>Europe/Berlin (UTC+1)</option>
-            <option>America/New_York (UTC-5)</option>
-            <option>Asia/Singapore (UTC+8)</option>
-            <option>Australia/Melbourne (UTC+11)</option>
-          </select>
+        <Row label="Role" sub="Set by an admin via the Team panel." last>
+          <span className="chip outline" style={{ fontSize: 11 }}>{role.replace('_', ' ')}</span>
         </Row>
       </SectionCard>
 
-      <SectionCard title="Active sessions" desc="Sign out of devices you don't recognise.">
-        {[
-          { device: 'MacBook Pro · Chrome', where: 'Berlin, DE', when: 'Now · This device', current: true },
-          { device: 'iPhone 15 · Rhud app', where: 'Berlin, DE', when: '2 hours ago', current: false },
-          { device: 'Windows · Firefox', where: 'Munich, DE', when: '3 days ago', current: false },
-        ].map((s, i, arr) => (
-          <Row key={i} label={s.device} sub={`${s.where} · ${s.when}`} last={i === arr.length - 1}>
-            {s.current ? (
-              <span className="chip ok"><Icon.Check size={10} />Current session</span>
-            ) : (
-              <button className="btn sm ghost">Sign out</button>
-            )}
-          </Row>
-        ))}
-      </SectionCard>
+      {err && (
+        <div className="card" style={{
+          padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16,
+          background: 'var(--danger-tint)',
+          borderColor: 'color-mix(in oklch, var(--danger) 22%, transparent)',
+        }}>{err}</div>
+      )}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-        <button className="btn ghost">Cancel</button>
-        <button className="btn accent">Save changes</button>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, alignItems: 'center' }}>
+        {saved && <span style={{ fontSize: 12, color: 'var(--ok)' }}><Icon.Check size={12} /> Saved</span>}
+        <button className="btn ghost" disabled={!dirty || busy} onClick={cancel}>Cancel</button>
+        <button className="btn accent" disabled={!dirty || busy} onClick={save}>
+          {busy ? <span className="spin" /> : <><Icon.Check size={12} /> Save changes</>}
+        </button>
       </div>
     </>
   );

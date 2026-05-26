@@ -66,6 +66,9 @@ export class UnscopedDb {
   async createTenantWithAdmin(args: {
     tenantName: string;
     email: string;
+    /** Optional human display name the user typed during signup. Persisted
+     *  to `users.name` so the dashboard can greet them properly. */
+    userName?: string;
     passwordHash: string;
     emailVerificationTokenHash: string;
     emailVerificationExpiresAt: Date;
@@ -79,6 +82,9 @@ export class UnscopedDb {
         data: {
           tenantId: tenant.id,
           email: args.email,
+          ...(args.userName !== undefined && args.userName.trim().length > 0
+            ? { name: args.userName.trim() }
+            : {}),
           passwordHash: args.passwordHash,
           role: 'admin',
           emailVerified: false,

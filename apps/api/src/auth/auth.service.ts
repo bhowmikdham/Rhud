@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -14,7 +15,7 @@ import { TenantDb } from '../db/with-tenant.js';
 import { UnscopedDb } from '../db/unscoped-db.js';
 import { EmailService } from '../email/email.service.js';
 import { loadEnv } from '../config/env.js';
-import type { JwtPayload } from './auth.types.js';
+import type { JwtPayload, MeResponse } from './auth.types.js';
 
 /** Default email-verification window: 24 hours. */
 const VERIFY_TTL_HOURS = 24;
@@ -86,6 +87,7 @@ export class AuthService {
     const created = await this.unscoped.createTenantWithAdmin({
       tenantName: args.tenantName,
       email: args.email,
+      ...(args.userName !== undefined ? { userName: args.userName } : {}),
       passwordHash,
       emailVerificationTokenHash: tokenHash,
       emailVerificationExpiresAt: expiresAt,
@@ -262,6 +264,62 @@ export class AuthService {
       email: user.email,
       role: user.role,
     });
+  }
+
+  // ── Profile (self) ────────────────────────────────────────────────
+
+  /** GET /auth/me — enriched view of the signed-in user. Reads the row
+   *  from the DB so we can surface `name` (which is not in the JWT). */
+  async getMyProfile(actor: JwtPayload): Promise<MeResponse> {
+    const row = await this.tenantDb.run(actor.tid, async (db) =>
+      db.user.findUnique({
+        where: { id: actor.sub },
+        select: { id: true, email: true, name: true, role: true, tenantId: true },
+      }),
+    );
+    if (!row) throw new NotFoundException('user_not_found');
+    if (!isRole(row.role)) throw new UnauthorizedException('invalid_user_role');
+    return {
+      sub: row.id,
+      tid: row.tenantId,
+      email: row.email,
+      role: row.role as Role,
+      name: row.name,
+    };
+  }
+
+  /** PATCH /auth/me — user updates their own profile. Trim + length-cap
+   *  matches the dto; empty-after-trim clears the name (falls back to
+   *  the email local-part in the UI). */
+  async updateMyProfile(
+    actor: JwtPayload,
+    patch: { name?: string },
+  ): Promise<MeResponse> {
+    const data: { name?: string | null } = {};
+    if (patch.name !== undefined) {
+      const trimmed = patch.name.trim();
+      if (trimmed.length > 120) throw new BadRequestException('name_too_long');
+      data.name = trimmed.length === 0 ? null : trimmed;
+    }
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('no_fields_to_update');
+    }
+    const row = await this.tenantDb.run(actor.tid, async (db) =>
+      db.user.update({
+        where: { id: actor.sub },
+        data,
+        select: { id: true, email: true, name: true, role: true, tenantId: true },
+      }),
+    );
+    if (!isRole(row.role)) throw new UnauthorizedException('invalid_user_role');
+    this.logger.log(`user profile updated tenant=${actor.tid} user=${actor.sub}`);
+    return {
+      sub: row.id,
+      tid: row.tenantId,
+      email: row.email,
+      role: row.role as Role,
+      name: row.name,
+    };
   }
 
   private issueJwt(user: {

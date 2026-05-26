@@ -61,3 +61,13 @@ export class ResetPasswordDto {
   @MaxLength(200)
   newPassword!: string;
 }
+
+/** PATCH /auth/me — user updates their own profile. Currently just name;
+ *  email is the unique sign-in identity (so changing it warrants its own
+ *  flow), and role is administered through the Team panel. */
+export class UpdateMeDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  name?: string;
+}
