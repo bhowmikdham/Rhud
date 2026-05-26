@@ -40,13 +40,16 @@ services:
     build:
       context: ../..
       dockerfile: infra/prod/Dockerfile.web
+      args:
+        # Build-time arg — Next inlines NEXT_PUBLIC_* at compile time.
+        # Setting this only as `environment:` below would NOT make it
+        # available to the already-built client bundle.
+        NEXT_PUBLIC_API_URL: "${WEB_PUBLIC_URL}/api/v1"
     environment:
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
       NEXT_TELEMETRY_DISABLED: "1"
-      # Client-side fetches go to same-origin /api/v1 — Caddy routes them.
-      NEXT_PUBLIC_API_BASE: "${WEB_PUBLIC_URL}/api/v1"
     deploy:
       resources:
         limits: { memory: 500M }

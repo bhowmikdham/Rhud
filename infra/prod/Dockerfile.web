@@ -39,6 +39,14 @@ COPY apps/web apps/web
 # reads main from package.json during module resolution.
 RUN pnpm --filter @rhud/shared build
 
+# Next.js inlines NEXT_PUBLIC_* env vars at build time, not at runtime
+# (see apps/web/src/lib/api.ts which reads process.env.NEXT_PUBLIC_API_URL).
+# So the API URL must be present in the environment when `next build` runs.
+# It's passed as a build ARG from docker-compose so the value changes don't
+# require code edits.
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+
 RUN pnpm --filter @rhud/web build
 
 # ────────────────────────────────────────────────────────────────────
