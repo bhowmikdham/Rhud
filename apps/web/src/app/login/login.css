@@ -177,11 +177,12 @@
 .login-brand { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 36px; }
 .login-mark {
   width: 28px; height: 28px; border-radius: 7px;
-  background: var(--fg); color: var(--bg);
-  display: grid; place-items: center;
-  font-weight: 800; font-size: 13px;
+  background: #000 url('/logo.png') center/cover no-repeat;
 }
-.login-mark span { transform: translateY(-1px); }
+/* The <span>r</span> inside login-mark is hidden — the brand mark is
+   now an image. Kept in JSX as a graceful fallback if the image
+   somehow 404s, but rendered invisible by default. */
+.login-mark span { display: none; }
 .login-wordmark { font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
 
 .login-head h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }

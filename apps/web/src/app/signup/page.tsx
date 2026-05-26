@@ -12,7 +12,7 @@
 import { useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { auth, describeError } from '@/lib/api';
-import { AuthShell, AuthField, AuthSubmit, authStyles as S } from '@/components/auth-form';
+import { AuthBrand, AuthShell, AuthField, AuthSubmit, authStyles as S } from '@/components/auth-form';
 
 export default function SignupPage() {
   const [email, setEmail] = useState('');
@@ -49,7 +49,7 @@ export default function SignupPage() {
 
   return (
     <AuthShell>
-      <div style={S.brand}>rhud</div>
+      <AuthBrand />
       {sent ? (
         <>
           <h1 style={S.h1}>Check your email</h1>

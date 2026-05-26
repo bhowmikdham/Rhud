@@ -61,6 +61,10 @@ WORKDIR /app
 # The runnable server.js ends up at /app/apps/web/server.js.
 COPY --from=build --chown=app:app /app/apps/web/.next/standalone /app
 COPY --from=build --chown=app:app /app/apps/web/.next/static     /app/apps/web/.next/static
+# Static assets (logo.png, favicons, etc.). Next standalone DOES NOT include
+# the public/ directory automatically — it has to be copied separately.
+# Served at the root of the domain (e.g. /logo.png).
+COPY --from=build --chown=app:app /app/apps/web/public           /app/apps/web/public
 
 USER app
 ENV NODE_ENV=production

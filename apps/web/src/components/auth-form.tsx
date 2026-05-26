@@ -10,6 +10,34 @@ import type { CSSProperties, ReactNode } from 'react';
 
 export type AuthPhase = 'idle' | 'submitting' | 'sent' | 'success' | 'error';
 
+/**
+ * Brand mark = logo image + "rhud" wordmark. Used at the top of every
+ * standalone auth card. The image is served from /logo.png via the
+ * web container's apps/web/public directory.
+ */
+export function AuthBrand({ align = 'left' }: { align?: 'left' | 'center' }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: align === 'center' ? 'center' : 'flex-start',
+        gap: 10,
+        marginBottom: 24,
+      }}
+    >
+      <img
+        src="/logo.png"
+        alt=""
+        width={28}
+        height={28}
+        style={{ borderRadius: 7, display: 'block' }}
+      />
+      <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: '-0.02em' }}>rhud</span>
+    </div>
+  );
+}
+
 /** Card-on-grey shell used by every standalone auth screen. */
 export function AuthShell({ children }: { children: ReactNode }) {
   return (

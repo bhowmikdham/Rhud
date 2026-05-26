@@ -185,27 +185,13 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
 .logo-mark {
   width: 22px; height: 22px;
   border-radius: 6px;
-  background: var(--fg);
-  display: grid; place-items: center;
-  color: var(--bg);
-  font-weight: 700; font-size: 12px;
-  position: relative;
+  background: #000 url('/logo.png') center/cover no-repeat;
   flex-shrink: 0;
 }
-.logo-mark::before {
-  content: ''; position: absolute; inset: 4px;
-  border-radius: 3px;
-  border: 1.5px solid var(--bg);
-  border-top-color: transparent;
-  border-right-color: transparent;
-  transform: rotate(-45deg);
-}
-.logo-mark::after {
-  content: ''; position: absolute;
-  top: 3px; right: 3px;
-  width: 5px; height: 5px; border-radius: 999px;
-  background: var(--accent);
-}
+/* Old CSS-drawn marks are now provided by /logo.png. Keep the selectors
+   so any inherited rules elsewhere still resolve, but render nothing. */
+.logo-mark::before,
+.logo-mark::after { content: none; }
 .logo-wordmark { font-size: 14px; font-weight: 600; letter-spacing: -0.02em; color: var(--fg); }
 
 .workspace-switcher {

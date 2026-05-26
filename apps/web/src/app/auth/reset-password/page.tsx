@@ -13,7 +13,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { auth, describeError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { AuthShell, AuthField, AuthSubmit, authStyles as S } from '@/components/auth-form';
+import { AuthBrand, AuthShell, AuthField, AuthSubmit, authStyles as S } from '@/components/auth-form';
 
 export default function ResetPasswordPage() {
   return (
@@ -72,7 +72,7 @@ function Inner() {
 
   return (
     <AuthShell>
-      <div style={S.brand}>rhud</div>
+      <AuthBrand />
 
       {!token ? (
         <>

@@ -19,6 +19,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { auth, describeError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { AuthBrand } from '@/components/auth-form';
 
 type Phase = 'verifying' | 'success' | 'error';
 
@@ -95,7 +96,7 @@ function ConsumeShell({ phase, errorMsg }: { phase: Phase; errorMsg?: string | n
           textAlign: 'center',
         }}
       >
-        <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 24 }}>rhud</div>
+        <AuthBrand align="center" />
         {phase === 'verifying' && (
           <>
             <div style={{ fontSize: 18, marginBottom: 8 }}>Signing you in…</div>

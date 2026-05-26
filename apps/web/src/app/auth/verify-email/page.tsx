@@ -16,7 +16,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { auth, describeError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { AuthShell, authStyles as S } from '@/components/auth-form';
+import { AuthBrand, AuthShell } from '@/components/auth-form';
 
 type Phase = 'verifying' | 'success' | 'error';
 
@@ -70,7 +70,7 @@ function Inner() {
 function View({ phase, errorMsg }: { phase: Phase; errorMsg?: string | null }) {
   return (
     <AuthShell>
-      <div style={{ ...S.brand, textAlign: 'center' }}>rhud</div>
+      <AuthBrand align="center" />
       <div style={{ textAlign: 'center' }}>
         {phase === 'verifying' && (
           <>
