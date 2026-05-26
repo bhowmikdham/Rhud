@@ -182,30 +182,3 @@ export function renderEmail(eventType: ThreadEventType, ctx: EmailContext): { su
   if (!t) return null;
   return { subject: t.subject(ctx), textBody: t.textBody(ctx) };
 }
-
-// ── Out-of-band emails (not driven by ThreadEvent) ──────────────────────────
-
-export interface InviteEmailArgs {
-  to: string;
-  role: string;
-  inviterEmail: string;
-  acceptUrl: string;
-}
-
-const ROLE_LABEL: Record<string, string> = {
-  admin: 'admin',
-  sales_manager: 'sales manager',
-  sales_employee: 'sales rep',
-};
-
-export function renderInviteEmail(args: InviteEmailArgs): { subject: string; textBody: string } {
-  const roleLabel = ROLE_LABEL[args.role] ?? args.role;
-  return {
-    subject: `[Rhud] You've been invited to join the workspace`,
-    textBody:
-      `${args.inviterEmail} invited you to join their Rhud workspace as ${roleLabel}.\n\n` +
-      `Click here to set a password and sign in:\n${args.acceptUrl}\n\n` +
-      `This invite expires in 7 days. If you weren't expecting it, ignore this email.` +
-      sharedSig,
-  };
-}

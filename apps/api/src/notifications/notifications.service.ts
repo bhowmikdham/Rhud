@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import {
   resolveRoute,
   type RecipientRole,
@@ -7,7 +6,7 @@ import {
   type ThreadEventType,
 } from '@rhud/shared';
 import { TenantDb } from '../db/with-tenant.js';
-import { EmailTransport } from './email.transport.js';
+import { EmailService } from '../email/email.service.js';
 import { renderEmail, type EmailContext } from './email.templates.js';
 
 interface DispatchArgs {
@@ -46,7 +45,7 @@ export class NotificationsService {
 
   constructor(
     private readonly tenantDb: TenantDb,
-    private readonly transport: EmailTransport,
+    private readonly email: EmailService,
   ) {}
 
   async dispatch(args: DispatchArgs): Promise<{ sent: number; skipped: number; failed: number }> {
@@ -168,20 +167,18 @@ export class NotificationsService {
       // events (link_opened, node_answered) intentionally have no email.
       return false;
     }
-    try {
-      await this.transport.send({
-        to: recipient.email,
-        subject: rendered.subject,
-        textBody: rendered.textBody,
-        notificationId: randomUUID(),
-      });
-      return true;
-    } catch (err) {
-      this.logger.error(
-        `email send failed for ${recipient.email} on ${eventType}: ${(err as Error).message}`,
-      );
-      return false;
+    // EmailService is best-effort: it never throws, returns true on
+    // successful SES send and false on no-config / send failure. We
+    // surface that boolean directly to the caller's sent/failed tally.
+    const ok = await this.email.sendNotification({
+      to: recipient.email,
+      subject: rendered.subject,
+      text: rendered.textBody,
+    });
+    if (!ok) {
+      this.logger.debug(`notification not delivered for ${recipient.email} on ${eventType}`);
     }
+    return ok;
   }
 }
 

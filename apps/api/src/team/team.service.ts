@@ -22,13 +22,26 @@ import { randomBytes } from 'node:crypto';
 import { ROLES, isRole, type Role } from '@rhud/shared';
 import { TenantDb } from '../db/with-tenant.js';
 import { UnscopedDb } from '../db/unscoped-db.js';
-import { EmailTransport } from '../notifications/email.transport.js';
-import { renderInviteEmail } from '../notifications/email.templates.js';
+import { EmailService } from '../email/email.service.js';
 import type { JwtPayload } from '../auth/auth.types.js';
 
 // 7 days — long enough that reasonable people get to it, short enough
 // that a forgotten invite doesn't hang around forever.
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Human-readable role names shown in the invite email body so the
+// recipient knows what they're being granted before they accept. Roles
+// not listed fall back to the raw slug — fine for newer/internal roles
+// where the slug is already readable enough.
+const ROLE_LABEL: Partial<Record<Role, string>> = {
+  admin: 'admin',
+  sales_manager: 'sales manager',
+  sales_employee: 'sales rep',
+};
+
+function roleLabelFor(role: Role): string {
+  return ROLE_LABEL[role] ?? role;
+}
 
 interface InviteRow {
   id: string;
@@ -79,7 +92,7 @@ export class TeamService {
     private readonly tenantDb: TenantDb,
     private readonly unscoped: UnscopedDb,
     private readonly jwt: JwtService,
-    private readonly transport: EmailTransport,
+    private readonly email: EmailService,
   ) {}
 
   // ── Tenant identity ─────────────────────────────────────────────────────
@@ -287,7 +300,7 @@ export class TeamService {
     const globallyExisting = await this.unscoped.findUserByEmail(args.email);
     if (globallyExisting) throw new ConflictException('user_already_exists');
 
-    const created = await this.tenantDb.run(tenantId, async (db) => {
+    const { created, tenantName } = await this.tenantDb.run(tenantId, async (db) => {
       // Refuse if there's already an open invite for this email in this
       // tenant — the partial unique index enforces it but throw a clean
       // error first.
@@ -296,7 +309,7 @@ export class TeamService {
       });
       if (open) throw new ConflictException('invite_already_pending');
 
-      return db.invite.create({
+      const row = await db.invite.create({
         data: {
           tenantId,
           email: args.email,
@@ -306,29 +319,21 @@ export class TeamService {
           expiresAt: new Date(Date.now() + INVITE_TTL_MS),
         },
       });
+      const tenant = await db.tenant.findUnique({
+        where: { id: tenantId },
+        select: { name: true },
+      });
+      return { created: row, tenantName: tenant?.name ?? 'workspace' };
     });
 
     const acceptUrl = `${this.portalBase.replace(/\/$/, '')}/accept-invite?token=${token}`;
-    const rendered = renderInviteEmail({
+    await this.email.sendInvite({
       to: args.email,
-      role: args.role,
-      inviterEmail: actor.email,
-      acceptUrl,
+      inviteUrl: acceptUrl,
+      inviterName: actor.email,
+      tenantName,
+      roleLabel: roleLabelFor(args.role),
     });
-
-    try {
-      await this.transport.send({
-        to: args.email,
-        subject: rendered.subject,
-        textBody: rendered.textBody,
-        notificationId: created.id,
-      });
-    } catch (err) {
-      // Don't fail the create if mail blew up — admin can always resend.
-      this.logger.error(
-        `invite email send failed tenant=${tenantId} invite=${created.id}: ${(err as Error).message}`,
-      );
-    }
 
     const summary = this.toSummary(created, actor.email);
     if (process.env.NODE_ENV !== 'production') {
@@ -350,36 +355,31 @@ export class TeamService {
     const token = randomBytes(32).toString('base64url');
     const tokenHash = await argon2.hash(token);
 
-    const invite = await this.tenantDb.run(tenantId, async (db) => {
+    const { invite, tenantName } = await this.tenantDb.run(tenantId, async (db) => {
       const row = await db.invite.findUnique({ where: { id: inviteId } });
       if (!row) throw new NotFoundException('invite_not_found');
       if (row.acceptedAt) throw new BadRequestException('invite_already_accepted');
       if (row.revokedAt) throw new BadRequestException('invite_revoked');
 
-      return db.invite.update({
+      const updated = await db.invite.update({
         where: { id: inviteId },
         data: { tokenHash, expiresAt: new Date(Date.now() + INVITE_TTL_MS) },
       });
+      const tenant = await db.tenant.findUnique({
+        where: { id: tenantId },
+        select: { name: true },
+      });
+      return { invite: updated, tenantName: tenant?.name ?? 'workspace' };
     });
 
     const acceptUrl = `${this.portalBase.replace(/\/$/, '')}/accept-invite?token=${token}`;
-    const rendered = renderInviteEmail({
+    await this.email.sendInvite({
       to: invite.email,
-      role: invite.role as Role,
-      inviterEmail: actor.email,
-      acceptUrl,
+      inviteUrl: acceptUrl,
+      inviterName: actor.email,
+      tenantName,
+      ...(isRole(invite.role) ? { roleLabel: roleLabelFor(invite.role) } : {}),
     });
-
-    try {
-      await this.transport.send({
-        to: invite.email,
-        subject: rendered.subject,
-        textBody: rendered.textBody,
-        notificationId: invite.id,
-      });
-    } catch (err) {
-      this.logger.error(`invite resend failed: ${(err as Error).message}`);
-    }
 
     if (process.env.NODE_ENV !== 'production') return { devToken: token };
     return {};

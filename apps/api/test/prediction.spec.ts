@@ -21,7 +21,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { AppPrismaService } from '../src/db/prisma.service.js';
 import { TenantDb } from '../src/db/with-tenant.js';
-import { ConsoleEmailTransport } from '../src/notifications/email.transport.js';
+import { EmailService } from '../src/email/email.service.js';
 import { NotificationsService } from '../src/notifications/notifications.service.js';
 import { ThreadService } from '../src/thread/thread.service.js';
 import { PricingService } from '../src/pricing/pricing.service.js';
@@ -50,7 +50,9 @@ describe('Prediction orchestrator + approval flow', () => {
   const root = new PrismaClient({ datasources: { db: { url: rootUrl } } });
   const appRls = new PrismaClient({ datasources: { db: { url: appDatabaseUrl() } } });
   const tenantDb = new TenantDb(appRls as unknown as AppPrismaService);
-  const email = new ConsoleEmailTransport();
+  // Notifications fan-out is tested in notifications.spec.ts; here we just
+  // need a no-op EmailService so the service constructs without touching SES.
+  const email = { sendNotification: async () => true } as unknown as EmailService;
   const notifications = new NotificationsService(tenantDb, email);
   const thread = new ThreadService(tenantDb, notifications);
   const pricing = new PricingService(tenantDb, new RateCardHintSynthesizerService());

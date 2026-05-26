@@ -22,7 +22,7 @@ import { GatheringService } from '../src/gathering/gathering.service.js';
 import { PricingService } from '../src/pricing/pricing.service.js';
 import { RateCardHintSynthesizerService } from '../src/pricing/rate-card-hint-synthesizer.service.js';
 import { QuoteService } from '../src/pricing/quote.service.js';
-import { ConsoleEmailTransport } from '../src/notifications/email.transport.js';
+import { EmailService } from '../src/email/email.service.js';
 import { NotificationsService } from '../src/notifications/notifications.service.js';
 import { MlClient } from '../src/ml/ml-client.service.js';
 import { MlService } from '../src/ml/ml.service.js';
@@ -58,8 +58,10 @@ describe('Gathering / engagement flow (sprint 3)', () => {
 
   const tenantDb = new TenantDb(appRlsClient as unknown as AppPrismaService);
   const unscoped = new UnscopedDb(systemClient as unknown as SystemPrismaService);
-  const emailTransport = new ConsoleEmailTransport();
-  const notifications = new NotificationsService(tenantDb, emailTransport);
+  // Notifications fan-out is tested in notifications.spec.ts; here we just
+  // need a no-op EmailService so the service constructs without touching SES.
+  const email = { sendNotification: async () => true } as unknown as EmailService;
+  const notifications = new NotificationsService(tenantDb, email);
   const thread = new ThreadService(tenantDb, notifications);
   const s3 = new S3Service();
   // Stub the ML client so the gathering test doesn't require a running

@@ -12,8 +12,23 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { AppPrismaService } from '../src/db/prisma.service.js';
 import { TenantDb } from '../src/db/with-tenant.js';
-import { ConsoleEmailTransport } from '../src/notifications/email.transport.js';
+import { EmailService } from '../src/email/email.service.js';
 import { NotificationsService } from '../src/notifications/notifications.service.js';
+
+// In-memory EmailService stub: captures every sendNotification call so the
+// assertions can inspect recipients + subjects without standing up SES. The
+// real EmailService no-ops when EMAIL_FROM_ADDRESS is unset (returns false),
+// which would break the "sent" tally the tests assert on.
+interface SentEmail { to: string; subject: string; text: string }
+class BufferingEmailService {
+  private readonly buffer: SentEmail[] = [];
+  async sendNotification(args: SentEmail): Promise<boolean> {
+    this.buffer.push(args);
+    return true;
+  }
+  getRecent(): SentEmail[] { return [...this.buffer]; }
+  clear(): void { this.buffer.length = 0; }
+}
 
 const TENANT_A = '00000000-0000-0000-0000-0000000000c4';
 const TENANT_B = '00000000-0000-0000-0000-0000000000d4';
@@ -33,8 +48,8 @@ describe('Notifications dispatch (sprint 4)', () => {
   const root = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
   const appClient = new PrismaClient({ datasources: { db: { url: appUrl() } } });
   const tenantDb = new TenantDb(appClient as unknown as AppPrismaService);
-  const transport = new ConsoleEmailTransport();
-  const svc = new NotificationsService(tenantDb, transport);
+  const email = new BufferingEmailService();
+  const svc = new NotificationsService(tenantDb, email as unknown as EmailService);
 
   let engagementA = '';
 
@@ -81,7 +96,7 @@ describe('Notifications dispatch (sprint 4)', () => {
   });
 
   beforeEach(() => {
-    transport.clear();
+    email.clear();
   });
 
   it('link_issued fans out to sales_employee + sales_manager', async () => {
@@ -92,7 +107,7 @@ describe('Notifications dispatch (sprint 4)', () => {
       payload: { expiresAt: '2026-05-01T00:00:00Z' },
     });
     expect(r.sent).toBe(2);
-    const recents = transport.getRecent();
+    const recents = email.getRecent();
     expect(new Set(recents.map((m) => m.to))).toEqual(
       new Set(['sales-a@notif.test', 'mgr-a@notif.test']),
     );
@@ -107,7 +122,7 @@ describe('Notifications dispatch (sprint 4)', () => {
     });
     expect(r.sent).toBe(0);
     expect(r.skipped).toBe(1);
-    expect(transport.getRecent()).toEqual([]);
+    expect(email.getRecent()).toEqual([]);
   });
 
   it('tenant config: disabled = true short-circuits all email', async () => {
@@ -122,7 +137,7 @@ describe('Notifications dispatch (sprint 4)', () => {
       payload: {},
     });
     expect(r.sent).toBe(0);
-    expect(transport.getRecent()).toEqual([]);
+    expect(email.getRecent()).toEqual([]);
     // Reset — NULL the JSONB via raw SQL (Prisma's typed `null` collides
     // with `JsonNull`; raw is the simplest path in tests).
     await root.$executeRaw`UPDATE tenants SET notification_config = NULL WHERE id = ${TENANT_A}::uuid`;
@@ -142,7 +157,7 @@ describe('Notifications dispatch (sprint 4)', () => {
       payload: {},
     });
     expect(r.sent).toBe(1);
-    expect(transport.getRecent()[0]?.to).toBe('client@notif.test');
+    expect(email.getRecent()[0]?.to).toBe('client@notif.test');
     await root.$executeRaw`UPDATE tenants SET notification_config = NULL WHERE id = ${TENANT_A}::uuid`;
   });
 
@@ -157,6 +172,6 @@ describe('Notifications dispatch (sprint 4)', () => {
     });
     expect(r.sent).toBe(0);
     expect(r.skipped).toBe(1);
-    expect(transport.getRecent()).toEqual([]);
+    expect(email.getRecent()).toEqual([]);
   });
 });
