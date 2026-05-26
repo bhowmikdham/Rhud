@@ -243,6 +243,38 @@ export const auth = {
       { method: 'POST', body: JSON.stringify({ token }) },
     );
   },
+  /**
+   * Self-serve signup. Creates a new tenant + admin user; user must verify
+   * their email before they can log in. In dev the api echoes back devToken
+   * so the round-trip can be completed without SES.
+   */
+  async signup(args: { email: string; password: string; tenantName: string; userName?: string }) {
+    return request<{ ok: true; devToken?: string }>(
+      '/auth/signup',
+      { method: 'POST', body: JSON.stringify(args) },
+    );
+  },
+  /** Consume an email-verification token. Returns a JWT on success. */
+  async verifyEmail(token: string) {
+    return request<{ token: string; user: { sub: string; tid: string; role: string; email: string } }>(
+      '/auth/verify-email',
+      { method: 'POST', body: JSON.stringify({ token }) },
+    );
+  },
+  /** Request a password-reset email. Returns { ok: true } regardless of whether the email exists. */
+  async requestPasswordReset(email: string) {
+    return request<{ ok: true; devToken?: string }>(
+      '/auth/password/reset/request',
+      { method: 'POST', body: JSON.stringify({ email }) },
+    );
+  },
+  /** Consume a password-reset token + set new password. Returns a JWT on success. */
+  async resetPassword(token: string, newPassword: string) {
+    return request<{ token: string; user: { sub: string; tid: string; role: string; email: string } }>(
+      '/auth/password/reset/consume',
+      { method: 'POST', body: JSON.stringify({ token, newPassword }) },
+    );
+  },
 };
 
 // ── Templates ───────────────────────────────────────────────────────────────

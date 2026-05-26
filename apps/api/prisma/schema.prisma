@@ -48,6 +48,7 @@ model Tenant {
 
   users           User[]
   magicLinks      MagicLink[]
+  passwordResets  PasswordReset[]
   templates       Template[]
   engagements     Engagement[]
   auditChainLinks AuditChainLink[]
@@ -669,16 +670,46 @@ model User {
   role         String
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  magicLinks   MagicLink[]
-  integrations UserIntegration[]
-  routingRules OpportunityRoutingRule[] @relation("RoutingReviewer")
+  // ── Email verification (added 20260626) ──────────────────────────
+  // Default true: existing seeded users carry over without needing a
+  // verification round-trip. POST /auth/signup explicitly sets
+  // emailVerified=false and populates the token columns.
+  emailVerified                Boolean   @default(true) @map("email_verified")
+  emailVerificationTokenHash   String?                  @map("email_verification_token_hash")
+  emailVerificationExpiresAt   DateTime?                @map("email_verification_expires_at") @db.Timestamptz
+
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  magicLinks     MagicLink[]
+  passwordResets PasswordReset[]
+  integrations   UserIntegration[]
+  routingRules   OpportunityRoutingRule[] @relation("RoutingReviewer")
 
   // Email is globally unique. Even across tenants we don't want two users
   // sharing an email — simpler mental model for the MVP.
   @@unique([email])
   @@index([tenantId])
   @@map("users")
+}
+
+/// Password-reset tokens. Mirrors MagicLink shape: one-time, hashed,
+/// RLS-isolated per tenant. Populated by POST /auth/password/reset/request;
+/// consumed by POST /auth/password/reset/consume.
+model PasswordReset {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  // argon2id hash of the one-time token. Only the hash ever hits the DB.
+  tokenHash  String    @map("token_hash")
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tenantId])
+  @@map("password_resets")
 }
 
 /// Per-user OAuth-based email integrations (Outlook now, Gmail next).

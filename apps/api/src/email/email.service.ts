@@ -55,6 +55,23 @@ export class EmailService {
   }
 
   /**
+   * Email-verification email. Sent in response to POST /auth/signup. The link
+   * points at /auth/verify-email?token=... which consumes the token and signs
+   * the user in.
+   */
+  async sendVerifyEmail(args: {
+    to: string;
+    verifyUrl: string;
+    expiresInHours: number;
+    tenantName: string;
+  }): Promise<boolean> {
+    const subject = `Confirm your email to finish setting up ${args.tenantName}`;
+    const html = renderVerifyEmailHtml(args);
+    const text = renderVerifyEmailText(args);
+    return this.send({ to: args.to, subject, html, text });
+  }
+
+  /**
    * Password reset email. Sent in response to POST /auth/password/reset/request.
    */
   async sendPasswordReset(args: {
@@ -70,17 +87,37 @@ export class EmailService {
 
   /**
    * Team-invite email. Sent when an admin invites someone into their tenant.
+   * `roleLabel` is the human-readable role (e.g. "sales manager") shown in
+   * the body so the recipient knows what they're being granted.
    */
   async sendInvite(args: {
     to: string;
     inviteUrl: string;
     inviterName: string;
     tenantName: string;
+    roleLabel?: string;
   }): Promise<boolean> {
     const subject = `${args.inviterName} invited you to ${args.tenantName} on Rhud`;
     const html = renderInviteHtml(args);
     const text = renderInviteText(args);
     return this.send({ to: args.to, subject, html, text });
+  }
+
+  /**
+   * Generic transactional notification — used by NotificationsService to
+   * deliver per-event-type thread notifications. Subject + text are
+   * pre-rendered by the caller (templates live in notifications/
+   * email.templates.ts); this method wraps the text in the standard
+   * Rhud HTML shell so it renders cleanly in HTML-aware clients while
+   * keeping the plaintext part intact for the rest.
+   */
+  async sendNotification(args: {
+    to: string;
+    subject: string;
+    text: string;
+  }): Promise<boolean> {
+    const html = renderNotificationHtml({ text: args.text });
+    return this.send({ to: args.to, subject: args.subject, html, text: args.text });
   }
 
   // ── internal ───────────────────────────────────────────────────────
@@ -171,6 +208,34 @@ function renderMagicLinkText(args: { magicUrl: string; expiresInMinutes: number 
   ].join('\n');
 }
 
+function renderVerifyEmailHtml(args: {
+  verifyUrl: string;
+  expiresInHours: number;
+  tenantName: string;
+}): string {
+  const body = `
+    <div style="font-size:22px;font-weight:600;margin-bottom:8px;">Welcome to Rhud</div>
+    <p style="margin:0 0 24px;color:#444;line-height:1.5;">You created the workspace <strong>${escapeHtml(args.tenantName)}</strong>. Confirm your email to activate it and sign in. This link expires in ${args.expiresInHours} hours.</p>
+    <a href="${escapeAttr(args.verifyUrl)}" style="display:inline-block;background:#111;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Confirm email</a>
+    <p style="margin:24px 0 0;font-size:13px;color:#666;line-height:1.5;">Or copy this link into your browser:<br><a href="${escapeAttr(args.verifyUrl)}" style="color:#444;word-break:break-all;">${escapeHtml(args.verifyUrl)}</a></p>
+  `;
+  return shellHtml('Confirm your Rhud email', body);
+}
+
+function renderVerifyEmailText(args: {
+  verifyUrl: string;
+  expiresInHours: number;
+  tenantName: string;
+}): string {
+  return [
+    'Welcome to Rhud',
+    '',
+    `You created the workspace ${args.tenantName}. Confirm your email to activate it.`,
+    `This link expires in ${args.expiresInHours} hours:`,
+    args.verifyUrl,
+  ].join('\n');
+}
+
 function renderPasswordResetHtml(args: { resetUrl: string; expiresInMinutes: number }): string {
   const body = `
     <div style="font-size:22px;font-weight:600;margin-bottom:8px;">Reset your password</div>
@@ -192,24 +257,48 @@ function renderPasswordResetText(args: { resetUrl: string; expiresInMinutes: num
   ].join('\n');
 }
 
-function renderInviteHtml(args: { inviteUrl: string; inviterName: string; tenantName: string }): string {
+function renderInviteHtml(args: {
+  inviteUrl: string;
+  inviterName: string;
+  tenantName: string;
+  roleLabel?: string;
+}): string {
+  const roleLine = args.roleLabel
+    ? `<p style="margin:0 0 16px;color:#666;font-size:13px;">Role: <strong>${escapeHtml(args.roleLabel)}</strong></p>`
+    : '';
   const body = `
     <div style="font-size:22px;font-weight:600;margin-bottom:8px;">You've been invited to ${escapeHtml(args.tenantName)}</div>
     <p style="margin:0 0 24px;color:#444;line-height:1.5;"><strong>${escapeHtml(args.inviterName)}</strong> invited you to join their team on Rhud. Click the button below to accept and set your password.</p>
+    ${roleLine}
     <a href="${escapeAttr(args.inviteUrl)}" style="display:inline-block;background:#111;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Accept invite</a>
     <p style="margin:24px 0 0;font-size:13px;color:#666;line-height:1.5;">Or copy this link into your browser:<br><a href="${escapeAttr(args.inviteUrl)}" style="color:#444;word-break:break-all;">${escapeHtml(args.inviteUrl)}</a></p>
   `;
   return shellHtml(`Invite to ${args.tenantName}`, body);
 }
 
-function renderInviteText(args: { inviteUrl: string; inviterName: string; tenantName: string }): string {
+function renderInviteText(args: {
+  inviteUrl: string;
+  inviterName: string;
+  tenantName: string;
+  roleLabel?: string;
+}): string {
+  const roleSuffix = args.roleLabel ? ` as ${args.roleLabel}` : '';
   return [
     `You've been invited to ${args.tenantName}`,
     '',
-    `${args.inviterName} invited you to join their team on Rhud.`,
+    `${args.inviterName} invited you to join their team on Rhud${roleSuffix}.`,
     'Click this link to accept and set your password:',
     args.inviteUrl,
   ].join('\n');
+}
+
+// Wraps a plaintext notification body in the standard Rhud shell. Preserves
+// line breaks by switching the paragraph to white-space: pre-wrap, and
+// escapes the text so user-controlled fields (client email, file name) can't
+// inject markup.
+function renderNotificationHtml(args: { text: string }): string {
+  const body = `<div style="color:#222;line-height:1.55;font-size:14px;white-space:pre-wrap;">${escapeHtml(args.text)}</div>`;
+  return shellHtml('rhud notification', body);
 }
 
 function escapeHtml(s: string): string {

@@ -125,7 +125,7 @@ export default function LoginPage() {
                     <Icon.Eye size={13} />
                   </button>
                 }
-                hint={<a className="login-link" href="#">Forgot your password?</a>}
+                hint={<a className="login-link" href="/forgot-password">Forgot your password?</a>}
               />
               <label className="login-checkbox">
                 <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
@@ -181,7 +181,7 @@ export default function LoginPage() {
           )}
 
           <div className="login-foot">
-            New to Rhud? <a href="#" className="login-link">Create an account</a>
+            New to Rhud? <a href="/signup" className="login-link">Create an account</a>
           </div>
         </div>
 

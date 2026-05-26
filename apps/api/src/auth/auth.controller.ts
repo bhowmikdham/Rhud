@@ -1,6 +1,14 @@
 import { Body, Controller, Get, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service.js';
-import { ConsumeMagicLinkDto, LoginDto, RequestMagicLinkDto } from './dto.js';
+import {
+  ConsumeMagicLinkDto,
+  LoginDto,
+  RequestMagicLinkDto,
+  RequestPasswordResetDto,
+  ResetPasswordDto,
+  SignupDto,
+  VerifyEmailDto,
+} from './dto.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import type { AuthedRequest, JwtPayload } from './auth.types.js';
 
@@ -38,6 +46,60 @@ export class AuthController {
     @Body() dto: ConsumeMagicLinkDto,
   ): Promise<{ token: string; user: JwtPayload }> {
     return this.auth.consumeMagicLink(dto.token);
+  }
+
+  /**
+   * Self-serve signup. Creates tenant + admin user (email_verified=false)
+   * and emails the verification link. The user must click the link before
+   * loginWithPassword will grant a session. Returns devToken in dev.
+   */
+  @Post('signup')
+  @HttpCode(201)
+  async signup(@Body() dto: SignupDto): Promise<{ ok: true; devToken?: string }> {
+    return this.auth.signup({
+      email: dto.email,
+      password: dto.password,
+      tenantName: dto.tenantName,
+      ...(dto.userName !== undefined ? { userName: dto.userName } : {}),
+    });
+  }
+
+  /**
+   * Consume the verification token from /auth/verify-email?token=...
+   * On success returns a JWT so the user lands straight in the dashboard.
+   */
+  @Post('verify-email')
+  @HttpCode(200)
+  async verifyEmail(@Body() dto: VerifyEmailDto): Promise<{ token: string; user: JwtPayload }> {
+    return this.auth.verifyEmail(dto.token);
+  }
+
+  /**
+   * Issue a password-reset token. Same enumeration protection as magic-link:
+   * always returns 202 regardless of whether the email exists.
+   */
+  @Post('password/reset/request')
+  @HttpCode(202)
+  async requestPasswordReset(
+    @Body() dto: RequestPasswordResetDto,
+  ): Promise<{ ok: true; devToken?: string }> {
+    const token = await this.auth.requestPasswordReset(dto.email);
+    if (process.env.NODE_ENV !== 'production' && token) {
+      return { ok: true, devToken: token };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Consume a password-reset token and set the new password. Issues a JWT
+   * so the user is signed in immediately after a successful reset.
+   */
+  @Post('password/reset/consume')
+  @HttpCode(200)
+  async resetPassword(
+    @Body() dto: ResetPasswordDto,
+  ): Promise<{ token: string; user: JwtPayload }> {
+    return this.auth.resetPassword(dto.token, dto.newPassword);
   }
 
   @Get('me')

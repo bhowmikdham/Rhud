@@ -183,6 +183,21 @@ async function seedWebAppTemplate(tenantId: string, templateId: string, nodeIds:
 }
 
 async function main(): Promise<void> {
+  // Production guard. The seed creates demo tenants/users with hardcoded
+  // passwords (`password-dev-only-12`) — that's fine for local dev but
+  // strictly out of place in prod. Future deploys that accidentally run
+  // `pnpm seed` would otherwise re-create the demo accounts even after
+  // an admin deleted them. Set RHUD_ALLOW_PROD_SEED=1 to override (for
+  // the very first prod boot, or a deliberate reset).
+  if (process.env.NODE_ENV === 'production' && !process.env.RHUD_ALLOW_PROD_SEED) {
+    console.error(
+      'REFUSING to run dev seed in NODE_ENV=production.\n' +
+      '  Set RHUD_ALLOW_PROD_SEED=1 to override (use only for the initial\n' +
+      '  prod bring-up or a deliberate reset).',
+    );
+    process.exit(1);
+  }
+
   await prisma.tenant.upsert({
     where: { id: TENANT_EVERLANE },
     update: {},
