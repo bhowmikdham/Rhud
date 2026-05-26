@@ -13,13 +13,17 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { auth, describeError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { Shell, Field, Submit } from '../../signup/page';
-
-type Phase = 'idle' | 'submitting' | 'success' | 'error';
+import { AuthShell, AuthField, AuthSubmit, authStyles as S } from '@/components/auth-form';
 
 export default function ResetPasswordPage() {
   return (
-    <Suspense fallback={<Shell><div>Loading…</div></Shell>}>
+    <Suspense
+      fallback={
+        <AuthShell>
+          <div>Loading…</div>
+        </AuthShell>
+      }
+    >
       <Inner />
     </Suspense>
   );
@@ -32,14 +36,15 @@ function Inner() {
 
   const [newPassword, setNewPassword] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [phase, setPhase] = useState<Phase>('idle');
+  const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const token = params.get('token');
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (phase === 'submitting') return;
+    if (submitting) return;
     setError(null);
     if (!token) {
       setError('Missing token in URL.');
@@ -53,21 +58,21 @@ function Inner() {
       setError("Passwords don't match.");
       return;
     }
-    setPhase('submitting');
+    setSubmitting(true);
     try {
       const r = await auth.resetPassword(token, newPassword);
       signIn(r.token, r.user);
-      setPhase('success');
+      setSuccess(true);
       setTimeout(() => router.replace('/dashboard'), 500);
     } catch (err) {
       setError(describeError(err));
-      setPhase('idle');
+      setSubmitting(false);
     }
   }
 
   return (
-    <Shell>
-      <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 24 }}>rhud</div>
+    <AuthShell>
+      <div style={S.brand}>rhud</div>
 
       {!token ? (
         <>
@@ -75,42 +80,25 @@ function Inner() {
           <div style={{ color: '#666', fontSize: 13, marginBottom: 20 }}>
             Open this page from the link in your reset email.
           </div>
-          <Link href="/forgot-password" style={{ color: '#111', fontWeight: 600, textDecoration: 'underline' }}>
-            Request a new link
-          </Link>
+          <Link href="/forgot-password" style={S.link}>Request a new link</Link>
         </>
-      ) : phase === 'success' ? (
+      ) : success ? (
         <>
           <div style={{ fontSize: 18, marginBottom: 8 }}>Password reset</div>
           <div style={{ color: '#666', fontSize: 13 }}>Signing you in…</div>
         </>
       ) : (
         <>
-          <h1 style={{ fontSize: 22, fontWeight: 600, margin: '0 0 8px' }}>Choose a new password</h1>
-          <p style={{ color: '#444', margin: '0 0 24px', lineHeight: 1.5, fontSize: 14 }}>
-            Pick something strong. You&apos;ll be signed in after setting it.
-          </p>
+          <h1 style={S.h1}>Choose a new password</h1>
+          <p style={S.p}>Pick something strong. You&apos;ll be signed in after setting it.</p>
           <form onSubmit={submit}>
-            <Field label="New password" type="password" value={newPassword} onChange={setNewPassword} autoFocus placeholder="At least 8 characters" />
-            <Field label="Confirm password" type="password" value={confirm} onChange={setConfirm} placeholder="Same again" />
-            {error && (
-              <div
-                style={{
-                  background: '#fef2f2',
-                  color: '#b00020',
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  fontSize: 13,
-                  margin: '8px 0 16px',
-                }}
-              >
-                {error}
-              </div>
-            )}
-            <Submit phase={phase === 'submitting' ? 'submitting' : 'idle'} idleLabel="Set new password" submittingLabel="Setting…" />
+            <AuthField label="New password" type="password" value={newPassword} onChange={setNewPassword} autoFocus placeholder="At least 8 characters" />
+            <AuthField label="Confirm password" type="password" value={confirm} onChange={setConfirm} placeholder="Same again" />
+            {error && <div style={S.err}>{error}</div>}
+            <AuthSubmit submitting={submitting} idleLabel="Set new password" submittingLabel="Setting…" />
           </form>
         </>
       )}
-    </Shell>
+    </AuthShell>
   );
 }

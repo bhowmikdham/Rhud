@@ -16,7 +16,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { auth, describeError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { Shell } from '../../signup/page';
+import { AuthShell, authStyles as S } from '@/components/auth-form';
 
 type Phase = 'verifying' | 'success' | 'error';
 
@@ -69,8 +69,8 @@ function Inner() {
 
 function View({ phase, errorMsg }: { phase: Phase; errorMsg?: string | null }) {
   return (
-    <Shell>
-      <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 24, textAlign: 'center' }}>rhud</div>
+    <AuthShell>
+      <div style={{ ...S.brand, textAlign: 'center' }}>rhud</div>
       <div style={{ textAlign: 'center' }}>
         {phase === 'verifying' && (
           <>
@@ -110,6 +110,6 @@ function View({ phase, errorMsg }: { phase: Phase; errorMsg?: string | null }) {
           </>
         )}
       </div>
-    </Shell>
+    </AuthShell>
   );
 }
