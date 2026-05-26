@@ -33,9 +33,11 @@ const TABS = [
   { id: 'approvals',     label: 'Approvals',      icon: 'Shield' as const },
   { id: 'ai',            label: 'AI',             icon: 'Sparkles' as const },
   { id: 'notifications', label: 'Notifications',  icon: 'Bell' as const },
-  { id: 'security',      label: 'Security',       icon: 'Shield' as const },
-  { id: 'billing',       label: 'Billing',        icon: 'CreditCard' as const },
-  { id: 'api',           label: 'API & webhooks', icon: 'Code' as const },
+  // Removed: 'security', 'billing', 'api'. Their panels were entirely
+  // hardcoded mock UI with no backend behind them (no Stripe integration,
+  // no API-key system, no webhook delivery, fake audit log entries, fake
+  // security toggles that didn't enforce anything). Re-add when real
+  // implementations land — see TODO comments at each removed panel.
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -121,9 +123,7 @@ function SettingsInner() {
             {tab === 'approvals' && <ApprovalThresholdsPanel isAdmin={user.role === 'admin'} />}
             {tab === 'ai' && <AiPanel isAdmin={user.role === 'admin'} />}
             {tab === 'notifications' && <NotificationsPanel />}
-            {tab === 'security' && <SecurityPanel />}
-            {tab === 'billing' && <BillingPanel />}
-            {tab === 'api' && <ApiPanel />}
+            {/* security / billing / api panels removed — see TABS comment */}
           </div>
         </div>
       </div>
@@ -1189,192 +1189,6 @@ function NotificationRow({ label, channel, initial, last }: {
     <Row label={label} sub={channel === 'email' ? 'Email' : 'Slack — #sales-rhud'} last={last}>
       <Toggle value={v} onChange={setV} />
     </Row>
-  );
-}
-
-// ─── Security ─────────────────────────────
-
-function SecurityPanel() {
-  return (
-    <>
-      <SectionCard title="Authentication">
-        <Row label="Password" sub="Last changed 3 months ago.">
-          <button className="btn sm">Change password</button>
-        </Row>
-        <Row label="Two-factor authentication" sub="Using Authenticator app.">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="chip ok"><Icon.Check size={10} />Enabled</span>
-            <button className="btn sm ghost">Manage</button>
-          </div>
-        </Row>
-        <Row label="SSO" sub="Single sign-on with Okta, Google Workspace, or Azure AD." last>
-          <button className="btn sm">Configure SSO</button>
-        </Row>
-      </SectionCard>
-
-      <SectionCard title="Tokenised scope links" desc="Controls the security envelope Rhud uses when generating client links.">
-        <Row label="Default expiry">
-          <select className="input" defaultValue="7 days" style={{ maxWidth: 160 }}>
-            <option>24 hours</option><option>3 days</option><option>7 days</option><option>14 days</option><option>30 days</option>
-          </select>
-        </Row>
-        <SecurityToggle label="Require access code" sub="Client must enter a 6-digit code emailed separately." initial={true} />
-        <SecurityToggle label="Single-use links" sub="Link invalidates after first submission." initial={false} />
-        <SecurityToggle label="PII watermarking" sub="Client-downloaded files carry invisible audit watermarks." initial={false} last />
-      </SectionCard>
-
-      <SectionCard
-        title="Audit log"
-        desc="Every mutation in your workspace — searchable for 365 days."
-        actions={<button className="btn sm"><Icon.Download size={12} />Export CSV</button>}
-      >
-        {[
-          { who: 'Oren Takeda',     what: 'Approved ENG-2411 · $186,000',                       when: '14m ago',   ip: '194.44.*.*' },
-          { who: 'Maya Bernal',     what: 'Generated tokenised link for Northwind Analytics',   when: '1h ago',    ip: '194.44.*.*' },
-          { who: 'Rhud (agent)',    what: 'Ran price prediction · model v4.2',                  when: '1h ago',    ip: '—' },
-          { who: 'Chloe Nakamura',  what: 'Rotated API key · rhk_live_***a29f',                 when: 'Yesterday', ip: '81.12.*.*' },
-        ].map((l, i, arr) => (
-          <Row key={i} label={l.what} sub={`${l.who} · ${l.ip}`} last={i === arr.length - 1}>
-            <span style={{ fontSize: 11.5, color: 'var(--fg-subtle)', fontVariantNumeric: 'tabular-nums' }}>{l.when}</span>
-          </Row>
-        ))}
-      </SectionCard>
-    </>
-  );
-}
-
-function SecurityToggle({ label, sub, initial, last = false }: { label: string; sub: string; initial: boolean; last?: boolean }) {
-  const [v, setV] = useState(initial);
-  return (
-    <Row label={label} sub={sub} last={last}>
-      <Toggle value={v} onChange={setV} />
-    </Row>
-  );
-}
-
-// ─── Billing ─────────────────────────────
-
-function BillingPanel() {
-  return (
-    <>
-      <SectionCard title="Plan" desc="You're on Business · annual.">
-        <div style={{ padding: '16px 0', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
-          {[
-            { label: 'Monthly price', value: '$1,200', sub: 'per month, billed annually' },
-            { label: 'Seats',         value: '5 / 15', sub: '10 seats available' },
-            { label: 'Renews',        value: 'Feb 14, 2027', sub: '9 months away' },
-          ].map((m) => (
-            <div key={m.label} style={{ padding: 16, background: 'var(--bg-sunk)', borderRadius: 10 }}>
-              <div style={{ fontSize: 11, color: 'var(--fg-muted)', fontWeight: 500 }}>{m.label}</div>
-              <div className="num" style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.015em', marginTop: 6 }}>{m.value}</div>
-              <div style={{ fontSize: 11.5, color: 'var(--fg-subtle)', marginTop: 2 }}>{m.sub}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
-          <button className="btn">Change plan</button>
-          <button className="btn ghost">Cancel subscription</button>
-        </div>
-      </SectionCard>
-
-      <SectionCard title="Payment method">
-        <Row label="Card on file" last>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{
-              width: 42, height: 28, borderRadius: 4,
-              background: 'linear-gradient(135deg, #1a1f71, #3e52c4)',
-              color: '#fff', display: 'grid', placeItems: 'center',
-              fontSize: 9, fontWeight: 700, letterSpacing: '0.05em',
-            }}>VISA</div>
-            <div>
-              <div className="num" style={{ fontSize: 13 }}>•••• •••• •••• 4242</div>
-              <div style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>Expires 08/28 · Chloe Nakamura</div>
-            </div>
-            <div style={{ flex: 1 }} />
-            <button className="btn sm">Update</button>
-          </div>
-        </Row>
-      </SectionCard>
-
-      <SectionCard
-        title="Invoices"
-        actions={<button className="btn sm"><Icon.Download size={12} />Download all</button>}
-      >
-        {[
-          { id: 'INV-2026-04', date: 'Apr 14, 2026', amount: '$1,200.00',  status: 'Paid' },
-          { id: 'INV-2026-03', date: 'Mar 14, 2026', amount: '$1,200.00',  status: 'Paid' },
-          { id: 'INV-2026-02', date: 'Feb 14, 2026', amount: '$14,400.00', status: 'Paid · Annual renewal' },
-        ].map((inv, i, arr) => (
-          <div
-            key={inv.id}
-            style={{
-              display: 'grid', gridTemplateColumns: '120px 1fr 120px 1fr 24px', gap: 14,
-              padding: '12px 0', alignItems: 'center',
-              borderBottom: i === arr.length - 1 ? 'none' : '1px solid var(--divider)',
-              fontSize: 12.5,
-            }}
-          >
-            <span className="cell-mono">{inv.id}</span>
-            <span style={{ color: 'var(--fg-muted)' }}>{inv.date}</span>
-            <span className="num">{inv.amount}</span>
-            <span><span className="chip ok"><Icon.Check size={10} />{inv.status}</span></span>
-            <button
-              type="button"
-              style={{ appearance: 'none', border: 0, background: 'transparent', cursor: 'pointer', color: 'var(--fg-subtle)' }}
-            >
-              <Icon.Download size={13} />
-            </button>
-          </div>
-        ))}
-      </SectionCard>
-    </>
-  );
-}
-
-// ─── API & webhooks ─────────────────────────────
-
-function ApiPanel() {
-  return (
-    <>
-      <SectionCard
-        title="API keys"
-        desc="Use these to call the Rhud API from your services."
-        actions={<button className="btn accent"><Icon.Plus size={12} />New key</button>}
-      >
-        {[
-          { name: 'Production', key: 'rhk_live_••••••••••••a29f', created: 'Feb 14, 2026', last: '4m ago' },
-          { name: 'Staging',    key: 'rhk_test_••••••••••••7b01', created: 'Feb 14, 2026', last: 'Yesterday' },
-        ].map((k, i, arr) => (
-          <Row key={k.name} label={k.name} sub={`Created ${k.created} · Last used ${k.last}`} last={i === arr.length - 1}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <code style={{ fontSize: 12, padding: '6px 10px', background: 'var(--bg-sunk)', borderRadius: 6 }}>{k.key}</code>
-              <button className="btn sm ghost">Reveal</button>
-              <button className="btn sm ghost">Rotate</button>
-            </div>
-          </Row>
-        ))}
-      </SectionCard>
-
-      <SectionCard
-        title="Webhooks"
-        desc="We'll POST events to these endpoints."
-        actions={<button className="btn sm"><Icon.Plus size={12} />Add endpoint</button>}
-      >
-        {[
-          { url: 'https://ops.everlane.test/rhud/hooks',       events: 'engagement.created · engagement.approved · engagement.sent', status: 'Healthy' },
-          { url: 'https://analytics.everlane.test/ingest',     events: 'engagement.won · engagement.rejected',                       status: 'Healthy' },
-        ].map((w, i, arr) => (
-          <Row
-            key={w.url}
-            label={<code style={{ fontSize: 12 }}>{w.url}</code>}
-            sub={w.events}
-            last={i === arr.length - 1}
-          >
-            <span className="chip ok"><Icon.Check size={10} />{w.status}</span>
-          </Row>
-        ))}
-      </SectionCard>
-    </>
   );
 }
 
