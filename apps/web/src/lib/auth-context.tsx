@@ -8,13 +8,16 @@
  */
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { auth, tenant as tenantApi, ApiError, type TenantInfo } from './api';
+import { auth, tenant as tenantApi, ApiError, type AuthMe, type TenantInfo } from './api';
 
 export interface AuthUser {
   sub: string;
   tid: string;
   role: string;
   email: string;
+  /** Optional display name. Null when the user hasn't set one — sidebar
+   *  / topbar fall back to the email local-part. */
+  name?: string | null;
 }
 
 interface AuthContextValue {
@@ -26,6 +29,8 @@ interface AuthContextValue {
   signOut: () => void;
   /** Refresh the cached tenant after an admin renames it. */
   refreshTenant: () => Promise<void>;
+  /** Refresh the cached user (e.g. after Settings → Account save). */
+  refreshUser: () => Promise<void>;
 }
 
 const Ctx = createContext<AuthContextValue | null>(null);
@@ -42,7 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return;
     }
-    Promise.all([auth.me(), tenantApi.me().catch(() => null)])
+    Promise.all([auth.me() as Promise<AuthMe>, tenantApi.me().catch(() => null)])
       .then(([u, t]) => {
         setUser(u as AuthUser);
         setTenant(t);
@@ -79,8 +84,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const refreshUser = useCallback(async () => {
+    try {
+      const u = await auth.me();
+      setUser(u as AuthUser);
+    } catch {
+      // Stale user beats no user in the UI.
+    }
+  }, []);
+
   return (
-    <Ctx.Provider value={{ user, tenant, loading, signIn, signOut, refreshTenant }}>
+    <Ctx.Provider value={{ user, tenant, loading, signIn, signOut, refreshTenant, refreshUser }}>
       {children}
     </Ctx.Provider>
   );

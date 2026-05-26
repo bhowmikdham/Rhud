@@ -32,7 +32,10 @@ export default function DashboardPage() {
     opportunities.list().then(setItems).catch((e) => setErr(String(e)));
   }, [user]);
 
-  const firstName = user ? capitalize(user.email.split('@')[0]?.split('.')[0] ?? '') : '';
+  const firstName = user
+    ? ((user.name ?? '').trim().split(/\s+/)[0]
+        || capitalize(user.email.split('@')[0]?.split('.')[0] ?? ''))
+    : '';
 
   // ─── Derived stats ──────────────────────────────────────────────────────
   const open = useMemo(

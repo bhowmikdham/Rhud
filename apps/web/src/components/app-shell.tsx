@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
-import { useAuth } from '@/lib/auth-context';
+import { useAuth, type AuthUser } from '@/lib/auth-context';
 import { opportunities } from '@/lib/api';
 import { Icon } from './icon';
 import { OnboardingTour } from './onboarding-tour';
@@ -51,8 +51,8 @@ export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
   const tenantName = tenant?.name ?? 'Workspace';
   const tenantInitial = (tenant?.name ?? 'W').slice(0, 1).toUpperCase();
 
-  const initials = user ? user.email.slice(0, 2).toUpperCase() : '··';
-  const firstName = user?.email.split('@')[0]?.split('.')[0] ?? '';
+  const displayName = displayNameFor(user);
+  const initials = user ? initialsFor(user) : '··';
   const role = user?.role.replace('_', ' ') ?? '';
   const userColor = roleColor(user?.role);
 
@@ -122,7 +122,7 @@ export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
           <Link href="/settings" className="sidebar-user" style={{ textDecoration: 'none', color: 'inherit' }}>
             <div className="avatar sm" style={{ background: userColor }}>{initials}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="sidebar-user-name">{firstName ? capitalize(firstName) : 'Not signed in'}</div>
+              <div className="sidebar-user-name">{user ? displayName : 'Not signed in'}</div>
               <div className="sidebar-user-role">{role}</div>
             </div>
             <Icon.ChevronDown size={12} style={{ color: 'var(--fg-subtle)' }} />
@@ -168,8 +168,8 @@ function Topbar({
     return () => document.removeEventListener('mousedown', close);
   }, [menu]);
 
-  const initials = user ? user.email.slice(0, 2).toUpperCase() : '··';
-  const firstName = user?.email.split('@')[0]?.split('.')[0] ?? '';
+  const displayName = displayNameFor(user);
+  const initials = user ? initialsFor(user) : '··';
   const userColor = roleColor(user?.role);
   const role = user?.role.replace('_', ' ') ?? '';
 
@@ -240,7 +240,7 @@ function Topbar({
             {initials}
           </div>
           <div style={{ textAlign: 'left', lineHeight: 1.15 }}>
-            <div style={{ fontSize: 11.5, fontWeight: 500 }}>{firstName ? capitalize(firstName) : '—'}</div>
+            <div style={{ fontSize: 11.5, fontWeight: 500 }}>{user ? displayName : '—'}</div>
             <div style={{ fontSize: 9.5, color: 'var(--fg-subtle)' }}>{role}</div>
           </div>
           <Icon.ChevronDown size={11} style={{ color: 'var(--fg-subtle)' }} />
@@ -264,7 +264,7 @@ function Topbar({
                 <div className="avatar" style={{ background: userColor }}>{initials}</div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {firstName ? capitalize(firstName) : user.email}
+                    {displayName}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--fg-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {user.email}
@@ -354,4 +354,28 @@ function roleColor(role?: string): string {
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Prefer the user's saved display name; fall back to a capitalised
+ *  email local-part so older accounts (and pre-name signups) still
+ *  show something reasonable. */
+function displayNameFor(user: AuthUser | null): string {
+  if (!user) return '—';
+  const trimmed = (user.name ?? '').trim();
+  if (trimmed) return trimmed;
+  const local = user.email.split('@')[0]?.split('.')[0] ?? '';
+  return local ? capitalize(local) : user.email;
+}
+
+/** Two-letter avatar initials. Uses the display name when set so the
+ *  badge matches what the user sees in the sidebar; falls back to the
+ *  email when no name is on file. */
+function initialsFor(user: AuthUser): string {
+  const name = (user.name ?? '').trim();
+  if (name) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
+    return parts[0]!.slice(0, 2).toUpperCase();
+  }
+  return user.email.slice(0, 2).toUpperCase();
 }

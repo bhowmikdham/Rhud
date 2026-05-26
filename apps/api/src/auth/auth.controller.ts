@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service.js';
 import {
   ConsumeMagicLinkDto,
@@ -7,10 +7,11 @@ import {
   RequestPasswordResetDto,
   ResetPasswordDto,
   SignupDto,
+  UpdateMeDto,
   VerifyEmailDto,
 } from './dto.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
-import type { AuthedRequest, JwtPayload } from './auth.types.js';
+import type { AuthedRequest, JwtPayload, MeResponse } from './auth.types.js';
 
 @Controller('auth')
 export class AuthController {
@@ -104,7 +105,21 @@ export class AuthController {
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  me(@Req() req: AuthedRequest): JwtPayload {
-    return req.user;
+  me(@Req() req: AuthedRequest): Promise<MeResponse> {
+    return this.auth.getMyProfile(req.user);
+  }
+
+  /** Update the signed-in user's own profile (currently just display
+   *  name). Returns the same shape as GET /me so the client can swap
+   *  state without a re-fetch. */
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  updateMe(
+    @Req() req: AuthedRequest,
+    @Body() dto: UpdateMeDto,
+  ): Promise<MeResponse> {
+    return this.auth.updateMyProfile(req.user, {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+    });
   }
 }
