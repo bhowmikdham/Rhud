@@ -1,0 +1,48 @@
+# Files excluded from the Docker build context. Keeps the COPY layers
+# small, speeds up builds, and prevents secrets from leaking into images.
+
+# Dependencies installed inside the image
+**/node_modules
+**/.pnpm-store
+
+# Build artifacts (re-created during the docker build)
+**/dist
+**/.next
+**/build
+**/coverage
+**/.turbo
+**/tsconfig.tsbuildinfo
+
+# Python caches (apps/ml — not deployed, but excluded for safety)
+**/__pycache__
+**/.venv
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+
+# Local state and editor scratch
+.git
+.github
+.claude
+.vscode
+.idea
+.DS_Store
+**/*.log
+
+# Environment files — secrets are injected via env, never baked in
+**/.env
+**/.env.*
+!**/.env.example
+
+# Repo-local docs / sample data that aren't part of the runtime
+prototype
+*.xlsx
+*.xls
+*.pdf
+*.md
+!apps/ml/README.md
+
+# Test output
+**/junit.xml
+**/test-results
+**/playwright-report

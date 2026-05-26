@@ -22,20 +22,30 @@ export class S3Service {
   private readonly bucket: string;
 
   constructor() {
-    const endpoint = process.env.S3_ENDPOINT ?? 'http://localhost:9000';
+    // S3_ENDPOINT is set only when targeting a non-AWS S3 (MinIO in dev).
+    // Leaving it unset in prod makes the SDK use real AWS S3 endpoints.
+    const endpoint = process.env.S3_ENDPOINT;
     const region = process.env.S3_REGION ?? 'us-east-1';
-    const accessKeyId = process.env.S3_ACCESS_KEY ?? 'rhud';
-    const secretAccessKey = process.env.S3_SECRET_KEY ?? 'rhud-secret';
+    const accessKeyId = process.env.S3_ACCESS_KEY;
+    const secretAccessKey = process.env.S3_SECRET_KEY;
     this.bucket = process.env.S3_BUCKET ?? 'rhud-dev';
 
-    this.client = new S3Client({
+    // MinIO requires path-style addressing; AWS S3 accepts it too but
+    // prefers virtual-host. Only force path-style when we know we're
+    // talking to a non-AWS endpoint.
+    const config: ConstructorParameters<typeof S3Client>[0] = {
       region,
-      endpoint,
-      // MinIO requires path-style addressing; AWS S3 prefers virtual-host
-      // but accepts path-style when explicitly enabled.
-      forcePathStyle: true,
-      credentials: { accessKeyId, secretAccessKey },
-    });
+      forcePathStyle: Boolean(endpoint),
+    };
+    if (endpoint) config.endpoint = endpoint;
+    if (accessKeyId && secretAccessKey) {
+      config.credentials = { accessKeyId, secretAccessKey };
+    }
+    // If no credentials are set explicitly, the SDK falls back to its
+    // default provider chain (env vars → shared config → EC2 instance
+    // role → ECS task role). In prod we rely on the EC2 instance role.
+
+    this.client = new S3Client(config);
   }
 
   /**

@@ -1,0 +1,56 @@
+# Caddyfile — reverse proxy + automatic HTTPS for rhud.net.
+#
+# Caddy provisions and renews Let's Encrypt certs via HTTP-01 (port 80
+# must be reachable from the public internet). The Caddyfile syntax is
+# directive-based, not YAML — whitespace is meaningful only around braces.
+
+{
+    # Used by Let's Encrypt for outage / expiry notifications.
+    email admin@rhud.net
+}
+
+# ── www → apex redirect ────────────────────────────────────────────
+www.rhud.net {
+    redir https://rhud.net{uri} permanent
+}
+
+# ── apex: rhud.net ─────────────────────────────────────────────────
+rhud.net {
+    encode gzip zstd
+
+    header {
+        # HSTS — opt browsers into HTTPS-only for this domain + subs.
+        # 1 year, includeSubDomains, preload-eligible.
+        Strict-Transport-Security  "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options     "nosniff"
+        X-Frame-Options            "DENY"
+        Referrer-Policy            "strict-origin-when-cross-origin"
+        Permissions-Policy         "geolocation=(), microphone=(), camera=()"
+        # Don't leak Caddy's identity in the Server header
+        -Server
+    }
+
+    # NestJS routes — the API self-prefixes /api/v1 in main.ts. Caddy
+    # forwards the full path verbatim; no rewrite needed.
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+
+    # Tokenised gathering links (design doc §4.5) live at /g/<token>
+    # and bypass /api/v1. Same upstream.
+    handle /g/* {
+        reverse_proxy api:8000
+    }
+
+    # Everything else → Next.js.
+    handle {
+        reverse_proxy web:3000
+    }
+
+    # Log access at info level. `docker compose logs caddy` shows them.
+    log {
+        output stdout
+        format console
+        level  INFO
+    }
+}

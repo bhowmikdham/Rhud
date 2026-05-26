@@ -1,0 +1,153 @@
+# Production stack for rhud.net on a single t3.small EC2 instance.
+# Bring up via ./deploy.sh — that script fetches secrets from SSM and
+# exports the env vars compose substitutes below.
+#
+# Network model:
+#   - Only Caddy exposes host ports (80, 443).
+#   - web, api, db, cache talk to each other on the `rhud` bridge network
+#     using service names as DNS (web:3000, api:8000, db:5432, cache:6379).
+
+name: rhud-prod
+
+services:
+  # ── Caddy: TLS + reverse proxy ───────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: rhud-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # Let's Encrypt certs persist here
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_started
+      api:
+        condition: service_started
+    deploy:
+      resources:
+        limits: { memory: 100M }
+    networks: [rhud]
+
+  # ── Next.js front-end ────────────────────────────────────────────
+  web:
+    image: rhud-web:latest
+    container_name: rhud-web
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: infra/prod/Dockerfile.web
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NEXT_TELEMETRY_DISABLED: "1"
+      # Client-side fetches go to same-origin /api/v1 — Caddy routes them.
+      NEXT_PUBLIC_API_BASE: "${WEB_PUBLIC_URL}/api/v1"
+    deploy:
+      resources:
+        limits: { memory: 500M }
+    networks: [rhud]
+
+  # ── NestJS API ────────────────────────────────────────────────────
+  api:
+    image: rhud-api:latest
+    container_name: rhud-api
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: infra/prod/Dockerfile.api
+    environment:
+      NODE_ENV: production
+      API_PORT: "8000"
+      # All public URLs collapse to the apex since Caddy serves both
+      # the web and api on the same host.
+      API_CORS_ORIGIN: "${WEB_PUBLIC_URL}"
+      WEB_PUBLIC_URL: "${WEB_PUBLIC_URL}"
+      API_PUBLIC_URL: "${WEB_PUBLIC_URL}"
+
+      # Two database URLs — superuser for migrations, rhud_app for runtime.
+      # See apps/api/src/config/env.ts and apps/api/src/db/prisma.service.ts.
+      DATABASE_URL: "postgresql://rhud:${DB_PASSWORD}@db:5432/rhud?schema=public"
+      APP_DATABASE_URL: "postgresql://rhud_app:${DB_APP_PASSWORD}@db:5432/rhud?schema=public"
+
+      REDIS_URL: "redis://cache:6379"
+
+      JWT_SECRET: "${JWT_SECRET}"
+      JWT_EXPIRES_IN: "24h"
+      MAGIC_LINK_TTL_MINUTES: "15"
+      LLM_KEY_ENCRYPTION_KEY: "${LLM_KEY_ENCRYPTION_KEY}"
+
+      # S3 — no creds in env. The SDK falls back to the EC2 instance role
+      # (see apps/api/src/storage/s3.service.ts).
+      S3_REGION: "ap-south-1"
+      S3_BUCKET: "rhud-uploads-prod-bhowmik"
+
+      # Cap V8 heap so the api can't eat the entire box. The remaining
+      # ~100 MB of its 500 MB limit goes to native modules + scratch.
+      NODE_OPTIONS: "--max-old-space-size=384"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+    deploy:
+      resources:
+        limits: { memory: 500M }
+    networks: [rhud]
+
+  # ── Postgres 16 ──────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: rhud-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rhud
+      POSTGRES_PASSWORD: "${DB_PASSWORD}"
+      POSTGRES_DB: rhud
+      # Consumed by the init script below to set rhud_app's password.
+      DB_APP_PASSWORD: "${DB_APP_PASSWORD}"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rhud -d rhud"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits: { memory: 500M }
+    networks: [rhud]
+
+  # ── Redis 7 ──────────────────────────────────────────────────────
+  cache:
+    image: redis:7-alpine
+    container_name: rhud-cache
+    restart: unless-stopped
+    # Bound the cache so Redis can't OOM the box; evict least-recently-used.
+    command: ["redis-server", "--maxmemory", "80mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits: { memory: 120M }
+    networks: [rhud]
+
+volumes:
+  pg_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  rhud:
+    name: rhud-prod-net
