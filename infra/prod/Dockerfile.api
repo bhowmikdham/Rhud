@@ -55,21 +55,6 @@ RUN pnpm --filter @rhud/api exec prisma generate
 # Compile NestJS → apps/api/dist.
 RUN pnpm --filter @rhud/api build
 
-# `pnpm deploy` produces a self-contained bundle in /deploy with the api's
-# prod-only deps hoisted into a single node_modules tree. Perfect for the
-# runtime stage — no workspace symlinks, no dev dependencies.
-RUN pnpm --filter @rhud/api deploy --prod /deploy
-
-# `pnpm deploy` doesn't include build artifacts or files outside src/ by
-# default — copy the things the runtime actually needs.
-RUN cp -r apps/api/dist     /deploy/dist
-RUN cp -r apps/api/prisma   /deploy/prisma
-
-# Regenerate the Prisma client *inside* /deploy so its node_modules ends
-# up with the platform-correct engine binary alongside @prisma/client.
-RUN cd /deploy \
- && /app/node_modules/.bin/prisma generate --schema=prisma/schema.prisma
-
 # ────────────────────────────────────────────────────────────────────
 FROM ${NODE_IMAGE} AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -78,8 +63,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && groupadd -r app && useradd -r -g app -m -d /home/app app
 
 WORKDIR /app
-COPY --from=build --chown=app:app /deploy /app
 
+# Bring the workspace skeleton across. We copy the full build node_modules
+# (including dev deps) rather than going through `pnpm deploy --prod`,
+# which in pnpm 9 was producing flaky bin symlinks and dropping the
+# generated Prisma client. The image is ~200 MB larger but the build
+# is reliable and easier to reason about. For a single-node demo deploy
+# that trade is worth it.
+COPY --from=build --chown=app:app /app/node_modules                   ./node_modules
+COPY --from=build --chown=app:app /app/package.json                   ./package.json
+COPY --from=build --chown=app:app /app/pnpm-workspace.yaml            ./pnpm-workspace.yaml
+COPY --from=build --chown=app:app /app/packages/shared/package.json   ./packages/shared/package.json
+COPY --from=build --chown=app:app /app/packages/shared/dist           ./packages/shared/dist
+COPY --from=build --chown=app:app /app/packages/shared/node_modules   ./packages/shared/node_modules
+COPY --from=build --chown=app:app /app/apps/api/package.json          ./apps/api/package.json
+COPY --from=build --chown=app:app /app/apps/api/dist                  ./apps/api/dist
+COPY --from=build --chown=app:app /app/apps/api/prisma                ./apps/api/prisma
+COPY --from=build --chown=app:app /app/apps/api/node_modules          ./apps/api/node_modules
+
+WORKDIR /app/apps/api
 USER app
 ENV NODE_ENV=production
 EXPOSE 8000
