@@ -2,10 +2,11 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { opportunities } from '@/lib/api';
 import { Icon } from './icon';
+import { OnboardingTour } from './onboarding-tour';
 import { SetupPanel } from './setup-panel';
 
 interface NavItem {
@@ -78,6 +79,14 @@ export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
 
   return (
     <div className="app">
+      {/* First-visit tour. Renders null; only side-effect is driver.js
+          firing on /dashboard or when ?tour=1 is on the URL. Wrapped in
+          Suspense because useSearchParams forces dynamic rendering
+          (Next 14's prerender pass otherwise fails). */}
+      <Suspense fallback={null}>
+        <OnboardingTour />
+      </Suspense>
+
       <aside className="sidebar">
         <div className="sidebar-head">
           <div className="logo-mark" aria-hidden />
