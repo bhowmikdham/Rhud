@@ -44,7 +44,12 @@ services:
         # Build-time arg — Next inlines NEXT_PUBLIC_* at compile time.
         # Setting this only as `environment:` below would NOT make it
         # available to the already-built client bundle.
-        NEXT_PUBLIC_API_URL: "${WEB_PUBLIC_URL}/api/v1"
+        #
+        # IMPORTANT: this is the origin only, no /api/v1 path. The web's
+        # request helper at apps/web/src/lib/api.ts:187 already prepends
+        # /api/v1 to every path. Setting NEXT_PUBLIC_API_URL with a
+        # /api/v1 suffix would produce //api/v1/api/v1/auth/login (404).
+        NEXT_PUBLIC_API_URL: "${WEB_PUBLIC_URL}"
     environment:
       NODE_ENV: production
       PORT: "3000"
