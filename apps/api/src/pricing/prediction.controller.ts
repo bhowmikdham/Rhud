@@ -107,6 +107,19 @@ class TechAdjustDto {
   note?: string;
 }
 
+/** Body for the three reviewer-hold endpoints. */
+class ReviewerActionDto {
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+
+  /** Optional: who you're escalating to. Defaults to 'sales_manager'.
+   *  Ignored by send-back and request-clarification. */
+  @IsOptional()
+  @IsIn(['sales_manager', 'admin'])
+  escalateToRole?: 'sales_manager' | 'admin';
+}
+
 /**
  * Adaptive-pricing predict + opportunity-level approve.
  *
@@ -744,17 +757,4 @@ export class PredictionController {
 
     return { engagementId: result.id, status: result.status };
   }
-}
-
-/** Body for the three reviewer-hold endpoints. */
-class ReviewerActionDto {
-  @IsString()
-  @MaxLength(2000)
-  reason!: string;
-
-  /** Optional: who you're escalating to. Defaults to 'sales_manager'.
-   *  Ignored by send-back and request-clarification. */
-  @IsOptional()
-  @IsIn(['sales_manager', 'admin'])
-  escalateToRole?: 'sales_manager' | 'admin';
 }
