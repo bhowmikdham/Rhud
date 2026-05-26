@@ -19,58 +19,65 @@ datasource db {
 }
 
 model Tenant {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name        String
-  plan        String   @default("mvp")
+  id                            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                          String
+  plan                          String   @default("mvp")
   /// When true, opening an opportunity in the UI silently regenerates
   /// the lead summary if and only if new thread events have landed
   /// since the last generation. Off → summary card shows a manual
   /// Generate button (existing flow). Default on so a fresh tenant
   /// gets the "summary is already there" experience.
-  leadSummaryAutoGenerate Boolean @default(true) @map("lead_summary_auto_generate")
+  leadSummaryAutoGenerate       Boolean  @default(true) @map("lead_summary_auto_generate")
   /// Phase C — multi-level approval thresholds (cents).
   /// When `requiresVpApprovalAboveCents` is set and the sales-manager-
   /// approved price exceeds it, status → 'pending_vp_approval' instead
   /// of 'approved'. A vp_sales user must then final-approve. Same
   /// pattern for CEO. Both null = single-stage approval (existing).
-  requiresVpApprovalAboveCents  BigInt? @map("requires_vp_approval_above_cents")
-  requiresCeoApprovalAboveCents BigInt? @map("requires_ceo_approval_above_cents")
+  requiresVpApprovalAboveCents  BigInt?  @map("requires_vp_approval_above_cents")
+  requiresCeoApprovalAboveCents BigInt?  @map("requires_ceo_approval_above_cents")
   // JSONB configs for external integrations; secrets live in KMS/Doppler,
   // these columns hold non-secret pointers (urls, workspace ids, etc.).
-  odooConfig         Json?    @map("odoo_config")
-  slackConfig        Json?    @map("slack_config")
-  teamsConfig        Json?    @map("teams_config")
-  gammaConfig        Json?    @map("gamma_config")
+  odooConfig                    Json?    @map("odoo_config")
+  slackConfig                   Json?    @map("slack_config")
+  teamsConfig                   Json?    @map("teams_config")
+  gammaConfig                   Json?    @map("gamma_config")
   // Per-tenant notification routing override. See @rhud/shared
   // TenantNotificationConfig. Null = use defaults.
-  notificationConfig Json?    @map("notification_config")
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  notificationConfig            Json?    @map("notification_config")
+  createdAt                     DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  users           User[]
-  magicLinks      MagicLink[]
-  passwordResets  PasswordReset[]
-  templates       Template[]
-  engagements     Engagement[]
-  auditChainLinks AuditChainLink[]
-  rateCards       RateCard[]
-  predictions     Prediction[]
-  pricingConfig   TenantPricingConfig?
-  invites         Invite[]
-  llmConfig       TenantLlmConfig?
-  gammaConfigRow  TenantGammaConfig?
-  userIntegrations UserIntegration[]
-  outlookApp      TenantOutlookApp?
-  odooConnection   OdooConnection?
-  odooFieldMaps    OdooFieldMapping[]
-  odooSyncLogs     OdooSyncLog[]
-  odooEntityLinks  OdooEntityLink[]
-  odooWebhookEvents OdooWebhookEvent[]
-  odooImported    OdooImportedOpportunity[]
-  engagementTickets EngagementTicket[]
-  engagementFollowUps EngagementFollowUp[]
-  engagementSummaries EngagementSummary[]
-  opportunityCategories OpportunityCategory[]
+  users                   User[]
+  magicLinks              MagicLink[]
+  passwordResets          PasswordReset[]
+  templates               Template[]
+  engagements             Engagement[]
+  auditChainLinks         AuditChainLink[]
+  rateCards               RateCard[]
+  predictions             Prediction[]
+  pricingConfig           TenantPricingConfig?
+  invites                 Invite[]
+  llmConfig               TenantLlmConfig?
+  gammaConfigRow          TenantGammaConfig?
+  userIntegrations        UserIntegration[]
+  outlookApp              TenantOutlookApp?
+  odooConnection          OdooConnection?
+  odooFieldMaps           OdooFieldMapping[]
+  odooSyncLogs            OdooSyncLog[]
+  odooEntityLinks         OdooEntityLink[]
+  odooWebhookEvents       OdooWebhookEvent[]
+  odooImported            OdooImportedOpportunity[]
+  engagementTickets       EngagementTicket[]
+  engagementFollowUps     EngagementFollowUp[]
+  engagementSummaries     EngagementSummary[]
+  opportunityCategories   OpportunityCategory[]
   opportunityRoutingRules OpportunityRoutingRule[]
+
+  /// Which industry template's taxonomy this tenant cloned at signup.
+  /// Defaults to 'cybersecurity' for back-compat with existing tenants;
+  /// new tenants pick from the available templates. Informational —
+  /// the live taxonomy lives in `opportunity_categories` per-tenant.
+  industryTemplateSlug String           @default("cybersecurity") @map("industry_template_slug")
+  industryTemplate     IndustryTemplate @relation(fields: [industryTemplateSlug], references: [slug])
 
   @@map("tenants")
 }
@@ -107,32 +114,32 @@ model TenantOutlookApp {
 }
 
 model Template {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId    String   @map("tenant_id") @db.Uuid
-  serviceLine String   @map("service_line")
-  name        String
-  version     Int      @default(1)
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  serviceLine      String   @map("service_line")
+  name             String
+  version          Int      @default(1)
   // draft | published | archived — CHECK constraint in migration SQL.
-  status      String   @default("draft")
+  status           String   @default("draft")
   // FK to the first node in the tree. Nullable: new templates start empty.
-  rootNodeId  String?  @map("root_node_id") @db.Uuid
+  rootNodeId       String?  @map("root_node_id") @db.Uuid
   // Default rate card used for engagements issued from this template.
   // Null on legacy templates; quotes are computed iff the engagement's
   // template has one set at submission time.
-  rateCardId  String?  @map("rate_card_id") @db.Uuid
+  rateCardId       String?  @map("rate_card_id") @db.Uuid
   /// Optional Gamma template id. When proposal drafting routes through
   /// Gamma, this id is forwarded so the deck inherits the template's
   /// layout / theme. Null = let Gamma pick a default.
-  gammaTemplateId String? @map("gamma_template_id")
+  gammaTemplateId  String?  @map("gamma_template_id")
   /// Optional proposal scaffold — Markdown with {{token}} merge fields.
   /// When set, proposal generation renders this scaffold (substituting
   /// data tokens like {{client_name}}, {{price}}, {{scope_summary}})
   /// instead of asking the LLM to compose from scratch. Gives the
   /// consultancy full control over boilerplate (values, terms,
   /// signature) while only the dynamic parts vary per opportunity.
-  proposalScaffold String? @map("proposal_scaffold")
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  proposalScaffold String?  @map("proposal_scaffold")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   rateCard    RateCard?      @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
@@ -148,34 +155,34 @@ model Template {
 // ── Sprint 3: engagements, gathering, threads, files ────────────────────────
 
 model Engagement {
-  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId            String   @map("tenant_id") @db.Uuid
-  templateId          String   @map("template_id") @db.Uuid
+  id                            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId                      String    @map("tenant_id") @db.Uuid
+  templateId                    String    @map("template_id") @db.Uuid
   // Snapshot of the template version this engagement was issued against, so
   // editing the template later doesn't change in-flight engagements.
-  templateVersion     Int      @default(1) @map("template_version")
-  salesEmployeeId     String   @map("sales_employee_id") @db.Uuid
-  salesManagerId      String?  @map("sales_manager_id") @db.Uuid
-  clientEmail         String   @map("client_email") @db.Citext
+  templateVersion               Int       @default(1) @map("template_version")
+  salesEmployeeId               String    @map("sales_employee_id") @db.Uuid
+  salesManagerId                String?   @map("sales_manager_id") @db.Uuid
+  clientEmail                   String    @map("client_email") @db.Citext
   // Free-text label shown in the UI ("Acme Q3 Security Assessment"). The
   // table itself is still called engagements for historical reasons; the
   // user-facing concept is "Opportunity".
-  name                String?
+  name                          String?
   // Lifecycle — see @rhud/shared ENGAGEMENT_STATUSES. CHECK in migration.
-  status              String   @default("issued")
-  predictedPriceCents BigInt?  @map("predicted_price_cents")
-  priceLowCents       BigInt?  @map("price_low_cents")
-  priceHighCents      BigInt?  @map("price_high_cents")
-  approvedPriceCents  BigInt?  @map("approved_price_cents")
+  status                        String    @default("issued")
+  predictedPriceCents           BigInt?   @map("predicted_price_cents")
+  priceLowCents                 BigInt?   @map("price_low_cents")
+  priceHighCents                BigInt?   @map("price_high_cents")
+  approvedPriceCents            BigInt?   @map("approved_price_cents")
   // Snapshot of closed-engagement count for this tenant at predict-time.
   // Pinned so a re-evaluation later doesn't shift regime under our feet.
-  closedEngagementCountSnapshot Int? @map("closed_engagement_count_snapshot")
-  odooQuotationId     String?  @map("odoo_quotation_id")
+  closedEngagementCountSnapshot Int?      @map("closed_engagement_count_snapshot")
+  odooQuotationId               String?   @map("odoo_quotation_id")
   /// True when this Engagement was promoted from an Odoo crm.lead
   /// snapshot rather than issued natively in Rhud. The gathering
   /// flow + outbound Odoo push are skipped for these (the canonical
   /// source is Odoo; we mirror it).
-  importedFromOdoo    Boolean  @default(false) @map("imported_from_odoo")
+  importedFromOdoo              Boolean   @default(false) @map("imported_from_odoo")
   /// RFC822 Message-Id of the inbound email that this engagement was
   /// created from (Outlook / Gmail add-in flow). Stored solely for
   /// idempotency: the add-in retries are non-rare (user clicks twice,
@@ -184,61 +191,61 @@ model Engagement {
   ///
   /// Per-tenant unique (see @@unique below): two tenants can independently
   /// receive forwards of the same email without colliding.
-  sourceMessageId     String?  @map("source_message_id")
+  sourceMessageId               String?   @map("source_message_id")
   // Loop cursor state, keyed by loop node id:
   //   { "<loopNodeId>": { iter: <currentIteration>, status: 'iterating'|'done' } }
   // The runtime updates this as the responder enters/exits each loop;
   // findCurrentNode reads it to know which body iteration to show.
-  loopState           Json     @default("{}") @map("loop_state")
+  loopState                     Json      @default("{}") @map("loop_state")
   /// Free-text assumptions added by the technical reviewer during pricing
   /// review (PM workflow stage 4). Surfaced verbatim in the generated
   /// proposal. Null until a reviewer touches it.
-  assumptions               String? @map("assumptions")
+  assumptions                   String?   @map("assumptions")
   /// Free-text exclusions / "out of scope" items added during review.
   /// Same treatment as assumptions — copied into the proposal verbatim.
-  exclusions                String? @map("exclusions")
+  exclusions                    String?   @map("exclusions")
   /// Reviewer-overridden delivery timeline string (e.g. "10 working days
   /// from PO, excluding Saturdays"). Falls back to the template's default
   /// timeline when null.
-  deliveryTimelineOverride  String? @map("delivery_timeline_override")
+  deliveryTimelineOverride      String?   @map("delivery_timeline_override")
   /// Phase B — opportunity classification. `categorySlug` references
   /// `opportunity_categories.slug` (system or tenant-defined); when set,
   /// the routing service uses it to pick a reviewer.
-  categorySlug        String?   @map("category_slug")
+  categorySlug                  String?   @map("category_slug")
   /// Subcategory under the chosen category (e.g. 'vapt' under
   /// 'security_testing'). Null when the category has no children.
-  subCategorySlug     String?   @map("sub_category_slug")
+  subCategorySlug               String?   @map("sub_category_slug")
   /// How the category was set: 'llm' (auto on submit) or 'manual'.
-  classifiedBy        String?   @map("classified_by")
-  classifiedAt        DateTime? @map("classified_at") @db.Timestamptz
+  classifiedBy                  String?   @map("classified_by")
+  classifiedAt                  DateTime? @map("classified_at") @db.Timestamptz
   /// The user the routing service assigned to review this opportunity.
   /// Null when no routing rule matched.
-  assignedReviewerId  String?   @map("assigned_reviewer_id") @db.Uuid
+  assignedReviewerId            String?   @map("assigned_reviewer_id") @db.Uuid
   /// Phase C — full client metadata. Captured at issuance (sales rep
   /// fills in) and editable from the opportunity detail page.
   /// `clientEmail` is the canonical identifier; these are display +
   /// proposal-content fields.
-  clientName          String?   @map("client_name")
-  clientAddress       String?   @map("client_address")
-  contactName         String?   @map("contact_name")
-  contactPhone        String?   @map("contact_phone")
-  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
-  submittedAt         DateTime? @map("submitted_at") @db.Timestamptz
-  closedAt            DateTime? @map("closed_at") @db.Timestamptz
+  clientName                    String?   @map("client_name")
+  clientAddress                 String?   @map("client_address")
+  contactName                   String?   @map("contact_name")
+  contactPhone                  String?   @map("contact_phone")
+  createdAt                     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  submittedAt                   DateTime? @map("submitted_at") @db.Timestamptz
+  closedAt                      DateTime? @map("closed_at") @db.Timestamptz
 
   /// Current AI-generated proposal draft. Single column (one draft at a
   /// time) — regenerate replaces. Persists from `drafting` through `sent`
   /// so the rep can copy it into their email client at any point.
-  proposalDraft       String?   @map("proposal_draft")
-  proposalDraftedAt   DateTime? @map("proposal_drafted_at") @db.Timestamptz
+  proposalDraft            String?   @map("proposal_draft")
+  proposalDraftedAt        DateTime? @map("proposal_drafted_at") @db.Timestamptz
   /// Provider that produced the current draft, e.g. 'anthropic',
   /// 'manual', 'gamma'. Surfaced in the UI so reps know what to
   /// expect (inline text vs link to a Gamma deck).
-  proposalDraftSource String?   @map("proposal_draft_source")
+  proposalDraftSource      String?   @map("proposal_draft_source")
   /// When the draft was produced by Gamma — the deck's URL + id.
   /// For LLM drafts these stay null and the text lives in proposalDraft.
-  gammaDeckUrl        String?   @map("gamma_deck_url")
-  gammaDeckId         String?   @map("gamma_deck_id")
+  gammaDeckUrl             String?   @map("gamma_deck_url")
+  gammaDeckId              String?   @map("gamma_deck_id")
   /// Gamma's generation job id — set while a Gamma deck is being
   /// drafted, cleared once the deck is ready (or failed). Used by
   /// getCurrent() to poll Gamma's status endpoint without re-running
@@ -255,8 +262,8 @@ model Engagement {
   proposalPdfUrl       String?   @map("proposal_pdf_url")
   proposalPdfExpiresAt DateTime? @map("proposal_pdf_expires_at") @db.Timestamptz
 
-  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template        Template           @relation(fields: [templateId], references: [id])
+  tenant          Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template        Template             @relation(fields: [templateId], references: [id])
   tokens          GatheringToken[]
   answers         EngagementAnswer[]
   files           EngagementFile[]
@@ -268,14 +275,14 @@ model Engagement {
   summary         EngagementSummary?
   siteEnumeration SiteEnumeration?
 
-  @@index([tenantId])
-  @@index([tenantId, status])
-  @@index([salesEmployeeId])
   // Per-tenant unique on source_message_id. Postgres treats multiple NULLs
   // as distinct, so engagements created natively (sourceMessageId = NULL)
   // never collide with each other. Only inbound-email-created rows compete
   // for uniqueness — exactly the dedup behaviour we want.
   @@unique([tenantId, sourceMessageId], name: "engagement_tenant_source_message_id_uniq")
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([salesEmployeeId])
   @@map("engagements")
 }
 
@@ -313,8 +320,8 @@ model EngagementQuote {
   approvedBy               String?   @map("approved_by") @db.Uuid
   computedAt               DateTime  @default(now()) @map("computed_at") @db.Timestamptz
 
-  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
-  rateCard   RateCard?  @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
+  engagement Engagement                @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  rateCard   RateCard?                 @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
   lineItems  EngagementQuoteLineItem[]
 
   @@index([tenantId])
@@ -332,22 +339,22 @@ model EngagementQuote {
 /// so the UI can show "10% off (= −₹12,500)" instead of just the
 /// resolved cents number.
 model EngagementQuoteLineItem {
-  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId            String   @map("tenant_id") @db.Uuid
-  engagementQuoteId   String   @map("engagement_quote_id") @db.Uuid
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String   @map("tenant_id") @db.Uuid
+  engagementQuoteId String   @map("engagement_quote_id") @db.Uuid
   /// 'travel' | 'tool' | 'resource' | 'discount' | 'custom'
-  kind                String
+  kind              String
   /// User-facing label ("Mumbai onsite — 2 trips", "Burp Suite Pro license"…)
-  label               String
+  label             String
   /// Signed cents. Positive = additional charge, negative = discount.
-  amountCents         BigInt   @map("amount_cents")
+  amountCents       BigInt   @map("amount_cents")
   /// When the reviewer typed a percentage discount, the % is preserved
   /// in basis points (1250 = 12.5%) for display. Null otherwise.
-  percentageBps       Int?     @map("percentage_bps")
-  position            Int      @default(0)
-  createdBy           String?  @map("created_by") @db.Uuid
-  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt           DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  percentageBps     Int?     @map("percentage_bps")
+  position          Int      @default(0)
+  createdBy         String?  @map("created_by") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
   quote EngagementQuote @relation(fields: [engagementQuoteId], references: [id], onDelete: Cascade)
 
@@ -357,24 +364,24 @@ model EngagementQuoteLineItem {
 }
 
 model GatheringToken {
-  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId              String    @map("tenant_id") @db.Uuid
-  engagementId          String    @map("engagement_id") @db.Uuid
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String    @map("tenant_id") @db.Uuid
+  engagementId         String    @map("engagement_id") @db.Uuid
   // argon2id hash of the plaintext token. Used for verification on
   // every /g/:token access (constant-time compare via argon2id.verify).
-  tokenHash             String    @map("token_hash")
+  tokenHash            String    @map("token_hash")
   // Plaintext token kept so the sales rep can look the URL up later
   // (copy back into chat, share with a teammate, etc.). Trade-off
   // accepted in dev/sales setting: short-lived single-use tokens +
   // revokedAt limit blast radius if the DB is compromised.
-  tokenPlain            String?   @map("token_plain")
-  expiresAt             DateTime  @map("expires_at") @db.Timestamptz
+  tokenPlain           String?   @map("token_plain")
+  expiresAt            DateTime  @map("expires_at") @db.Timestamptz
   // Set on first successful access. Used to detect material device changes
   // (different fingerprint or wildly different IP) on subsequent accesses.
-  boundFingerprintHash  String?   @map("bound_fingerprint_hash")
-  accessCount           Int       @default(0) @map("access_count")
-  revokedAt             DateTime? @map("revoked_at") @db.Timestamptz
-  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  boundFingerprintHash String?   @map("bound_fingerprint_hash")
+  accessCount          Int       @default(0) @map("access_count")
+  revokedAt            DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
   engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
 
@@ -384,16 +391,16 @@ model GatheringToken {
 }
 
 model EngagementAnswer {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId        String   @map("tenant_id") @db.Uuid
-  engagementId    String   @map("engagement_id") @db.Uuid
-  nodeId          String   @map("node_id") @db.Uuid
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  engagementId   String   @map("engagement_id") @db.Uuid
+  nodeId         String   @map("node_id") @db.Uuid
   // Loop iteration this answer belongs to. 0 for non-loop answers; 0..N-1
   // for nodes inside a loop body where the responder iterated N times.
-  iterationIndex  Int      @default(0) @map("iteration_index")
+  iterationIndex Int      @default(0) @map("iteration_index")
   // Answer is JSONB — string | string[] | number, see @rhud/shared Answer type.
-  answer          Json
-  answeredAt      DateTime @default(now()) @map("answered_at") @db.Timestamptz
+  answer         Json
+  answeredAt     DateTime @default(now()) @map("answered_at") @db.Timestamptz
 
   engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
 
@@ -528,33 +535,33 @@ model ThreadEvent {
 // (deterministic base price) is a pure walk over service_lines + tiers.
 // See Rhud_Pricing_Engine.pdf §2.2, §3.3.
 model RateCard {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId        String   @map("tenant_id") @db.Uuid
-  name            String
-  version         Int      @default(1)
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId               String    @map("tenant_id") @db.Uuid
+  name                   String
+  version                Int       @default(1)
   // draft | published | archived — CHECK in migration.
-  status          String   @default("draft")
+  status                 String    @default("draft")
   // ISO 4217 — INR / USD / EUR / GBP. Kept simple; FX in v1.1 per §7.
-  currency        String   @default("INR")
-  effectiveFrom   DateTime? @map("effective_from") @db.Timestamptz
-  effectiveTo     DateTime? @map("effective_to")   @db.Timestamptz
-  sourceFileKey   String?   @map("source_file_key")
+  currency               String    @default("INR")
+  effectiveFrom          DateTime? @map("effective_from") @db.Timestamptz
+  effectiveTo            DateTime? @map("effective_to") @db.Timestamptz
+  sourceFileKey          String?   @map("source_file_key")
   // Layer-3 mapper prompt synthesis — see migration
   // 20260609000000_rate_card_inference_ontology and design notes in
   // packages/shared/src/pricing.ts (RateCard.inferenceContext).
   // The mapper composes its system prompt from these fields so it never
   // bakes domain (cybersec, cleaning, legal, …) into code.
-  inferenceContext         String?  @map("inference_context")
-  defaultMethodologyRule   String?  @map("default_methodology_rule")
-  inferenceExamples        Json     @default("[]") @map("inference_examples")
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime  @updatedAt      @map("updated_at") @db.Timestamptz
+  inferenceContext       String?   @map("inference_context")
+  defaultMethodologyRule String?   @map("default_methodology_rule")
+  inferenceExamples      Json      @default("[]") @map("inference_examples")
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
-  tenant              Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  serviceLines        RateCardServiceLine[]
-  openPricedServices  RateCardOpenPricedService[]
-  templates           Template[]
-  engagementQuotes    EngagementQuote[]
+  tenant             Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  serviceLines       RateCardServiceLine[]
+  openPricedServices RateCardOpenPricedService[]
+  templates          Template[]
+  engagementQuotes   EngagementQuote[]
 
   @@unique([tenantId, name, version], map: "rate_cards_tenant_name_version_uniq")
   @@index([tenantId])
@@ -563,26 +570,26 @@ model RateCard {
 }
 
 model RateCardServiceLine {
-  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId      String  @map("tenant_id") @db.Uuid
-  rateCardId    String  @map("rate_card_id") @db.Uuid
+  id                String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String  @map("tenant_id") @db.Uuid
+  rateCardId        String  @map("rate_card_id") @db.Uuid
   // Machine identifier. Templates reference this in node mappings, so
   // the pricing engine can hop from a gathering answer to the right
   // service line. Stable across rate card versions.
-  slug          String
-  displayName   String  @map("display_name")
+  slug              String
+  displayName       String  @map("display_name")
   // pages | screens | apis | loc | devices | hours | other — CHECK in migration.
-  scopeUnit     String  @map("scope_unit")
+  scopeUnit         String  @map("scope_unit")
   // tier_lookup | per_unit | flat | hourly — only tier_lookup is wired today.
-  pricingModel  String  @default("tier_lookup") @map("pricing_model")
-  position      Int     @default(0)
+  pricingModel      String  @default("tier_lookup") @map("pricing_model")
+  position          Int     @default(0)
   // Layer-3 mapper prompt synthesis — see migration
   // 20260609000000_rate_card_inference_ontology and design notes in
   // packages/shared/src/pricing.ts (RateCardServiceLine.inferenceHint).
-  inferenceHint     String?  @map("inference_hint")
-  inferenceExamples Json     @default("[]") @map("inference_examples")
+  inferenceHint     String? @map("inference_hint")
+  inferenceExamples Json    @default("[]") @map("inference_examples")
 
-  rateCard RateCard            @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+  rateCard RateCard       @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
   tiers    RateCardTier[]
 
   @@unique([rateCardId, slug], map: "rate_card_service_lines_card_slug_uniq")
@@ -591,20 +598,20 @@ model RateCardServiceLine {
 }
 
 model RateCardTier {
-  id              String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId        String  @map("tenant_id") @db.Uuid
-  serviceLineId   String  @map("service_line_id") @db.Uuid
+  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String  @map("tenant_id") @db.Uuid
+  serviceLineId String  @map("service_line_id") @db.Uuid
   // Inclusive bounds. rangeMax NULL = open-ended ("200 & Above").
-  rangeMin        Int     @map("range_min")
-  rangeMax        Int?    @map("range_max")
+  rangeMin      Int     @map("range_min")
+  rangeMax      Int?    @map("range_max")
   // 'grey_box' | 'black_box' | 'va' | 'pt' | null — service-line specific.
-  methodology     String?
+  methodology   String?
   // 'internal' | 'external' — CHECK in migration.
-  customerType    String  @map("customer_type")
-  priceCents      BigInt  @map("price_cents")
+  customerType  String  @map("customer_type")
+  priceCents    BigInt  @map("price_cents")
   // The original tier label as written in the source ("Upto 50",
   // "200 & Above") — surfaces in the proposal line items for traceability.
-  displayLabel    String? @map("display_label")
+  displayLabel  String? @map("display_label")
 
   serviceLine RateCardServiceLine @relation(fields: [serviceLineId], references: [id], onDelete: Cascade)
 
@@ -615,13 +622,13 @@ model RateCardTier {
 }
 
 model RateCardOpenPricedService {
-  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId      String  @map("tenant_id") @db.Uuid
-  rateCardId    String  @map("rate_card_id") @db.Uuid
-  slug          String
-  displayName   String  @map("display_name")
-  category      String?
-  position      Int     @default(0)
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String  @map("tenant_id") @db.Uuid
+  rateCardId  String  @map("rate_card_id") @db.Uuid
+  slug        String
+  displayName String  @map("display_name")
+  category    String?
+  position    Int     @default(0)
 
   rateCard RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
 
@@ -631,28 +638,28 @@ model RateCardOpenPricedService {
 }
 
 model TemplateNode {
-  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  templateId String  @map("template_id") @db.Uuid
+  id           String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  templateId   String  @map("template_id") @db.Uuid
   // Denormalized from the parent template so RLS policies stay single-table.
-  tenantId   String  @map("tenant_id") @db.Uuid
-  question   String
+  tenantId     String  @map("tenant_id") @db.Uuid
+  question     String
   // For section nodes this is the heading description (longer body of copy).
   // For input nodes it's the helper text under the field.
-  helpText   String? @map("help_text")
+  helpText     String? @map("help_text")
   // Optional placeholder shown inside text/number inputs.
-  placeholder String?
+  placeholder  String?
   // If FALSE the responder may skip the question; defaults TRUE.
-  required   Boolean @default(true)
+  required     Boolean @default(true)
   // single_select | multi_select | short_text | long_text | number |
   // file_upload | section | loop
-  nodeType   String  @map("node_type")
+  nodeType     String  @map("node_type")
   // For selects: [{value, label, desc?}]. Null otherwise.
-  options    Json?
-  allowFiles Boolean @default(false) @map("allow_files")
+  options      Json?
+  allowFiles   Boolean @default(false) @map("allow_files")
   // [{when: {op, value}, goto: <nodeId> | 'END'}, ...] — evaluated in order.
-  nextRules  Json    @default("[]") @map("next_rules")
+  nextRules    Json    @default("[]") @map("next_rules")
   // Display order in the editor; runtime order is dictated by nextRules.
-  position   Int     @default(0)
+  position     Int     @default(0)
   // Loop bodies: child nodes of a `loop` parent. Self-referential FK.
   parentNodeId String? @map("parent_node_id") @db.Uuid
   // Loop-specific config: { mode: 'open_ended', label?: 'Application',
@@ -663,7 +670,7 @@ model TemplateNode {
   //   valueMap?: Record<string, string> }
   binding      Json?
 
-  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  template Template       @relation(fields: [templateId], references: [id], onDelete: Cascade)
   // Self-relation for loop body containment. Cascade delete drops the body
   // when the loop node is removed.
   parent   TemplateNode?  @relation("LoopBody", fields: [parentNodeId], references: [id], onDelete: Cascade)
@@ -691,11 +698,11 @@ model User {
   // Default true: existing seeded users carry over without needing a
   // verification round-trip. POST /auth/signup explicitly sets
   // emailVerified=false and populates the token columns.
-  emailVerified                Boolean   @default(true) @map("email_verified")
-  emailVerificationTokenHash   String?                  @map("email_verification_token_hash")
-  emailVerificationExpiresAt   DateTime?                @map("email_verification_expires_at") @db.Timestamptz
+  emailVerified              Boolean   @default(true) @map("email_verified")
+  emailVerificationTokenHash String?   @map("email_verification_token_hash")
+  emailVerificationExpiresAt DateTime? @map("email_verification_expires_at") @db.Timestamptz
 
-  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant         Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   magicLinks     MagicLink[]
   passwordResets PasswordReset[]
   integrations   UserIntegration[]
@@ -739,21 +746,21 @@ model PasswordReset {
 /// Reuses the same envelope encryption as TenantLlmConfig — DEK per
 /// row, master key from LLM_KEY_ENCRYPTION_KEY.
 model UserIntegration {
-  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId    String @map("user_id") @db.Uuid
-  tenantId  String @map("tenant_id") @db.Uuid
+  id           String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId       String @map("user_id") @db.Uuid
+  tenantId     String @map("tenant_id") @db.Uuid
   /// 'outlook' | 'gmail' — CHECK constraint in migration.
-  provider  String
+  provider     String
   /// The address messages will be sent FROM (Microsoft `mail` claim,
   /// or Google `email`). Surfaced in the UI: "Connected as
   /// alex@acme.com".
   accountEmail String @map("account_email")
 
   /// Access token — usually short-lived (Microsoft: ~60 min).
-  accessTokenCiphertext    Bytes  @map("access_token_ciphertext")
-  accessTokenIv            Bytes  @map("access_token_iv")
-  accessTokenDekCiphertext Bytes  @map("access_token_dek_ciphertext")
-  accessTokenDekIv         Bytes  @map("access_token_dek_iv")
+  accessTokenCiphertext    Bytes    @map("access_token_ciphertext")
+  accessTokenIv            Bytes    @map("access_token_iv")
+  accessTokenDekCiphertext Bytes    @map("access_token_dek_ciphertext")
+  accessTokenDekIv         Bytes    @map("access_token_dek_iv")
   accessTokenExpiresAt     DateTime @map("access_token_expires_at") @db.Timestamptz
 
   /// Refresh token — long-lived (Microsoft: ~90 days of inactivity).
@@ -803,25 +810,25 @@ model MagicLink {
 // (by created_at desc) is the active one. Older rows are preserved for
 // audit + the manager UI's "what changed since last time" diffing.
 model Prediction {
-  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId              String   @map("tenant_id") @db.Uuid
-  engagementId          String   @map("engagement_id") @db.Uuid
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId            String   @map("tenant_id") @db.Uuid
+  engagementId        String   @map("engagement_id") @db.Uuid
   // 'cold_start' | 'rules' | 'linear' | 'boosted' — CHECK in migration.
-  regime                String
-  basePriceCents        BigInt   @map("base_price_cents")
-  predictedPriceCents   BigInt   @map("predicted_price_cents")
+  regime              String
+  basePriceCents      BigInt   @map("base_price_cents")
+  predictedPriceCents BigInt   @map("predicted_price_cents")
   // Signed ratio (final/base − 1). Decimal, NOT_NULL with default 0.
-  adjustmentPct         Decimal  @default(0) @map("adjustment_pct") @db.Decimal(6, 4)
-  bandLowCents          BigInt   @map("band_low_cents")
-  bandHighCents         BigInt   @map("band_high_cents")
+  adjustmentPct       Decimal  @default(0) @map("adjustment_pct") @db.Decimal(6, 4)
+  bandLowCents        BigInt   @map("band_low_cents")
+  bandHighCents       BigInt   @map("band_high_cents")
   // Win-prob fields stay null until a classifier ships.
-  winProbAtPredicted    Decimal? @map("win_prob_at_predicted") @db.Decimal(4, 3)
-  winProbAtBase         Decimal? @map("win_prob_at_base")      @db.Decimal(4, 3)
-  winProbAtBandLow      Decimal? @map("win_prob_at_band_low")  @db.Decimal(4, 3)
-  drivers               Json     @default("[]")
-  similarPast           Json     @default("[]") @map("similar_past")
-  dataQuality           Json     @default("{}") @map("data_quality")
-  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz
+  winProbAtPredicted  Decimal? @map("win_prob_at_predicted") @db.Decimal(4, 3)
+  winProbAtBase       Decimal? @map("win_prob_at_base") @db.Decimal(4, 3)
+  winProbAtBandLow    Decimal? @map("win_prob_at_band_low") @db.Decimal(4, 3)
+  drivers             Json     @default("[]")
+  similarPast         Json     @default("[]") @map("similar_past")
+  dataQuality         Json     @default("{}") @map("data_quality")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
@@ -835,14 +842,14 @@ model Prediction {
 // retrain hour. Stored in DB (not code) so a customer with thin data can
 // opt to stay in rules longer if their early ML attempts looked unstable.
 model TenantPricingConfig {
-  tenantId               String   @id @map("tenant_id") @db.Uuid
-  loyaltyRules           Json     @default("[]") @map("loyalty_rules")
-  manualModifiers        Json     @default("[]") @map("manual_modifiers")
-  coldStartUntilNClosed  Int      @default(5)   @map("cold_start_until_n_closed")
-  rulesUntilNClosed      Int      @default(30)  @map("rules_until_n_closed")
-  linearUntilNClosed     Int      @default(100) @map("linear_until_n_closed")
-  retrainHourUtc         Int      @default(2)   @map("retrain_hour_utc")
-  updatedAt              DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  tenantId              String   @id @map("tenant_id") @db.Uuid
+  loyaltyRules          Json     @default("[]") @map("loyalty_rules")
+  manualModifiers       Json     @default("[]") @map("manual_modifiers")
+  coldStartUntilNClosed Int      @default(5) @map("cold_start_until_n_closed")
+  rulesUntilNClosed     Int      @default(30) @map("rules_until_n_closed")
+  linearUntilNClosed    Int      @default(100) @map("linear_until_n_closed")
+  retrainHourUtc        Int      @default(2) @map("retrain_hour_utc")
+  updatedAt             DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -854,16 +861,16 @@ model TenantPricingConfig {
 /// Lifecycle: created → (revoked_at | accepted_at) terminal. Expired rows
 /// remain for audit; the accept endpoint rejects them.
 model Invite {
-  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId     String    @map("tenant_id") @db.Uuid
-  email        String    @db.Citext
-  role         String
-  tokenHash    String    @map("token_hash")
-  invitedById  String    @map("invited_by_id") @db.Uuid
-  expiresAt    DateTime  @map("expires_at") @db.Timestamptz
-  acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz
-  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  email       String    @db.Citext
+  role        String
+  tokenHash   String    @map("token_hash")
+  invitedById String    @map("invited_by_id") @db.Uuid
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz
+  acceptedAt  DateTime? @map("accepted_at") @db.Timestamptz
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -878,22 +885,22 @@ model Invite {
 /// key (LLM_KEY_ENCRYPTION_KEY env, 32-byte base64). Decryption happens
 /// only inside the LLM client; the key never leaves the API process.
 model TenantLlmConfig {
-  tenantId             String   @id @map("tenant_id") @db.Uuid
+  tenantId            String   @id @map("tenant_id") @db.Uuid
   /// "anthropic" | "openai" | "ollama" | "openai_compat"
-  provider             String
+  provider            String
   /// Provider model id, e.g. "claude-opus-4-7", "gpt-4o-mini", "llama3.1:8b"
-  model                String
+  model               String
   /// Override base URL — required for ollama / openai_compat / azure;
   /// null means "use the provider SDK's default".
-  baseUrl              String?  @map("base_url")
-  apiKeyCiphertext     Bytes?   @map("api_key_ciphertext")
-  apiKeyIv             Bytes?   @map("api_key_iv")
-  apiKeyDekCiphertext  Bytes?   @map("api_key_dek_ciphertext")
-  apiKeyDekIv          Bytes?   @map("api_key_dek_iv")
+  baseUrl             String?  @map("base_url")
+  apiKeyCiphertext    Bytes?   @map("api_key_ciphertext")
+  apiKeyIv            Bytes?   @map("api_key_iv")
+  apiKeyDekCiphertext Bytes?   @map("api_key_dek_ciphertext")
+  apiKeyDekIv         Bytes?   @map("api_key_dek_iv")
   /// Soft cap so a runaway loop doesn't drain the tenant's quota. 0 = no cap.
-  monthlyTokenBudget   Int      @default(0) @map("monthly_token_budget")
-  enabled              Boolean  @default(true)
-  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  monthlyTokenBudget  Int      @default(0) @map("monthly_token_budget")
+  enabled             Boolean  @default(true)
+  updatedAt           DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -910,42 +917,42 @@ model TenantLlmConfig {
 /// returned uid for fast subsequent calls. Disconnecting wipes the
 /// row + cascades all OdooEntityLink + OdooSyncLog rows.
 model OdooConnection {
-  tenantId   String  @id @map("tenant_id") @db.Uuid
+  tenantId            String    @id @map("tenant_id") @db.Uuid
   /// The Odoo instance URL — e.g. https://acme.odoo.com. No trailing slash.
-  url        String
+  url                 String
   /// Odoo database name. On odoo.com Online this is usually the
   /// subdomain (e.g. "acme").
-  database   String
+  database            String
   /// Login email of the integration user. Stored in cleartext — it's not
   /// secret on its own; the api_key is.
-  login      String
+  login               String
   /// Cached uid returned by the last successful authenticate(). Refreshed
   /// on connection-test or first call after a 401.
-  uid        Int?
+  uid                 Int?
   /// Encrypted Odoo API key (envelope-wrapped DEK + ciphertext).
-  apiKeyCiphertext    Bytes  @map("api_key_ciphertext")
-  apiKeyIv            Bytes  @map("api_key_iv")
-  apiKeyDekCiphertext Bytes  @map("api_key_dek_ciphertext")
-  apiKeyDekIv         Bytes  @map("api_key_dek_iv")
+  apiKeyCiphertext    Bytes     @map("api_key_ciphertext")
+  apiKeyIv            Bytes     @map("api_key_iv")
+  apiKeyDekCiphertext Bytes     @map("api_key_dek_ciphertext")
+  apiKeyDekIv         Bytes     @map("api_key_dek_iv")
   /// Auto-sync flag — when true, engagement lifecycle events (submitted,
   /// approved, won, lost, abandoned) push to Odoo automatically.
-  autoSyncEnabled Boolean @default(true) @map("auto_sync_enabled")
+  autoSyncEnabled     Boolean   @default(true) @map("auto_sync_enabled")
   /// Default crm.team to associate new opportunities with. Optional.
-  defaultTeamId   Int?    @map("default_team_id")
+  defaultTeamId       Int?      @map("default_team_id")
   /// Default res.users (salesperson) for new opportunities. Optional.
-  defaultUserId   Int?    @map("default_user_id")
+  defaultUserId       Int?      @map("default_user_id")
   /// Webhook shared secret — long random string the customer pastes into
   /// their Odoo Automation Rule URL as a query parameter. Lets us
   /// authenticate inbound webhooks without per-request signing (which
   /// Odoo Studio doesn't support natively).
-  webhookSecret   String  @map("webhook_secret")
+  webhookSecret       String    @map("webhook_secret")
   /// Last time we successfully called Odoo; null on never.
-  lastConnectedAt DateTime? @map("last_connected_at") @db.Timestamptz
+  lastConnectedAt     DateTime? @map("last_connected_at") @db.Timestamptz
   /// Last error string from a failed call — surfaced in the UI so the
   /// admin can see "credentials rejected" without reading logs.
-  lastErrorMessage String?  @map("last_error_message")
+  lastErrorMessage    String?   @map("last_error_message")
   /// Odoo server version reported on authenticate(). Display-only.
-  serverVersion   String?  @map("server_version")
+  serverVersion       String?   @map("server_version")
   /// Polling cursor — the highest `create_date` of any crm.lead we've
   /// already pulled. The poller's next call uses
   /// `[['create_date', '>', last_polled_at]]` as its domain so we only
@@ -953,14 +960,14 @@ model OdooConnection {
   /// already-promoted Engagements come in via Studio webhooks (when
   /// available) or the per-row Refresh button. NULL on a fresh tenant;
   /// first poll uses `now − pollIntervalSeconds` as the lookback floor.
-  lastPolledAt DateTime? @map("last_polled_at") @db.Timestamptz
+  lastPolledAt        DateTime? @map("last_polled_at") @db.Timestamptz
   /// Polling cadence in seconds. 0 = polling disabled (the tenant is on
   /// the Custom plan and uses Studio webhooks exclusively). Default 300
   /// keeps us politely under Odoo's ~1 req/sec AUP limit while still
   /// surfacing changes within ~5 minutes for non-Studio tenants.
-  pollIntervalSeconds Int @default(300) @map("poll_interval_seconds")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  pollIntervalSeconds Int       @default(300) @map("poll_interval_seconds")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -976,16 +983,16 @@ model OdooConnection {
 ///   rhudEntity ∈ ('engagement', 'engagement_quote', 'engagement_thread')
 ///   odooModel  = 'crm.lead' | 'res.partner' | 'crm.tag' | etc.
 model OdooFieldMapping {
-  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId   String  @map("tenant_id") @db.Uuid
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
   /// Source Rhud entity name.
-  rhudEntity String  @map("rhud_entity")
+  rhudEntity String   @map("rhud_entity")
   /// Source field path inside that entity (e.g. "name", "clientEmail",
   /// "approvedPriceCents", "quote.baseTotalCents", "answers.scope_value").
-  rhudField  String  @map("rhud_field")
+  rhudField  String   @map("rhud_field")
   /// Target Odoo model and field.
-  odooModel  String  @map("odoo_model")
-  odooField  String  @map("odoo_field")
+  odooModel  String   @map("odoo_model")
+  odooField  String   @map("odoo_field")
   /// Optional value transform expression. Recognised verbs:
   ///   - "cents_to_currency"  → divide by 100, round to 2dp.
   ///   - "json_stringify"     → JSON.stringify(value).
@@ -995,9 +1002,9 @@ model OdooFieldMapping {
   /// When true the mapping is enforced on writes (and a missing source
   /// raises a sync error). When false, the field is optional and skipped
   /// when source is null/undefined.
-  required   Boolean @default(false)
+  required   Boolean  @default(false)
   /// Direction: 'push' = Rhud → Odoo, 'pull' = Odoo → Rhud, 'both'.
-  direction  String  @default("push")
+  direction  String   @default("push")
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
@@ -1014,14 +1021,14 @@ model OdooFieldMapping {
 ///   ('engagement', '<engagement-uuid>', 'res.partner', 678)
 ///   ('client_account', 'alex@acme.com', 'res.partner', 9101)
 model OdooEntityLink {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId    String   @map("tenant_id") @db.Uuid
-  rhudEntity  String   @map("rhud_entity")
-  rhudId      String   @map("rhud_id")
-  odooModel   String   @map("odoo_model")
-  odooId      Int      @map("odoo_id")
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  rhudEntity    String    @map("rhud_entity")
+  rhudId        String    @map("rhud_id")
+  odooModel     String    @map("odoo_model")
+  odooId        Int       @map("odoo_id")
   /// Last time we successfully synced this link (push or pull).
-  lastSyncedAt DateTime? @map("last_synced_at") @db.Timestamptz
+  lastSyncedAt  DateTime? @map("last_synced_at") @db.Timestamptz
   /// Last write_date observed from Odoo — used as the polling cursor for
   /// inbound change detection on this record.
   odooWriteDate DateTime? @map("odoo_write_date") @db.Timestamptz
@@ -1036,7 +1043,7 @@ model OdooEntityLink {
   /// write_date is within ~30s of last_pushed_at, we assume the
   /// inbound event is just our own push echoing back.
   lastPushedAt  DateTime? @map("last_pushed_at") @db.Timestamptz
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -1091,24 +1098,24 @@ model OdooImportedOpportunity {
 /// `direction`: 'push' = Rhud → Odoo, 'pull' = Odoo → Rhud.
 /// `status`:    'ok' | 'error' | 'skipped'.
 model OdooSyncLog {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId     String   @map("tenant_id") @db.Uuid
-  rhudEntity   String?  @map("rhud_entity")
-  rhudId       String?  @map("rhud_id")
-  odooModel    String?  @map("odoo_model")
-  odooId       Int?     @map("odoo_id")
-  direction    String
-  operation    String   /// 'create' | 'update' | 'unlink' | 'read' | 'webhook'
-  status       String
-  triggeredBy  String   @map("triggered_by")  /// 'auto' | 'manual' | 'webhook'
-  actorUserId  String?  @map("actor_user_id") @db.Uuid
-  errorMessage String?  @map("error_message")
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  rhudEntity      String?  @map("rhud_entity")
+  rhudId          String?  @map("rhud_id")
+  odooModel       String?  @map("odoo_model")
+  odooId          Int?     @map("odoo_id")
+  direction       String
+  operation       String /// 'create' | 'update' | 'unlink' | 'read' | 'webhook'
+  status          String
+  triggeredBy     String   @map("triggered_by") /// 'auto' | 'manual' | 'webhook'
+  actorUserId     String?  @map("actor_user_id") @db.Uuid
+  errorMessage    String?  @map("error_message")
   /// Snapshot of the request payload (headers/body) — JSON for human
   /// inspection only; never used for replay.
-  requestPayload  Json? @map("request_payload")
-  responsePayload Json? @map("response_payload")
-  durationMs   Int?     @map("duration_ms")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  requestPayload  Json?    @map("request_payload")
+  responsePayload Json?    @map("response_payload")
+  durationMs      Int?     @map("duration_ms")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -1122,22 +1129,22 @@ model OdooSyncLog {
 /// then dispatches it to the right handler. Persistence first (before
 /// dispatch) means we can replay if dispatch fails.
 model OdooWebhookEvent {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId    String   @map("tenant_id") @db.Uuid
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
   /// Resource that fired — 'crm.lead' | 'res.partner' | etc.
-  odooModel   String   @map("odoo_model")
+  odooModel    String    @map("odoo_model")
   /// Odoo record id from the payload.
-  odooId      Int?     @map("odoo_id")
+  odooId       Int?      @map("odoo_id")
   /// 'create' | 'write' | 'unlink' (the verb the automation rule used).
-  eventType   String   @map("event_type")
+  eventType    String    @map("event_type")
   /// Raw body posted by Odoo. Trustless — only act on it after fetching
   /// the canonical record from Odoo.
-  payload     Json
+  payload      Json
   /// 'pending' | 'processed' | 'failed' | 'ignored'
-  status      String   @default("pending")
-  errorMessage String? @map("error_message")
-  receivedAt  DateTime @default(now()) @map("received_at") @db.Timestamptz
-  processedAt DateTime? @map("processed_at") @db.Timestamptz
+  status       String    @default("pending")
+  errorMessage String?   @map("error_message")
+  receivedAt   DateTime  @default(now()) @map("received_at") @db.Timestamptz
+  processedAt  DateTime? @map("processed_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -1153,22 +1160,22 @@ model OdooWebhookEvent {
 /// both write into the same `engagements.proposal_draft` slot, so the
 /// downstream UI shape stays unified.
 model TenantGammaConfig {
-  tenantId             String   @id @map("tenant_id") @db.Uuid
+  tenantId            String   @id @map("tenant_id") @db.Uuid
   /// Optional friendly label shown in the UI ("Acme Workspace").
-  workspaceName        String?  @map("workspace_name")
+  workspaceName       String?  @map("workspace_name")
   /// Optional Gamma workspace id when the API needs it (Gamma's
   /// docs use this for routing decks to a specific workspace).
-  workspaceId          String?  @map("workspace_id")
-  apiKeyCiphertext     Bytes?   @map("api_key_ciphertext")
-  apiKeyIv             Bytes?   @map("api_key_iv")
-  apiKeyDekCiphertext  Bytes?   @map("api_key_dek_ciphertext")
-  apiKeyDekIv          Bytes?   @map("api_key_dek_iv")
+  workspaceId         String?  @map("workspace_id")
+  apiKeyCiphertext    Bytes?   @map("api_key_ciphertext")
+  apiKeyIv            Bytes?   @map("api_key_iv")
+  apiKeyDekCiphertext Bytes?   @map("api_key_dek_ciphertext")
+  apiKeyDekIv         Bytes?   @map("api_key_dek_iv")
   /// Which engine drafts proposals for this tenant.
   /// "llm" = use the configured LLM provider (default).
   /// "gamma" = use Gamma's deck generator.
-  proposalDriver       String   @default("llm") @map("proposal_driver")
-  enabled              Boolean  @default(true)
-  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  proposalDriver      String   @default("llm") @map("proposal_driver")
+  enabled             Boolean  @default(true)
+  updatedAt           DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -1190,39 +1197,39 @@ model TenantGammaConfig {
 //                                    └─→ failed
 //                                    └─→ retry_queued → crawling (cron)
 model SiteEnumeration {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId       String    @map("tenant_id") @db.Uuid
-  engagementId   String    @unique @map("engagement_id") @db.Uuid
-  siteUrl        String    @map("site_url")
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  engagementId     String    @unique @map("engagement_id") @db.Uuid
+  siteUrl          String    @map("site_url")
   /// pending | crawling | classifying | ready | failed | retry_queued — CHECK in migration.
-  status         String    @default("pending")
-  startedAt      DateTime? @map("started_at") @db.Timestamptz
-  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+  status           String    @default("pending")
+  startedAt        DateTime? @map("started_at") @db.Timestamptz
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz
   /// Total URLs discovered across crawl + sitemap.
-  totalUrls      Int       @default(0) @map("total_urls")
+  totalUrls        Int       @default(0) @map("total_urls")
   /// Subset already classified (heuristic or LLM). UI shows X/Y progress.
-  classifiedUrls Int       @default(0) @map("classified_urls")
+  classifiedUrls   Int       @default(0) @map("classified_urls")
   /// Rate-card-INDEPENDENT category breakdown:
   ///   { [category]: { count, examples: [{url, title}] } }
   /// Persisted on `ready`. UI's primary read.
-  categoriesJson   Json?   @map("categories_json")
+  categoriesJson   Json?     @map("categories_json")
   /// Per-rate-card mapping snapshot:
   ///   { [rateCardId]: { entities: ScopedEntity[], computedAt: ISO } }
   /// Cached so re-pricing against a different card is instant; the same
   /// pattern as `engagement_files.inferred_entities`.
-  inferredEntities Json?   @map("inferred_entities")
+  inferredEntities Json?     @map("inferred_entities")
   /// Crawl options snapshot — what limits the crawl ran with. Keeps a
   /// re-crawl reproducible without re-deriving from defaults.
   ///   { maxPages, maxDepth, includePathRegex?, excludePathRegex? }
-  optionsJson      Json?   @map("options_json")
+  optionsJson      Json?     @map("options_json")
   /// Retry queue (mirrors engagement_files):
   attempts         Int       @default(0)
   retryAt          DateTime? @map("retry_at") @db.Timestamptz
   error            String?
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt        DateTime  @updatedAt      @map("updated_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
-  engagement Engagement              @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  engagement Engagement            @relation(fields: [engagementId], references: [id], onDelete: Cascade)
   pages      SiteEnumerationPage[]
 
   @@index([tenantId])
@@ -1231,23 +1238,23 @@ model SiteEnumeration {
 }
 
 model SiteEnumerationPage {
-  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId             String    @map("tenant_id") @db.Uuid
-  enumerationId        String    @map("enumeration_id") @db.Uuid
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String   @map("tenant_id") @db.Uuid
+  enumerationId        String   @map("enumeration_id") @db.Uuid
   url                  String
-  httpStatus           Int?      @map("http_status")
-  contentType          String?   @map("content_type")
+  httpStatus           Int?     @map("http_status")
+  contentType          String?  @map("content_type")
   title                String?
   description          String?
   /// Canonical category — see SITE_URL_CATEGORIES in @rhud/shared.
   ///   product | ecommerce | blog | cms | form | knowledge_base | attachment
   ///   | members | media | module | other
   category             String?
-  classifierConfidence Float?    @map("classifier_confidence")
+  classifierConfidence Float?   @map("classifier_confidence")
   /// 'heuristic' | 'llm' — provenance for the category assignment.
-  classifierSource     String?   @map("classifier_source")
-  fetchedAt            DateTime  @map("fetched_at") @db.Timestamptz
-  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  classifierSource     String?  @map("classifier_source")
+  fetchedAt            DateTime @map("fetched_at") @db.Timestamptz
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   enumeration SiteEnumeration @relation(fields: [enumerationId], references: [id], onDelete: Cascade)
 
@@ -1285,9 +1292,9 @@ model EngagementTicket {
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz
 
-  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  engagement     Engagement  @relation(fields: [engagementId], references: [id], onDelete: Cascade)
-  followUps      EngagementFollowUp[] @relation("TicketRelatedFollowUps")
+  tenant     Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  engagement Engagement           @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  followUps  EngagementFollowUp[] @relation("TicketRelatedFollowUps")
 
   @@index([tenantId])
   @@index([engagementId])
@@ -1315,8 +1322,8 @@ model EngagementFollowUp {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz
 
-  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  engagement   Engagement        @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  engagement    Engagement        @relation(fields: [engagementId], references: [id], onDelete: Cascade)
   relatedTicket EngagementTicket? @relation("TicketRelatedFollowUps", fields: [relatedTicketId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
@@ -1328,30 +1335,30 @@ model EngagementFollowUp {
 /// Re-running the summariser overwrites in place. The thread events
 /// table is the immutable audit, which is enough provenance for v1.
 model EngagementSummary {
-  engagementId             String    @id @map("engagement_id") @db.Uuid
-  tenantId                 String    @map("tenant_id") @db.Uuid
-  summaryText              String    @map("summary_text")
+  engagementId            String    @id @map("engagement_id") @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  summaryText             String    @map("summary_text")
   /// 'low' | 'medium' | 'high'
-  riskLevel                String    @default("low") @map("risk_level")
+  riskLevel               String    @default("low") @map("risk_level")
   /// Array of { title, urgency, owner? }
-  nextActions              Json      @default("[]") @map("next_actions")
-  recommendedFollowUpDays  Int?      @map("recommended_follow_up_days")
+  nextActions             Json      @default("[]") @map("next_actions")
+  recommendedFollowUpDays Int?      @map("recommended_follow_up_days")
   /// 'llm' | 'manual'
-  generatedBy              String    @default("llm") @map("generated_by")
+  generatedBy             String    @default("llm") @map("generated_by")
   /// Provider/model id when generated_by='llm', e.g. "anthropic:claude-opus-4-7".
-  model                    String?
-  inputTokens              Int?      @map("input_tokens")
-  outputTokens             Int?      @map("output_tokens")
-  generatedByUserId        String?   @map("generated_by_user_id") @db.Uuid
-  generatedAt              DateTime  @default(now()) @map("generated_at") @db.Timestamptz
+  model                   String?
+  inputTokens             Int?      @map("input_tokens")
+  outputTokens            Int?      @map("output_tokens")
+  generatedByUserId       String?   @map("generated_by_user_id") @db.Uuid
+  generatedAt             DateTime  @default(now()) @map("generated_at") @db.Timestamptz
   /// Latest thread event id at the time of generation. Used by the
   /// auto-regenerate path to detect activity-chain changes — if the
   /// engagement's current latest event differs, the summary is stale
   /// and we re-invoke the LLM. Nullable for legacy rows pre-feature.
-  basedOnEventId           String?   @map("based_on_event_id") @db.Uuid
+  basedOnEventId          String?   @map("based_on_event_id") @db.Uuid
   /// That event's createdAt. Stored separately so we don't have to
   /// JOIN to thread_events on every staleness check.
-  basedOnEventAt           DateTime? @map("based_on_event_at") @db.Timestamptz
+  basedOnEventAt          DateTime? @map("based_on_event_at") @db.Timestamptz
 
   tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
@@ -1374,18 +1381,26 @@ model EngagementSummary {
 /// The PM-defined taxonomy is seeded as system rows. Tenants can add
 /// custom categories on top.
 model OpportunityCategory {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  /// Null for system rows; populated for tenant-defined custom rows.
-  tenantId   String?  @map("tenant_id") @db.Uuid
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Null for system rows (legacy — being phased out); populated for
+  /// tenant-owned rows (the new norm, populated by clone-on-signup or
+  /// by tenant edits).
+  tenantId   String?   @map("tenant_id") @db.Uuid
   /// Stable identifier ('security_testing', 'vapt', 'grc', …). The LLM
   /// classifier emits this string; the routing rules key on it.
   slug       String
   /// Display name shown in the UI.
   name       String
   /// For subcategories, the parent's slug. Null for top-level rows.
-  parentSlug String?  @map("parent_slug")
-  position   Int      @default(0)
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  parentSlug String?   @map("parent_slug")
+  position   Int       @default(0)
+  /// Soft-delete timestamp. Archived rows are excluded from the active
+  /// taxonomy (LLM prompt, picker UI) but kept so historical
+  /// `engagement.category_slug` references still render. Slug
+  /// uniqueness is also partial-on-active so an archived slug can be
+  /// re-created later.
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -1399,13 +1414,13 @@ model OpportunityCategory {
 /// (lower wins for first-match assignment). MVP picks the first match;
 /// future logic can round-robin / load-balance.
 model OpportunityRoutingRule {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId        String   @map("tenant_id") @db.Uuid
-  categorySlug    String   @map("category_slug")
-  reviewerUserId  String   @map("reviewer_user_id") @db.Uuid
-  position        Int      @default(0)
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  categorySlug   String   @map("category_slug")
+  reviewerUserId String   @map("reviewer_user_id") @db.Uuid
+  position       Int      @default(0)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   reviewer User   @relation("RoutingReviewer", fields: [reviewerUserId], references: [id], onDelete: Cascade)
@@ -1413,4 +1428,48 @@ model OpportunityRoutingRule {
   @@unique([tenantId, categorySlug, reviewerUserId], map: "opportunity_routing_rules_uniq")
   @@index([tenantId, categorySlug, position])
   @@map("opportunity_routing_rules")
+}
+
+/// Global config: the available industry verticals a tenant can pick at
+/// signup or via "Reset taxonomy". Not tenant-scoped (no RLS, read-only
+/// via GRANT SELECT). The migration superuser owns writes.
+///
+/// At launch we ship two: `cybersecurity` (preserves today's seed and is
+/// the default for back-compat) and `blank` (zero categories — tenant
+/// defines their own world). Add new verticals via DB migration.
+model IndustryTemplate {
+  slug               String   @id
+  name               String
+  /// Front of the LLM classifier system prompt for tenants on this
+  /// template, e.g. "You are a cybersecurity sales classifier."
+  classifierPreamble String   @map("classifier_preamble")
+  /// Slug the classifier falls back to when the scope doesn't match
+  /// anything in the taxonomy. Nullable for `blank` (no canonical
+  /// fallback — tenant must classify manually).
+  fallbackSlug       String?  @map("fallback_slug")
+  version            Int      @default(1)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  categories IndustryTemplateCategory[]
+  tenants    Tenant[]
+
+  @@map("industry_templates")
+}
+
+/// The taxonomy that ships with an industry template. At
+/// tenant-create / "Reset taxonomy" we copy these rows into
+/// `opportunity_categories` with the tenant's id, after which they're
+/// fully editable per-tenant.
+model IndustryTemplateCategory {
+  templateSlug String  @map("template_slug")
+  slug         String
+  name         String
+  parentSlug   String? @map("parent_slug")
+  position     Int     @default(0)
+
+  template IndustryTemplate @relation(fields: [templateSlug], references: [slug], onDelete: Cascade)
+
+  @@id([templateSlug, slug])
+  @@index([templateSlug, parentSlug])
+  @@map("industry_template_categories")
 }

@@ -77,3 +77,59 @@ export interface ReassignReviewerInput {
   /** Optional rationale — captured in the thread event for audit. */
   reason?: string;
 }
+
+// ── Industry templates ───────────────────────────────────────────────
+//
+// Global config: the pre-baked taxonomies a tenant picks from at signup
+// or via "Reset taxonomy". `cybersecurity` is the default (back-compat
+// with today's seed); `blank` ships zero categories. New templates land
+// via DB migration.
+
+export interface IndustryTemplateRow {
+  slug: string;
+  name: string;
+  classifierPreamble: string;
+  /** Slug the LLM falls back to when nothing matches. Null for `blank`. */
+  fallbackSlug: string | null;
+  version: number;
+}
+
+// ── Category CRUD inputs ─────────────────────────────────────────────
+
+export interface CreateCategoryInput {
+  /** Lowercase letters, digits, underscores. Stable identifier — once
+   *  set, slug renames go via archive + recreate. */
+  slug: string;
+  name: string;
+  /** Null / omitted → top-level. Otherwise must reference an existing
+   *  top-level slug in the tenant's active taxonomy. */
+  parentSlug?: string | null;
+  position?: number;
+}
+
+export interface UpdateCategoryInput {
+  name?: string;
+  /** Explicit null promotes a child to top-level; a string re-parents.
+   *  Omit the field to leave parent unchanged. */
+  parentSlug?: string | null;
+  position?: number;
+}
+
+export interface BulkReorderItem {
+  slug: string;
+  position: number;
+  /** Optional — supports drag-across-parents in the tree UI. */
+  parentSlug?: string | null;
+}
+
+export interface BulkReorderInput {
+  items: BulkReorderItem[];
+}
+
+export interface ResetTaxonomyInput {
+  /** Slug of the template to clone from. Must exist in industry_templates. */
+  templateSlug: string;
+  /** Literal string the user types in the modal. Server enforces
+   *  exact-match to prevent accidental wipes. */
+  confirmText: string;
+}

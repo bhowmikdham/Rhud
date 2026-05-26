@@ -74,6 +74,10 @@ export class AuthService {
     password: string;
     tenantName: string;
     userName?: string;
+    /** Industry-template slug to clone the starting taxonomy from. The
+     *  UnscopedDb call validates it exists; on miss it throws and the
+     *  transaction rolls back so we never half-create a tenant. */
+    industryTemplateSlug?: string;
   }): Promise<{ ok: true; devToken?: string }> {
     const existing = await this.unscoped.findUserByEmail(args.email);
     if (existing) throw new ConflictException('email_already_registered');
@@ -88,6 +92,9 @@ export class AuthService {
       tenantName: args.tenantName,
       email: args.email,
       ...(args.userName !== undefined ? { userName: args.userName } : {}),
+      ...(args.industryTemplateSlug !== undefined
+        ? { industryTemplateSlug: args.industryTemplateSlug }
+        : {}),
       passwordHash,
       emailVerificationTokenHash: tokenHash,
       emailVerificationExpiresAt: expiresAt,

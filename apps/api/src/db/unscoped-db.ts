@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { SystemPrismaService } from './prisma.service.js';
 
 /**
@@ -69,15 +69,45 @@ export class UnscopedDb {
     /** Optional human display name the user typed during signup. Persisted
      *  to `users.name` so the dashboard can greet them properly. */
     userName?: string;
+    /** Industry-template slug to clone the starting taxonomy from.
+     *  Defaults to 'cybersecurity' (matches the column default + back-compat).
+     *  Validated inside the transaction; an unknown slug rolls everything
+     *  back so we never half-create a tenant. */
+    industryTemplateSlug?: string;
     passwordHash: string;
     emailVerificationTokenHash: string;
     emailVerificationExpiresAt: Date;
   }): Promise<{ tenantId: string; userId: string }> {
+    const templateSlug = args.industryTemplateSlug ?? 'cybersecurity';
     return this.prisma.$transaction(async (tx) => {
+      // Verify the template exists before any writes so we fail fast
+      // (and cleanly — the tx rolls back). The signup DTO is plain
+      // string validation; the FK on `tenants.industry_template_slug`
+      // would also catch this, but raising a typed error makes the
+      // failure mode obvious to the controller.
+      const tpl = await tx.industryTemplate.findUnique({
+        where: { slug: templateSlug },
+        select: { slug: true },
+      });
+      if (!tpl) throw new BadRequestException('unknown_industry_template');
+
       const tenant = await tx.tenant.create({
-        data: { name: args.tenantName },
+        data: { name: args.tenantName, industryTemplateSlug: templateSlug },
         select: { id: true },
       });
+
+      // Clone the template's categories into per-tenant rows. Empty for
+      // the 'blank' template — leaves the tenant with no taxonomy until
+      // they add categories via the Categories settings tab. Raw SQL
+      // because Prisma doesn't natively express INSERT…SELECT across
+      // models in a single statement.
+      await tx.$executeRaw`
+        INSERT INTO opportunity_categories (tenant_id, slug, name, parent_slug, position)
+        SELECT ${tenant.id}::uuid, c.slug, c.name, c.parent_slug, c.position
+          FROM industry_template_categories c
+         WHERE c.template_slug = ${templateSlug}
+      `;
+
       const user = await tx.user.create({
         data: {
           tenantId: tenant.id,

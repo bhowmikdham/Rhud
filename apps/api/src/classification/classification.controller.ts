@@ -3,6 +3,14 @@
  *
  *   Categories
  *     GET    /opportunity-categories                 list (tree)
+ *     POST   /tenant/categories                      admin: create category
+ *     PATCH  /tenant/categories/:slug                admin: rename/reorder/re-parent
+ *     DELETE /tenant/categories/:slug                admin: soft-archive
+ *     POST   /tenant/categories/bulk-reorder         admin: drag-to-save
+ *
+ *   Industry templates
+ *     GET    /industry-templates                     authed: list verticals
+ *     POST   /tenant/industry/reset                  admin: re-clone taxonomy
  *
  *   Classification (per engagement)
  *     GET    /opportunities/:id/classification
@@ -19,6 +27,7 @@
  */
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -32,14 +41,20 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
+  IsArray,
   IsInt,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
@@ -47,6 +62,10 @@ import type { AuthedRequest } from '../auth/auth.types.js';
 import { CategoriesService } from './categories.service.js';
 import { ClassificationService } from './classification.service.js';
 import { RoutingService } from './routing.service.js';
+import { TemplatesService } from './templates.service.js';
+
+/** Confirmation phrase the user must type to trigger a taxonomy reset. */
+const RESET_CONFIRM_PHRASE = 'RESET TAXONOMY';
 
 class ManualClassifyDto {
   @IsString() @MinLength(1) categorySlug!: string;
@@ -64,6 +83,47 @@ class UpsertRoutingRuleDto {
   @IsOptional() @IsInt() @Min(0) position?: number;
 }
 
+class CreateCategoryDto {
+  @IsString() @Matches(/^[a-z][a-z0-9_]*$/, { message: 'slug must be lowercase alphanumeric + underscore, starting with a letter' })
+  @MaxLength(64)
+  slug!: string;
+
+  @IsString() @MinLength(1) @MaxLength(120) name!: string;
+
+  @IsOptional() @IsString() parentSlug?: string | null;
+
+  @IsOptional() @IsInt() @Min(0) position?: number;
+}
+
+class UpdateCategoryDto {
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(120) name?: string;
+  /** Pass explicit null to promote a child to top-level; string to
+   *  re-parent; omit to leave unchanged. class-validator's IsOptional
+   *  accepts undefined OR null. */
+  @IsOptional() @IsString() parentSlug?: string | null;
+  @IsOptional() @IsInt() @Min(0) position?: number;
+}
+
+class BulkReorderItemDto {
+  @IsString() slug!: string;
+  @IsInt() @Min(0) position!: number;
+  @IsOptional() @IsString() parentSlug?: string | null;
+}
+
+class BulkReorderDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => BulkReorderItemDto)
+  items!: BulkReorderItemDto[];
+}
+
+class ResetTaxonomyDto {
+  @IsString() @MinLength(1) templateSlug!: string;
+  @IsString() confirmText!: string;
+}
+
 // ── Categories (read) ────────────────────────────────────────────────
 
 @Controller('opportunity-categories')
@@ -74,6 +134,81 @@ export class CategoriesController {
   @Get()
   tree(@Req() req: AuthedRequest) {
     return this.svc.getTree(req.tenantId);
+  }
+}
+
+// ── Tenant category CRUD (admin) ─────────────────────────────────────
+
+@Controller('tenant/categories')
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class TenantCategoriesController {
+  constructor(private readonly svc: CategoriesService) {}
+
+  @Post()
+  @Roles('admin')
+  create(@Req() req: AuthedRequest, @Body() dto: CreateCategoryDto) {
+    return this.svc.create(req.tenantId, dto);
+  }
+
+  @Patch(':slug')
+  @Roles('admin')
+  update(
+    @Req() req: AuthedRequest,
+    @Param('slug') slug: string,
+    @Body() dto: UpdateCategoryDto,
+  ) {
+    return this.svc.update(req.tenantId, slug, dto);
+  }
+
+  @Delete(':slug')
+  @Roles('admin')
+  @HttpCode(204)
+  async archive(@Req() req: AuthedRequest, @Param('slug') slug: string) {
+    await this.svc.archive(req.tenantId, slug);
+  }
+
+  @Post('bulk-reorder')
+  @Roles('admin')
+  @HttpCode(204)
+  async bulkReorder(@Req() req: AuthedRequest, @Body() dto: BulkReorderDto) {
+    await this.svc.bulkReorder(req.tenantId, dto);
+  }
+}
+
+// ── Industry templates ───────────────────────────────────────────────
+
+@Controller('industry-templates')
+@UseGuards(JwtAuthGuard)
+export class IndustryTemplatesController {
+  constructor(private readonly svc: TemplatesService) {}
+
+  @Get()
+  list(@Req() req: AuthedRequest) {
+    return this.svc.list(req.tenantId);
+  }
+}
+
+@Controller('tenant/industry')
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class TenantIndustryController {
+  constructor(
+    private readonly categories: CategoriesService,
+    private readonly templates: TemplatesService,
+  ) {}
+
+  @Post('reset')
+  @Roles('admin')
+  @HttpCode(204)
+  async reset(@Req() req: AuthedRequest, @Body() dto: ResetTaxonomyDto) {
+    if (dto.confirmText !== RESET_CONFIRM_PHRASE) {
+      // Generic message — the UI shows the expected phrase next to the
+      // input, so the admin already knows what to type.
+      throw new BadRequestException('confirmation_required');
+    }
+    // 404s with `unknown_industry_template` if the slug is invalid;
+    // surfaces as a 404 rather than 400 to match other not-found paths.
+    await this.templates.getBySlug(req.tenantId, dto.templateSlug);
+    await this.categories.resetFromTemplate(req.tenantId, dto.templateSlug);
   }
 }
 

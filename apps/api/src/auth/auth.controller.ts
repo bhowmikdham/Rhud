@@ -62,6 +62,9 @@ export class AuthController {
       password: dto.password,
       tenantName: dto.tenantName,
       ...(dto.userName !== undefined ? { userName: dto.userName } : {}),
+      ...(dto.industryTemplateSlug !== undefined
+        ? { industryTemplateSlug: dto.industryTemplateSlug }
+        : {}),
     });
   }
 

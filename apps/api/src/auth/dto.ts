@@ -40,6 +40,15 @@ export class SignupDto {
   @IsString()
   @MaxLength(120)
   userName?: string;
+
+  /** Optional industry-template slug for the tenant's starting taxonomy.
+   *  Defaults to 'cybersecurity' for back-compat — existing signup
+   *  callers (UI today) don't pass this and stay on the legacy seed.
+   *  Validated server-side: must match a row in `industry_templates`. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  industryTemplateSlug?: string;
 }
 
 export class VerifyEmailDto {

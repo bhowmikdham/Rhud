@@ -81,6 +81,10 @@ export interface TenantConfigDto {
    *  null = that escalation tier disabled. */
   requiresVpApprovalAboveCents: number | null;
   requiresCeoApprovalAboveCents: number | null;
+  /** Which industry-template the tenant cloned at signup. Surfaced
+   *  to the UI so the setup-panel nudge can detect a tenant that's
+   *  still on the default 'cybersecurity' template. */
+  industryTemplateSlug: string;
 }
 
 @Injectable()
@@ -106,6 +110,7 @@ export class TeamService {
           leadSummaryAutoGenerate: true,
           requiresVpApprovalAboveCents: true,
           requiresCeoApprovalAboveCents: true,
+          industryTemplateSlug: true,
         },
       });
       if (!row) throw new NotFoundException('tenant_not_found');
@@ -118,6 +123,7 @@ export class TeamService {
           ? null : Number(row.requiresVpApprovalAboveCents),
         requiresCeoApprovalAboveCents: row.requiresCeoApprovalAboveCents == null
           ? null : Number(row.requiresCeoApprovalAboveCents),
+        industryTemplateSlug: row.industryTemplateSlug,
       };
     });
   }
@@ -180,6 +186,7 @@ export class TeamService {
           leadSummaryAutoGenerate: true,
           requiresVpApprovalAboveCents: true,
           requiresCeoApprovalAboveCents: true,
+          industryTemplateSlug: true,
         },
       });
       this.logger.log(`tenant ${tenantId} updated by ${actor.sub}`);
@@ -192,6 +199,7 @@ export class TeamService {
           ? null : Number(updated.requiresVpApprovalAboveCents),
         requiresCeoApprovalAboveCents: updated.requiresCeoApprovalAboveCents == null
           ? null : Number(updated.requiresCeoApprovalAboveCents),
+        industryTemplateSlug: updated.industryTemplateSlug,
       };
     });
   }

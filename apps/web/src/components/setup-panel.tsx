@@ -30,6 +30,10 @@ import {
 import { Icon } from './icon';
 
 const STORAGE_KEY = 'rhud.setup.collapsed';
+/** Flag set when the admin has visited Settings → Categories at least
+ *  once. Cheap signal that they've at least seen the taxonomy, so we
+ *  can stop nudging. The Categories tab writes this on mount. */
+const TAXONOMY_SEEN_KEY = 'rhud.setup.taxonomySeen';
 
 /**
  * Routes where the floating pill would obscure footer action buttons
@@ -42,11 +46,12 @@ function isSuppressedRoute(pathname: string | null): boolean {
 }
 
 export function SetupPanel() {
-  const { user } = useAuth();
+  const { user, tenant } = useAuth();
   const pathname = usePathname();
   const [cards, setCards] = useState<RateCardSummary[] | null>(null);
   const [tmpls, setTmpls] = useState<Template[] | null>(null);
   const [opps, setOpps] = useState<EngagementSummary[] | null>(null);
+  const [taxonomySeen, setTaxonomySeen] = useState<boolean>(false);
 
   // `null` = not yet hydrated from localStorage; once we know the user's
   // preference we use it, otherwise we fall back to "open if incomplete".
@@ -58,6 +63,13 @@ export function SetupPanel() {
     templates.list().then(setTmpls).catch(() => setTmpls([]));
     opportunities.list().then(setOpps).catch(() => setOpps([]));
   }, [user]);
+
+  // Re-read the taxonomy-seen flag whenever the pathname changes — so
+  // visiting /settings?tab=categories flips the checklist item to done
+  // without needing a full reload.
+  useEffect(() => {
+    setTaxonomySeen(window.localStorage.getItem(TAXONOMY_SEEN_KEY) === '1');
+  }, [pathname]);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -74,6 +86,14 @@ export function SetupPanel() {
   const hasPublishedCard = cards.some((c) => c.status === 'published');
   const hasTemplate = tmpls.length > 0;
   const hasOpportunity = opps.length > 0;
+  // Nudge a taxonomy step only for admins on the default Cybersecurity
+  // template who haven't yet visited the Categories tab. Other tenants
+  // (or non-admins, or anyone who's already seen it) don't see the row
+  // at all — we keep the checklist tight.
+  const showTaxonomyStep =
+    isAdmin
+    && tenant?.industryTemplateSlug === 'cybersecurity'
+    && !taxonomySeen;
 
   const steps = [
     {
@@ -99,6 +119,15 @@ export function SetupPanel() {
       href: '/opportunities/new',
       cta: 'Issue',
     },
+    ...(showTaxonomyStep
+      ? [{
+          done: false,
+          title: 'Confirm your scope categories',
+          blurb: "Defaults to Cybersecurity. Customize or pick a different industry template.",
+          href: '/settings?tab=categories',
+          cta: 'Review',
+        }]
+      : []),
   ];
   const doneCount = steps.filter((s) => s.done).length;
   const allDone = doneCount === steps.length;

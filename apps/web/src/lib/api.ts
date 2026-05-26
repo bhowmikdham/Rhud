@@ -512,6 +512,11 @@ import type {
   RoutingRuleRow as _RoutingRuleRow,
   UpsertRoutingRuleInput as _UpsertRoutingRuleInput,
   ReassignReviewerInput as _ReassignReviewerInput,
+  IndustryTemplateRow as _IndustryTemplateRow,
+  CreateCategoryInput as _CreateCategoryInput,
+  UpdateCategoryInput as _UpdateCategoryInput,
+  BulkReorderInput as _BulkReorderInput,
+  ResetTaxonomyInput as _ResetTaxonomyInput,
 } from '@rhud/shared';
 export type CategoryTree = _CategoryTree;
 export type OpportunityCategoryRow = _OpportunityCategoryRow;
@@ -520,9 +525,43 @@ export type ManualClassifyInput = _ManualClassifyInput;
 export type RoutingRuleRow = _RoutingRuleRow;
 export type UpsertRoutingRuleInput = _UpsertRoutingRuleInput;
 export type ReassignReviewerInput = _ReassignReviewerInput;
+export type IndustryTemplateRow = _IndustryTemplateRow;
+export type CreateCategoryInput = _CreateCategoryInput;
+export type UpdateCategoryInput = _UpdateCategoryInput;
+export type BulkReorderInput = _BulkReorderInput;
+export type ResetTaxonomyInput = _ResetTaxonomyInput;
 
 export const categories = {
   tree: () => request<CategoryTree>(`/opportunity-categories`),
+  create: (input: CreateCategoryInput) =>
+    request<OpportunityCategoryRow>(`/tenant/categories`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  update: (slug: string, input: UpdateCategoryInput) =>
+    request<OpportunityCategoryRow>(`/tenant/categories/${encodeURIComponent(slug)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  archive: (slug: string) =>
+    request<void>(`/tenant/categories/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+  bulkReorder: (input: BulkReorderInput) =>
+    request<void>(`/tenant/categories/bulk-reorder`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+};
+
+export const industryTemplates = {
+  list: () => request<IndustryTemplateRow[]>(`/industry-templates`),
+};
+
+export const industry = {
+  reset: (input: ResetTaxonomyInput) =>
+    request<void>(`/tenant/industry/reset`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
 };
 
 export const classification = {
@@ -897,6 +936,9 @@ export interface TenantInfo {
    *  disabled. CEO threshold must be >= VP threshold when both set. */
   requiresVpApprovalAboveCents: number | null;
   requiresCeoApprovalAboveCents: number | null;
+  /** Industry-template the tenant cloned at signup. Used by the setup
+   *  panel to nudge default-cyber tenants to confirm their taxonomy. */
+  industryTemplateSlug: string;
 }
 
 export const tenant = {

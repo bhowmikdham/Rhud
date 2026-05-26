@@ -15,6 +15,8 @@ import {
   llm,
   categories,
   routingRules,
+  industryTemplates,
+  industry,
   describeError,
   type InviteSummary,
   type LlmConfig,
@@ -22,13 +24,16 @@ import {
   type Role,
   type UserSummary,
   type CategoryTree,
+  type OpportunityCategoryRow,
   type RoutingRuleRow,
+  type IndustryTemplateRow,
 } from '@/lib/api';
 
 const TABS = [
   { id: 'account',       label: 'Account',        icon: 'User' as const },
   { id: 'workspace',     label: 'Workspace',      icon: 'Globe' as const },
   { id: 'team',          label: 'Team',           icon: 'Users' as const },
+  { id: 'categories',    label: 'Categories',     icon: 'Hash' as const },
   { id: 'routing',       label: 'Review routing', icon: 'Inbox' as const },
   { id: 'approvals',     label: 'Approvals',      icon: 'Shield' as const },
   { id: 'ai',            label: 'AI',             icon: 'Sparkles' as const },
@@ -119,6 +124,7 @@ function SettingsInner() {
             {tab === 'account' && <AccountPanel />}
             {tab === 'workspace' && <WorkspacePanel isAdmin={user.role === 'admin'} />}
             {tab === 'team' && <TeamPanel currentUserId={user.sub} isAdmin={user.role === 'admin'} />}
+            {tab === 'categories' && <CategoriesPanel isAdmin={user.role === 'admin'} />}
             {tab === 'routing' && <RoutingRulesPanel isAdmin={user.role === 'admin'} />}
             {tab === 'approvals' && <ApprovalThresholdsPanel isAdmin={user.role === 'admin'} />}
             {tab === 'ai' && <AiPanel isAdmin={user.role === 'admin'} />}
@@ -1204,6 +1210,502 @@ function roleColor(role?: string): string {
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// ─── Categories (tenant taxonomy) ────────────────────────────────────
+
+const RESET_CONFIRM_PHRASE = 'RESET TAXONOMY';
+
+function CategoriesPanel({ isAdmin }: { isAdmin: boolean }) {
+  const confirm = useConfirm();
+  const [tree, setTree] = useState<CategoryTree | null>(null);
+  const [templates, setTemplates] = useState<IndustryTemplateRow[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [addingUnderSlug, setAddingUnderSlug] = useState<string | null | undefined>(undefined);
+  const [editingSlug, setEditingSlug] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    Promise.all([
+      categories.tree().catch(() => ({ topLevel: [], childrenByParent: {} } as CategoryTree)),
+      industryTemplates.list().catch(() => [] as IndustryTemplateRow[]),
+    ]).then(([t, tmpl]) => { setTree(t); setTemplates(tmpl); });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Flip the setup-panel taxonomy nudge to "done" once the admin lands
+  // here. Same localStorage key the setup panel reads.
+  useEffect(() => {
+    window.localStorage.setItem('rhud.setup.taxonomySeen', '1');
+  }, []);
+
+  if (tree == null) {
+    return <div className="empty"><span className="spin" /></div>;
+  }
+
+  async function archive(slug: string, name: string, hasChildren: boolean) {
+    const body = hasChildren
+      ? `Archives every subcategory under "${name}" too, and deletes any routing rules pointing at them. Past engagements classified under these slugs keep their classification.`
+      : `Any routing rule pointing at "${name}" will be deleted. Past engagements keep their classification.`;
+    const ok = await confirm({
+      title: `Archive "${name}"?`,
+      body,
+      tone: 'danger',
+      confirmLabel: 'Archive',
+    });
+    if (!ok) return;
+    try {
+      setBusy(true);
+      setErr(null);
+      await categories.archive(slug);
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reorder(
+    slug: string,
+    parentSlug: string | null,
+    direction: 'up' | 'down',
+  ) {
+    if (!tree) return;
+    const list = parentSlug
+      ? (tree.childrenByParent[parentSlug] ?? [])
+      : tree.topLevel;
+    const idx = list.findIndex((c) => c.slug === slug);
+    if (idx === -1) return;
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= list.length) return;
+    const swap = list[targetIdx]!;
+    const self = list[idx]!;
+    try {
+      setBusy(true);
+      setErr(null);
+      await categories.bulkReorder({
+        items: [
+          { slug: self.slug, position: swap.position },
+          { slug: swap.slug, position: self.position },
+        ],
+      });
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAdd(parentSlug: string | null, slug: string, name: string) {
+    if (!slug.trim() || !name.trim()) return;
+    try {
+      setBusy(true);
+      setErr(null);
+      // Use a high position so new rows sort to the end; admin can
+      // reorder afterwards with the up/down buttons.
+      const input = {
+        slug: slug.trim(),
+        name: name.trim(),
+        ...(parentSlug ? { parentSlug } : {}),
+        position: 9999,
+      };
+      await categories.create(input);
+      setAddingUnderSlug(undefined);
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveRename(slug: string, newName: string) {
+    if (!newName.trim()) return;
+    try {
+      setBusy(true);
+      setErr(null);
+      await categories.update(slug, { name: newName.trim() });
+      setEditingSlug(null);
+      refresh();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {!isAdmin && (
+        <div className="card" style={{
+          padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+          marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          background: 'var(--bg-sunk)',
+        }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — only admins can edit categories.
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 18 }}>
+        <header style={{ marginBottom: 14, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Categories</h2>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4 }}>
+              The taxonomy the classifier picks from when an opportunity is submitted.
+              Slugs are stable identifiers — once set, change a category by archiving + recreating.
+              Routing rules ({' '}
+              <a href="/settings?tab=routing" style={{ color: 'var(--accent)' }}>Review routing</a>
+              {' '}) key on these slugs.
+            </div>
+          </div>
+          {isAdmin && (
+            <button
+              className="btn sm ghost"
+              onClick={() => setResetOpen(true)}
+              title="Wipe the current taxonomy and clone from a different industry template"
+            >
+              <Icon.Refresh size={11} /> Reset taxonomy
+            </button>
+          )}
+        </header>
+
+        {tree.topLevel.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: 'var(--fg-muted)', padding: '12px 0' }}>
+            No categories yet. {isAdmin ? 'Add the first one below, or reset to an industry template.' : 'Ask an admin to set up the taxonomy.'}
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 8 }}>
+            {tree.topLevel.map((cat) => {
+              const children = tree.childrenByParent[cat.slug] ?? [];
+              const isEditing = editingSlug === cat.slug;
+              return (
+                <div
+                  key={cat.slug}
+                  style={{ padding: 12, background: 'var(--bg-sunk)', borderRadius: 8 }}
+                >
+                  <CategoryRow
+                    cat={cat}
+                    isAdmin={isAdmin}
+                    isEditing={isEditing}
+                    busy={busy}
+                    onStartRename={() => setEditingSlug(cat.slug)}
+                    onCancelRename={() => setEditingSlug(null)}
+                    onSaveRename={(name) => saveRename(cat.slug, name)}
+                    onArchive={() => archive(cat.slug, cat.name, children.length > 0)}
+                    onReorderUp={() => reorder(cat.slug, null, 'up')}
+                    onReorderDown={() => reorder(cat.slug, null, 'down')}
+                    canMoveUp={tree.topLevel.indexOf(cat) > 0}
+                    canMoveDown={tree.topLevel.indexOf(cat) < tree.topLevel.length - 1}
+                    indent={false}
+                  />
+                  {children.length > 0 && (
+                    <div style={{ display: 'grid', gap: 4, marginTop: 8, paddingLeft: 16, borderLeft: '1px solid var(--divider)' }}>
+                      {children.map((child) => (
+                        <CategoryRow
+                          key={child.slug}
+                          cat={child}
+                          isAdmin={isAdmin}
+                          isEditing={editingSlug === child.slug}
+                          busy={busy}
+                          onStartRename={() => setEditingSlug(child.slug)}
+                          onCancelRename={() => setEditingSlug(null)}
+                          onSaveRename={(name) => saveRename(child.slug, name)}
+                          onArchive={() => archive(child.slug, child.name, false)}
+                          onReorderUp={() => reorder(child.slug, cat.slug, 'up')}
+                          onReorderDown={() => reorder(child.slug, cat.slug, 'down')}
+                          canMoveUp={children.indexOf(child) > 0}
+                          canMoveDown={children.indexOf(child) < children.length - 1}
+                          indent
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {isAdmin && addingUnderSlug === cat.slug && (
+                    <div style={{ marginTop: 8, paddingLeft: 16 }}>
+                      <AddCategoryRow
+                        parentSlug={cat.slug}
+                        busy={busy}
+                        onCancel={() => setAddingUnderSlug(undefined)}
+                        onSave={(slug, name) => saveAdd(cat.slug, slug, name)}
+                      />
+                    </div>
+                  )}
+                  {isAdmin && addingUnderSlug !== cat.slug && (
+                    <div style={{ marginTop: 6 }}>
+                      <button
+                        className="btn xs ghost"
+                        onClick={() => setAddingUnderSlug(cat.slug)}
+                      >
+                        <Icon.Plus size={10} /> Add subcategory
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {isAdmin && addingUnderSlug === null && (
+          <div style={{ marginTop: 12 }}>
+            <AddCategoryRow
+              parentSlug={null}
+              busy={busy}
+              onCancel={() => setAddingUnderSlug(undefined)}
+              onSave={(slug, name) => saveAdd(null, slug, name)}
+            />
+          </div>
+        )}
+        {isAdmin && addingUnderSlug !== null && (
+          <div style={{ marginTop: 12 }}>
+            <button className="btn sm" onClick={() => setAddingUnderSlug(null)}>
+              <Icon.Plus size={11} /> Add top-level category
+            </button>
+          </div>
+        )}
+
+        {err && (
+          <div style={{ marginTop: 10, padding: 8, fontSize: 12, color: 'var(--danger)' }}>{err}</div>
+        )}
+      </div>
+
+      {resetOpen && (
+        <ResetTaxonomyModal
+          templates={templates}
+          onClose={() => setResetOpen(false)}
+          onDone={() => { setResetOpen(false); refresh(); }}
+        />
+      )}
+    </>
+  );
+}
+
+function CategoryRow({
+  cat, isAdmin, isEditing, busy,
+  onStartRename, onCancelRename, onSaveRename, onArchive,
+  onReorderUp, onReorderDown, canMoveUp, canMoveDown, indent,
+}: {
+  cat: OpportunityCategoryRow;
+  isAdmin: boolean;
+  isEditing: boolean;
+  busy: boolean;
+  onStartRename: () => void;
+  onCancelRename: () => void;
+  onSaveRename: (name: string) => void;
+  onArchive: () => void;
+  onReorderUp: () => void;
+  onReorderDown: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  indent: boolean;
+}) {
+  const [draft, setDraft] = useState(cat.name);
+  useEffect(() => { if (isEditing) setDraft(cat.name); }, [isEditing, cat.name]);
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: indent ? '4px 6px' : '0 0 6px 0',
+      fontSize: indent ? 12.5 : 13,
+    }}>
+      {isEditing ? (
+        <>
+          <input
+            className="input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onSaveRename(draft);
+              if (e.key === 'Escape') onCancelRename();
+            }}
+            autoFocus
+            style={{ flex: 1, height: 26, fontSize: 12.5 }}
+          />
+          <button className="btn xs accent" disabled={busy || !draft.trim()} onClick={() => onSaveRename(draft)}>
+            <Icon.Check size={10} />
+          </button>
+          <button className="btn xs ghost" disabled={busy} onClick={onCancelRename}>
+            <Icon.X size={10} />
+          </button>
+        </>
+      ) : (
+        <>
+          <span style={{ flex: 1, fontWeight: indent ? 400 : 600 }}>{cat.name}</span>
+          <code style={{
+            fontSize: 10.5, color: 'var(--fg-subtle)',
+            background: 'var(--bg)', padding: '1px 5px', borderRadius: 4,
+          }}>{cat.slug}</code>
+          {isAdmin && (
+            <>
+              <button
+                className="btn xs ghost"
+                disabled={busy || !canMoveUp}
+                onClick={onReorderUp}
+                title="Move up"
+                style={{ minWidth: 24, padding: '2px 6px' }}
+              >▲</button>
+              <button
+                className="btn xs ghost"
+                disabled={busy || !canMoveDown}
+                onClick={onReorderDown}
+                title="Move down"
+                style={{ minWidth: 24, padding: '2px 6px' }}
+              >▼</button>
+              <button className="btn xs ghost" disabled={busy} onClick={onStartRename} title="Rename">
+                <Icon.Edit size={11} />
+              </button>
+              <button className="btn xs danger ghost" disabled={busy} onClick={onArchive} title="Archive">
+                <Icon.X size={11} />
+              </button>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AddCategoryRow({
+  parentSlug, busy, onCancel, onSave,
+}: {
+  parentSlug: string | null;
+  busy: boolean;
+  onCancel: () => void;
+  onSave: (slug: string, name: string) => void;
+}) {
+  const [slug, setSlug] = useState('');
+  const [name, setName] = useState('');
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 8,
+      padding: 10, background: 'var(--bg)', borderRadius: 6,
+    }}>
+      <input
+        className="input"
+        value={slug}
+        onChange={(e) => setSlug(e.target.value.toLowerCase())}
+        placeholder={parentSlug ? 'subcategory_slug' : 'category_slug'}
+        style={{ height: 30, fontSize: 12.5 }}
+      />
+      <input
+        className="input"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Display name"
+        style={{ height: 30, fontSize: 12.5 }}
+      />
+      <button
+        className="btn sm accent"
+        disabled={busy || !slug.trim() || !name.trim()}
+        onClick={() => onSave(slug, name)}
+      >
+        <Icon.Check size={11} /> Add
+      </button>
+      <button className="btn sm ghost" disabled={busy} onClick={onCancel}>
+        <Icon.X size={11} />
+      </button>
+    </div>
+  );
+}
+
+function ResetTaxonomyModal({
+  templates, onClose, onDone,
+}: {
+  templates: IndustryTemplateRow[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [picked, setPicked] = useState<string>(templates[0]?.slug ?? '');
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    if (confirmText !== RESET_CONFIRM_PHRASE || !picked) return;
+    try {
+      setBusy(true);
+      setErr(null);
+      await industry.reset({ templateSlug: picked, confirmText });
+      onDone();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Portal>
+      <div
+        onClick={onClose}
+        style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 1000,
+        }}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="card"
+          style={{
+            width: 480, maxWidth: '92vw', padding: 22,
+            background: 'var(--bg)', borderRadius: 10,
+          }}
+        >
+          <h3 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Reset taxonomy</h3>
+          <p style={{ margin: '0 0 14px', fontSize: 12.5, color: 'var(--fg-muted)', lineHeight: 1.45 }}>
+            Archives every current category and clones a fresh taxonomy from the picked template.
+            All routing rules are deleted. Past engagement classifications keep their slug (the archived name still renders).
+          </p>
+
+          <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
+            <label style={{ fontSize: 12, fontWeight: 500 }}>Industry template</label>
+            <select
+              className="input"
+              value={picked}
+              onChange={(e) => setPicked(e.target.value)}
+              style={{ height: 34 }}
+            >
+              {templates.map((t) => (
+                <option key={t.slug} value={t.slug}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
+            <label style={{ fontSize: 12, fontWeight: 500 }}>
+              Type <code style={{ background: 'var(--bg-sunk)', padding: '1px 5px', borderRadius: 4 }}>{RESET_CONFIRM_PHRASE}</code> to confirm
+            </label>
+            <input
+              className="input"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder={RESET_CONFIRM_PHRASE}
+              style={{ height: 34 }}
+            />
+          </div>
+
+          {err && <div style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 12 }}>{err}</div>}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="btn sm" onClick={onClose} disabled={busy}>Cancel</button>
+            <button
+              className="btn sm danger"
+              onClick={submit}
+              disabled={busy || confirmText !== RESET_CONFIRM_PHRASE || !picked}
+            >
+              {busy ? <span className="spin" /> : 'Reset taxonomy'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Portal>
+  );
 }
 
 // ─── Phase B: Routing rules ──────────────────────────────────────────
