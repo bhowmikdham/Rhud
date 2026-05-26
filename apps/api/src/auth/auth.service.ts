@@ -6,6 +6,7 @@ import type { Role } from '@rhud/shared';
 import { isRole } from '@rhud/shared';
 import { TenantDb } from '../db/with-tenant.js';
 import { UnscopedDb } from '../db/unscoped-db.js';
+import { EmailService } from '../email/email.service.js';
 import { loadEnv } from '../config/env.js';
 import type { JwtPayload } from './auth.types.js';
 
@@ -22,6 +23,7 @@ export class AuthService {
     private readonly unscoped: UnscopedDb,
     private readonly tenantDb: TenantDb,
     private readonly jwt: JwtService,
+    private readonly email: EmailService,
   ) {}
 
   async loginWithPassword(
@@ -58,6 +60,15 @@ export class AuthService {
       await db.magicLink.create({
         data: { tenantId: user.tenantId, userId: user.id, tokenHash, expiresAt },
       });
+    });
+
+    // Best-effort send. Dev environments (no EMAIL_FROM_ADDRESS) silently
+    // skip; the controller still returns the plaintext token when
+    // NODE_ENV !== 'production' so dev can keep working without SES.
+    void this.email.sendMagicLink({
+      to: user.email,
+      magicUrl: `${env.WEB_PUBLIC_URL}/auth/magic?token=${encodeURIComponent(token)}`,
+      expiresInMinutes: env.MAGIC_LINK_TTL_MINUTES,
     });
 
     return token;

@@ -94,6 +94,14 @@ services:
       S3_REGION: "ap-south-1"
       S3_BUCKET: "rhud-uploads-prod-bhowmik"
 
+      # ── Email (SES) ────────────────────────────────────────────────
+      # Sender on the verified rhud.net domain. The EC2 instance role's
+      # rhud-ec2-ses-send inline policy permits sending from this identity.
+      # SES sandbox: recipients must also be verified (e.g.
+      # bhowmikdham@gmail.com) until production access is granted.
+      EMAIL_FROM_ADDRESS: "noreply@rhud.net"
+      SES_REGION: "ap-south-1"
+
       # Cap V8 heap so the api can't eat the entire box. The remaining
       # ~100 MB of its 500 MB limit goes to native modules + scratch.
       NODE_OPTIONS: "--max-old-space-size=384"

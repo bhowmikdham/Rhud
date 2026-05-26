@@ -32,6 +32,16 @@ export const envSchema = z.object({
   // must paste into Microsoft Entra). Defaults to localhost; set
   // explicitly in prod so the displayed URI matches what's reachable.
   API_PUBLIC_URL: z.string().url().default('http://localhost:8000'),
+
+  // ── Email (SES) ─────────────────────────────────────────────────
+  // Optional. When unset the EmailService is a no-op (dev fallback —
+  // the auth controller still returns the magic-link token in the
+  // response when NODE_ENV !== 'production', so devs aren't blocked).
+  // In prod, set to a verified address on a verified SES domain.
+  EMAIL_FROM_ADDRESS: z.string().email().optional(),
+  // Region for SES API calls. Defaults to ap-south-1 (where the demo
+  // stack lives). The SDK also picks up AWS_REGION if this is unset.
+  SES_REGION: z.string().default('ap-south-1'),
 });
 
 export type Env = z.infer<typeof envSchema>;

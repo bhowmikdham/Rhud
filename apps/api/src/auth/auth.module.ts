@@ -4,6 +4,7 @@ import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RolesGuard } from './roles.guard.js';
+import { EmailModule } from '../email/email.module.js';
 import { loadEnv } from '../config/env.js';
 
 @Module({
@@ -17,6 +18,7 @@ import { loadEnv } from '../config/env.js';
         };
       },
     }),
+    EmailModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtAuthGuard, RolesGuard],

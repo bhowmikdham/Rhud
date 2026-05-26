@@ -19,7 +19,9 @@ export default function LoginPage() {
   const [showPw, setShowPw] = useState(false);
   const [remember, setRemember] = useState(true);
   const [status, setStatus] = useState<Status>('idle');
+  const [magicStatus, setMagicStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [magicNote, setMagicNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loading && user) router.replace('/dashboard');
@@ -44,6 +46,32 @@ export default function LoginPage() {
     } catch {
       setError('Invalid email or password.');
       setStatus('idle');
+    }
+  }
+
+  async function submitMagic(e: React.FormEvent) {
+    e.preventDefault();
+    if (magicStatus !== 'idle') return;
+    if (!email) {
+      setMagicNote('Enter your email first.');
+      return;
+    }
+    setMagicNote(null);
+    setMagicStatus('submitting');
+    try {
+      const r = await auth.requestMagicLink(email);
+      setMagicStatus('success');
+      // Dev convenience: when the api echoes back the token (NODE_ENV !==
+      // production), surface it inline so dev can click straight through
+      // without an inbox.
+      if (r.devToken) {
+        setMagicNote(`DEV link: /auth/magic?token=${r.devToken}`);
+      } else {
+        setMagicNote('Check your inbox for the sign-in link.');
+      }
+    } catch {
+      setMagicNote('Something went wrong. Try again.');
+      setMagicStatus('idle');
     }
   }
 
@@ -108,12 +136,13 @@ export default function LoginPage() {
               <SubmitButton status={status} label="Sign in" successLabel="Welcome back" />
             </form>
           ) : (
-            <form className="login-form" onSubmit={(e) => e.preventDefault()}>
+            <form className="login-form" onSubmit={submitMagic}>
               <Field label="Email" type="email" value={email} onChange={setEmail} autoFocus />
               <p className="login-helper">
                 We&apos;ll email you a one-tap sign-in link. No password needed.
               </p>
-              <SubmitButton status="idle" label="Send magic link" successLabel="Check your inbox" />
+              {magicNote && <div className="login-error">{magicNote}</div>}
+              <SubmitButton status={magicStatus} label="Send magic link" successLabel="Check your inbox" />
             </form>
           )}
 

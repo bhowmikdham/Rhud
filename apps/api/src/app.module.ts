@@ -19,6 +19,7 @@ import { ExtractionModule } from './extraction/extraction.module.js';
 import { SiteEnumModule } from './site-enum/site-enum.module.js';
 import { LeadManagementModule } from './lead-management/lead-management.module.js';
 import { ClassificationModule } from './classification/classification.module.js';
+import { EmailModule } from './email/email.module.js';
 import { HealthController } from './health.controller.js';
 
 @Module({
@@ -48,6 +49,7 @@ import { HealthController } from './health.controller.js';
     SiteEnumModule,
     LeadManagementModule,
     ClassificationModule,
+    EmailModule,
   ],
   controllers: [HealthController],
 })

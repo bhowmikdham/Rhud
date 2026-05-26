@@ -221,6 +221,28 @@ export const auth = {
   async me() {
     return request<{ sub: string; tid: string; role: string; email: string }>('/auth/me');
   },
+  /**
+   * Request a magic sign-in link. Always resolves successfully — the API
+   * returns `{ ok: true }` for unknown emails too (prevents enumeration).
+   * In dev (NODE_ENV !== 'production' on the api) the response also
+   * includes `devToken` for manual copy-paste; in prod the link is emailed.
+   */
+  async requestMagicLink(email: string) {
+    return request<{ ok: true; devToken?: string }>(
+      '/auth/magic-link/request',
+      { method: 'POST', body: JSON.stringify({ email }) },
+    );
+  },
+  /**
+   * Consume a magic-link token (e.g. from an email URL) and exchange it for
+   * a JWT + user. Throws ApiError on invalid/expired tokens.
+   */
+  async consumeMagicLink(token: string) {
+    return request<{ token: string; user: { sub: string; tid: string; role: string; email: string } }>(
+      '/auth/magic-link/consume',
+      { method: 'POST', body: JSON.stringify({ token }) },
+    );
+  },
 };
 
 // ── Templates ───────────────────────────────────────────────────────────────

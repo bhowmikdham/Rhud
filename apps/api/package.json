@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.654.0",
+    "@aws-sdk/client-ses": "^3.654.0",
     "@aws-sdk/s3-request-presigner": "^3.654.0",
     "@nestjs/common": "^10.4.4",
     "@nestjs/config": "^3.2.3",
