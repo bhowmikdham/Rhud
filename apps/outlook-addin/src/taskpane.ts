@@ -22,6 +22,20 @@
 
 // Build-time configuration. Vite inlines import.meta.env.* at compile time;
 // production builds set these via the addin Dockerfile's --mode flag.
+//
+// RHUD_API: where the task pane sends API calls. Points at rhud.net
+// (the API's actual host); the API explicitly allows addin.rhud.net via
+// CORS so these cross-origin fetches succeed.
+//
+// RHUD_WEB: used only for the post-create "Open in Rhud" success link.
+//
+// ADDIN_ORIGIN: must match the manifest's SourceLocation host exactly.
+// Used as the dialog URL for sign-in because Office.context.ui.
+// displayDialogAsync enforces strict same-origin (different subdomain
+// = different origin = rejected). The outer Caddy proxies /login and
+// related auth paths from addin.rhud.net to the same web container that
+// serves them on rhud.net, so the dialog gets the real login UI with
+// no code duplication.
 const RHUD_API = import.meta.env.VITE_RHUD_API ?? 'https://rhud.net';
 const RHUD_WEB = import.meta.env.VITE_RHUD_WEB ?? 'https://rhud.net';
 const ADDIN_ORIGIN = import.meta.env.VITE_ADDIN_ORIGIN ?? 'https://addin.rhud.net';
@@ -207,7 +221,11 @@ async function getOrAuthRhudJwt(): Promise<CachedAuth> {
 
   return new Promise<CachedAuth>((resolve, reject) => {
     Office.context.ui.displayDialogAsync(
-      `${RHUD_WEB}/login?return=addin`,
+      // Must be same-origin as the add-in (Office enforces strict
+      // protocol+host+port match). The outer Caddy at addin.rhud.net
+      // proxies /login to the web container so we get the real Rhud
+      // login page rendered under this origin.
+      `${ADDIN_ORIGIN}/login?return=addin`,
       { height: 60, width: 30, promptBeforeOpen: false },
       (open) => {
         if (open.status !== Office.AsyncResultStatus.Succeeded) {
@@ -276,6 +294,3 @@ function escapeHtml(s: string): string {
   }[c] as string));
 }
 
-// Silence "unused" lint for the addin-origin constant — it's a build-time
-// validation that the manifest's AppDomains match the deployed origin.
-void ADDIN_ORIGIN;

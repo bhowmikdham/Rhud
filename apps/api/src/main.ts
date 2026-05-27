@@ -12,7 +12,16 @@ async function bootstrap(): Promise<void> {
   });
 
   app.use(helmet());
-  app.enableCors({ origin: env.API_CORS_ORIGIN, credentials: true });
+  // API_CORS_ORIGIN is a comma-separated list — needed because the
+  // Outlook add-in lives on addin.rhud.net (separate origin from the
+  // web app at rhud.net) and needs to call the API for templates +
+  // opportunity creation. NestJS's enableCors() accepts an array of
+  // strings natively and echoes the matching origin back on each request.
+  const origins = env.API_CORS_ORIGIN
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  app.enableCors({ origin: origins, credentials: true });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

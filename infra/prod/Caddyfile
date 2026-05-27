@@ -14,11 +14,21 @@ www.rhud.net {
     redir https://rhud.net{uri} permanent
 }
 
-# ── addin.rhud.net — Outlook add-in static bundle ──────────────────
+# ── addin.rhud.net — Outlook add-in static bundle + auth proxy ─────
 # Hosts the task pane HTML, the auth-callback bridge, and the manifest
 # at https://addin.rhud.net/manifest.xml. The Outlook host fetches these
 # every time the task pane opens; Office requires HTTPS, which Caddy
 # provisions automatically via Let's Encrypt the same way as the apex.
+#
+# Why we proxy /login + /auth/* + /_next/* through this vhost too:
+# Office.context.ui.displayDialogAsync enforces strict same-origin —
+# the dialog URL must match the add-in's host (addin.rhud.net) exactly.
+# Different subdomain ⇒ different origin ⇒ Office rejects the dialog
+# with "Browser restrictions prevented us from creating the dialog box".
+# By proxying the existing Next.js login routes through addin.rhud.net,
+# the dialog opens at https://addin.rhud.net/login?return=addin which is
+# same-origin as the task pane. No need to duplicate the login UI in
+# the add-in itself.
 addin.rhud.net {
     encode gzip zstd
     header {
@@ -31,7 +41,40 @@ addin.rhud.net {
         Referrer-Policy            "strict-origin-when-cross-origin"
         -Server
     }
-    reverse_proxy outlook-addin:80
+
+    # ── Auth pages from the Next.js web app ──────────────────────
+    # Each path needs its own handle directive in Caddy v2 (path
+    # matchers don't combine in a single handle the way nginx
+    # location blocks do).
+    handle /login* {
+        reverse_proxy web:3000
+    }
+    handle /signup* {
+        reverse_proxy web:3000
+    }
+    handle /forgot-password* {
+        reverse_proxy web:3000
+    }
+    handle /reset-password* {
+        reverse_proxy web:3000
+    }
+    handle /verify-email* {
+        reverse_proxy web:3000
+    }
+    handle /auth/* {
+        reverse_proxy web:3000
+    }
+    # Next.js static + RSC streaming assets — without this the login
+    # page renders unstyled and the client-side JS won't hydrate.
+    handle /_next/* {
+        reverse_proxy web:3000
+    }
+
+    # ── Everything else: the add-in's own static bundle ──────────
+    handle {
+        reverse_proxy outlook-addin:80
+    }
+
     log {
         output stdout
         format console

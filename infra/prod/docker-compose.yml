@@ -91,8 +91,10 @@ services:
       NODE_ENV: production
       API_PORT: "8000"
       # All public URLs collapse to the apex since Caddy serves both
-      # the web and api on the same host.
-      API_CORS_ORIGIN: "${WEB_PUBLIC_URL}"
+      # the web and api on the same host. addin.rhud.net is added so
+      # the Outlook add-in (a separate origin) can call the API.
+      # main.ts splits this on commas → array of allowed origins.
+      API_CORS_ORIGIN: "${WEB_PUBLIC_URL},https://addin.rhud.net"
       WEB_PUBLIC_URL: "${WEB_PUBLIC_URL}"
       API_PUBLIC_URL: "${WEB_PUBLIC_URL}"
 
