@@ -84,4 +84,71 @@ body {
   background: #fafafa;
 }
 .signin-prompt p { margin: 0; font-size: 13px; color: var(--fg-muted); }
+
+/* Inline hint after a field label — used today for the "We unwrapped
+   this from a forwarded thread" notice on the client-email field, and
+   for the count next to "Detected fields". */
+.field-hint {
+  display: inline-block; margin-left: 6px;
+  font-size: 10px; font-weight: 500; color: var(--fg-muted);
+  background: #f0f3fa; border-radius: 10px; padding: 1px 6px;
+}
+.field-hint.hint-accent { color: var(--accent); background: #e7edff; }
+
+/* Structured key/value table. Borderless on the outside; a thin row
+   separator inside keeps long lists scannable. */
+.structured-fields {
+  border: 1px solid var(--border); border-radius: 4px;
+  max-height: 220px; overflow-y: auto;
+  background: var(--bg);
+}
+.structured-fields table { width: 100%; border-collapse: collapse; }
+.structured-fields th, .structured-fields td {
+  text-align: left; vertical-align: top;
+  padding: 5px 8px; font-weight: normal;
+  border-bottom: 1px solid #eee;
+  font-size: 12px;
+}
+.structured-fields tr:last-child th,
+.structured-fields tr:last-child td { border-bottom: 0; }
+.structured-fields th {
+  width: 42%;
+  color: var(--fg-muted);
+  word-break: break-word;
+}
+.structured-fields td { color: var(--fg); word-break: break-word; }
+.structured-fields td.empty { color: var(--fg-muted); font-style: italic; }
+
+/* Collapsed "Send a follow-up link too…" disclosure. Default state is
+   closed because the common case is "create the opportunity, deal with
+   gathering links from the web UI later." Expanding it reveals the
+   template selector + commits the add-in to a second API call. */
+.link-disclosure {
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.link-disclosure summary {
+  cursor: pointer;
+  padding: 8px 0;
+  font-weight: 500;
+  color: var(--fg);
+  list-style: none;
+}
+.link-disclosure summary::-webkit-details-marker { display: none; }
+.link-disclosure summary::before {
+  content: "▸ ";
+  display: inline-block;
+  color: var(--fg-muted);
+  transition: transform 0.15s;
+}
+.link-disclosure[open] summary::before { content: "▾ "; }
+.link-disclosure[open] { padding-bottom: 8px; }
+.link-disclosure-note {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
 [hidden] { display: none !important; }
