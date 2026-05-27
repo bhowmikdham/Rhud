@@ -27,7 +27,7 @@
     xsi:type="MailApp">
 
   <Id>50da4d3a-2967-48ed-8669-2c42acbb35c7</Id>
-  <Version>0.1.0</Version>
+  <Version>1.0.0.0</Version>
   <ProviderName>Rhud</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Rhud (dev)" />
@@ -97,7 +97,6 @@
                   </Icon>
                   <Action xsi:type="ShowTaskpane">
                     <SourceLocation resid="TaskpaneUrl" />
-                    <SupportsPinning>true</SupportsPinning>
                   </Action>
                 </Control>
               </Group>

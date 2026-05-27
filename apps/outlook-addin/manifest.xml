@@ -32,7 +32,9 @@
        and prod — Outlook treats the GUID as the add-in's identity and
        refuses to install two add-ins with the same Id in one mailbox. -->
   <Id>50da4d3a-2967-48ed-8669-2c42acbb35c7</Id>
-  <Version>0.1.0</Version>
+  <!-- Office requires this be ≥ 1.0.0 (four-part version; semver
+       pre-1.0 fails validation with "Manifest Version Too Low"). -->
+  <Version>1.0.0.0</Version>
   <ProviderName>Rhud</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Rhud" />
@@ -125,7 +127,12 @@
                   </Icon>
                   <Action xsi:type="ShowTaskpane">
                     <SourceLocation resid="TaskpaneUrl" />
-                    <SupportsPinning>true</SupportsPinning>
+                    <!-- <SupportsPinning> intentionally omitted: it's a
+                         VersionOverridesV1_1-only element and using it
+                         under V1_0 fails schema validation at sideload.
+                         The pane closes when the user switches messages
+                         (re-opening is one ribbon click). Add it back if
+                         we ever upgrade the VersionOverrides schema. -->
                   </Action>
                 </Control>
               </Group>
