@@ -1,7 +1,7 @@
 'use client';
 
 import './login.css';
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { auth } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -22,7 +22,24 @@ const ADDIN_CALLBACK_URL = process.env.NEXT_PUBLIC_ADDIN_CALLBACK_URL
 
 type Status = 'idle' | 'submitting' | 'success';
 
+/**
+ * Default export is the Suspense wrapper. `useSearchParams()` (used in
+ * LoginInner to detect the `?return=addin` flag from the Outlook add-in's
+ * sign-in dialog) makes the route dynamic; Next 14 fails the static
+ * prerender unless a Suspense boundary is present. Mirrors the same fix
+ * applied to /auth/magic in 43aad75. The fallback is intentionally blank
+ * — the page renders within milliseconds, so a flash of nothing is less
+ * jarring than half a login form.
+ */
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginInner />
+    </Suspense>
+  );
+}
+
+function LoginInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, loading, signIn } = useAuth();
