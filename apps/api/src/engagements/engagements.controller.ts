@@ -16,7 +16,13 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
 import { EngagementsService } from './engagements.service.js';
-import { CreateEngagementDto, CreateOpportunityFromEmailDto, UpdateClientInfoDto } from './dto.js';
+import {
+  CreateEngagementDto,
+  CreateOpportunityFromEmailDto,
+  CreateOpportunityFromEmailIngestDto,
+  PreviewFromEmailDto,
+  UpdateClientInfoDto,
+} from './dto.js';
 import { IngestionService } from '../ingestion/ingestion.service.js';
 import { IssueLinkForExistingDto, PromoteIngestDto } from '../ingestion/dto.js';
 
@@ -81,6 +87,96 @@ export class EngagementsController {
       salesEmployeeId: req.user.sub,
       dto,
       publicBaseUrl: baseUrl,
+    });
+  }
+
+  /**
+   * Create an opportunity from an inbound email *without* requiring a
+   * template (the modern Outlook-add-in default).
+   *
+   * The email body lands as an `email`-kind IngestionArtifact and is
+   * promoted in the same call. Extraction runs over the body so the
+   * scope fields populate from whatever the prospect described (or
+   * from a tabular RFP questionnaire the rep can see in the add-in
+   * preview).
+   *
+   * If the rep then expands the "Send a link too" disclosure in the
+   * add-in and picks a template, the add-in follows up with
+   * POST /opportunities/:id/links to attach the template and mint a
+   * gathering token — keeping the two concerns decoupled (capture the
+   * opportunity from the email; optionally request more structured
+   * answers later).
+   *
+   * Idempotent on (tenantId, messageId) via IngestionService's
+   * externalId dedupe — clicking Create twice returns the original
+   * engagement instead of duplicating.
+   *
+   * Roles: same as the other opportunity-create routes.
+   */
+  @Post('from-email-ingest')
+  @Roles('sales_employee', 'sales_manager', 'admin')
+  @HttpCode(201)
+  async createFromEmailIngest(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateOpportunityFromEmailIngestDto,
+  ): Promise<{ engagementId: string; artifactIds: string[] }> {
+    return this.ingestion.receiveAndPromote({
+      tenantId: req.tenantId,
+      source: 'email_import',
+      content: {
+        kind: 'email',
+        data: {
+          bodyText: dto.bodyText,
+          subject: dto.subject,
+          from: dto.fromEmail,
+        },
+      },
+      receivedBy: req.user.sub,
+      // RFC822 Message-Id flows into externalId so a second submit of
+      // the same email returns the existing artifactId rather than
+      // creating a duplicate.
+      externalId: dto.messageId,
+      salesEmployeeId: req.user.sub,
+      // Subject as the engagement's human-readable name. Truncated to
+      // 200 chars to match the Engagement.name column limit (any longer
+      // would error in the underlying Prisma write anyway).
+      name: dto.subject.slice(0, 200),
+      overrides: {
+        // Rep-confirmed clientEmail wins over the artifact's `from`
+        // even though they're usually the same — keeps the override
+        // path consistent with the paste-text ingest endpoint.
+        clientEmail: dto.fromEmail,
+        // Display-name preference: explicit override > sender's display
+        // name. Both are optional; if neither exists the column stays
+        // null and the UI falls back to clientEmail.
+        ...(dto.clientNameOverride
+          ? { clientName: dto.clientNameOverride }
+          : dto.fromName
+            ? { clientName: dto.fromName }
+            : {}),
+        ...(dto.fromName ? { contactName: dto.fromName } : {}),
+      },
+    });
+  }
+
+  /**
+   * Stateless preview for the Outlook add-in (and any future inbound-
+   * email surface). Resolves the apparent `From:` against the forwarded
+   * thread (the visible sender is usually a teammate, not the prospect)
+   * and pulls structured key/value rows out of HTML tables in the body
+   * (RFPs are usually questionnaires).
+   *
+   * Does NOT create an engagement — the rep still has to click Create.
+   * No DB writes. Same auth/roles as the create path so unauthenticated
+   * clients can't probe arbitrary email content through the parser.
+   */
+  @Post('preview-from-email')
+  @Roles('sales_employee', 'sales_manager', 'admin')
+  @HttpCode(200)
+  previewFromEmail(@Req() req: AuthedRequest, @Body() dto: PreviewFromEmailDto) {
+    return this.svc.previewFromEmail({
+      tenantUserEmail: req.user.email,
+      dto,
     });
   }
 

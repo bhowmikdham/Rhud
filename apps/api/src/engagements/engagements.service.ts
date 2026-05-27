@@ -2,8 +2,32 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { TenantDb, type PrismaTx } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { hashToken, mintToken } from '../gathering/token.util.js';
-import type { CreateEngagementDto, CreateOpportunityFromEmailDto } from './dto.js';
+import type {
+  CreateEngagementDto,
+  CreateOpportunityFromEmailDto,
+  PreviewFromEmailDto,
+} from './dto.js';
+import {
+  disambiguateForwardedSender,
+  extractStructuredFields,
+  type ParsedSender,
+  type StructuredField,
+} from './email-parser.js';
 import type { EngagementSource } from '@rhud/shared';
+
+export interface PreviewFromEmailResult {
+  /** Non-null when the apparent `From:` was internal (signed-in user or
+   *  same domain) AND a forwarded-thread header upstream pointed at an
+   *  external sender. The add-in uses this to fix the Client-email field
+   *  before the rep clicks Create. Null when no resolution was needed. */
+  parsedSender: ParsedSender | null;
+  /** True iff parsedSender was rewritten. Lets the panel show a "We
+   *  detected this is a forward — using the original sender" hint. */
+  isForwarded: boolean;
+  /** Key/value rows extracted from HTML tables in the body. Empty array
+   *  when the body is plain text or has no tabular content. */
+  structuredFields: StructuredField[];
+}
 
 export interface IssuedLink {
   engagementId: string;
@@ -517,6 +541,45 @@ export class EngagementsService {
     });
 
     return issued;
+  }
+
+  /**
+   * Preview what an email would turn into if the rep clicked Create.
+   * Stateless / read-only — safe to call repeatedly as the rep edits the
+   * panel. The Outlook add-in calls this once on pane load to:
+   *
+   *   1. Re-derive the sender against the forwarded thread. We pass
+   *      `tenantUserEmail` (the signed-in user) so the disambiguator
+   *      knows what "internal" means; this is more reliable than asking
+   *      the add-in to figure out the tenant's domain on its own.
+   *   2. Pull structured fields out of HTML tables. Most RFPs we see are
+   *      questionnaires laid out as tables; surfacing them as a key/value
+   *      list gives the rep a one-glance read of what the prospect asked
+   *      for, instead of the squashed text-coercion blob the previous
+   *      version showed.
+   *
+   * Why this lives on the server and not the add-in: the table-parsing
+   * heuristics are shared infrastructure (the direct-ingest paste/drop
+   * flow benefits too), and keeping them server-side means one place to
+   * fix when an RFP shape doesn't classify well.
+   */
+  previewFromEmail(args: {
+    tenantUserEmail: string;
+    dto: PreviewFromEmailDto;
+  }): PreviewFromEmailResult {
+    const parsedSender = disambiguateForwardedSender({
+      sender: { email: args.dto.fromEmail, name: args.dto.fromName },
+      tenantUserEmail: args.tenantUserEmail,
+      bodyText: args.dto.bodyText,
+    });
+    const structuredFields = args.dto.bodyHtml
+      ? extractStructuredFields(args.dto.bodyHtml)
+      : [];
+    return {
+      parsedSender,
+      isForwarded: parsedSender !== null,
+      structuredFields,
+    };
   }
 
   async list(tenantId: string): Promise<EngagementSummary[]> {
