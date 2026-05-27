@@ -74,16 +74,9 @@ Office.onReady(async (info) => {
 
   prefillFromMessage(item);
 
-  // Templates require auth — getOrAuthRhudJwt blocks on the sign-in
-  // dialog if we don't have a token yet.
-  try {
-    const auth = await getOrAuthRhudJwt();
-    await loadTemplates(auth.token);
-  } catch (err) {
-    setStatus(`Sign-in failed: ${(err as Error).message}`, 'error');
-    return;
-  }
-
+  // Wire up the form's submit + sign-out handlers regardless of auth
+  // state — they're idempotent and need to be ready by the time the
+  // user clicks them after sign-in.
   document.getElementById('opportunity-form')!.addEventListener('submit', async (e) => {
     e.preventDefault();
     await submitForm(item);
@@ -91,9 +84,43 @@ Office.onReady(async (info) => {
   document.getElementById('signout')!.addEventListener('click', () => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
-    setStatus('Signed out. Refresh the pane to sign back in.', 'success');
+    showSignInPrompt();
+    setStatus('Signed out.', 'success');
+  });
+
+  // Auth gate. If we already have a token, load templates and show the
+  // form. If not, show a "Sign in" button — clicking it (a real user
+  // gesture) is what's allowed to open the Office dialog. Auto-opening
+  // the dialog from onReady would be treated as an unsolicited popup
+  // and blocked by the browser.
+  const cached = readCachedAuth();
+  if (cached) {
+    showForm();
+    await loadTemplates(cached.token);
+  } else {
+    showSignInPrompt();
+  }
+
+  document.getElementById('signin')!.addEventListener('click', async () => {
+    try {
+      const auth = await getOrAuthRhudJwt();
+      showForm();
+      await loadTemplates(auth.token);
+    } catch (err) {
+      setStatus(`Sign-in failed: ${(err as Error).message}`, 'error');
+    }
   });
 });
+
+function showSignInPrompt(): void {
+  document.getElementById('signin-prompt')!.hidden = false;
+  document.getElementById('opportunity-form')!.hidden = true;
+}
+
+function showForm(): void {
+  document.getElementById('signin-prompt')!.hidden = true;
+  document.getElementById('opportunity-form')!.hidden = false;
+}
 
 function prefillFromMessage(item: Office.MessageRead): void {
   setInput('subject', item.subject ?? '');

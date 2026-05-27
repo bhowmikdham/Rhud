@@ -76,3 +76,12 @@ body {
 .status { font-size: 12px; min-height: 18px; }
 .status.error { color: var(--error); }
 .status.success { color: var(--success); }
+
+.signin-prompt {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px 12px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: #fafafa;
+}
+.signin-prompt p { margin: 0; font-size: 13px; color: var(--fg-muted); }
+[hidden] { display: none !important; }

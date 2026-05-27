@@ -23,9 +23,19 @@
         <div class="pane-title">New opportunity from this email</div>
       </header>
 
+      <!-- Sign-in prompt. Shown when no cached JWT. We don't auto-open the
+           sign-in dialog on pane load because browsers (Chrome, Edge,
+           Safari) treat that as an unsolicited popup and block it with
+           "Browser restrictions prevented us from creating the dialog box."
+           Requiring an explicit user click satisfies the popup heuristic. -->
+      <div id="signin-prompt" class="signin-prompt" hidden>
+        <p>Sign in to Rhud to create opportunities from this email.</p>
+        <button id="signin" type="button" class="primary">Sign in</button>
+      </div>
+
       <!-- Filled by taskpane.ts on Office.onReady. The user can edit any
            field before submitting. -->
-      <form id="opportunity-form" class="form">
+      <form id="opportunity-form" class="form" hidden>
         <label class="field">
           <span class="field-label">Template</span>
           <select id="templateId" required>
