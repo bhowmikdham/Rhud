@@ -75,6 +75,24 @@ fi
 log "building images (first run: ~5-10 min; cached rebuilds: ~1 min)"
 docker compose build
 
+# ── Apply pending Prisma migrations BEFORE swapping containers ──
+# Two reasons this happens here:
+#   1. The new image has the new prisma/migrations/* on disk. We use a
+#      one-shot container (`run --rm`) so we get the new migrations
+#      without yet stopping the currently-running api.
+#   2. The currently-running api keeps serving traffic during this
+#      step. Once migrations are done, the `up -d` below swaps the
+#      containers — by which time the schema already matches the new
+#      code. This closes the window where the new api would race
+#      against an un-migrated DB.
+#
+# `migrate deploy` is idempotent: if there's nothing pending it's a
+# no-op, so this is safe to always run.
+log "ensuring db is up before applying migrations"
+docker compose up -d db
+log "applying Prisma migrations"
+docker compose run --rm api ./node_modules/.bin/prisma migrate deploy --schema=prisma/schema.prisma
+
 log "starting stack"
 docker compose up -d
 

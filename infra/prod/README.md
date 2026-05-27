@@ -45,12 +45,23 @@ layers complete in about a minute.
 
 ## Migrations
 
-After the stack is up, run Prisma migrations against the prod DB:
+`./deploy.sh` applies pending Prisma migrations automatically between
+`docker compose build` and `docker compose up -d` — using a one-shot
+container off the freshly built image, so the currently-running api keeps
+serving traffic until the schema matches the new code. `prisma migrate
+deploy` is idempotent (no-ops if nothing's pending).
+
+To apply migrations manually against the prod DB (e.g. you SSH'd in to
+run a migration without rebuilding):
 
 ```bash
-docker compose exec api node node_modules/.bin/prisma migrate deploy \
+docker compose exec -T api ./node_modules/.bin/prisma migrate deploy \
   --schema=prisma/schema.prisma
 ```
+
+Note: this is `./node_modules/.bin/prisma`, not `node node_modules/.bin/prisma`
+— the binary is a shell-script wrapper, not a Node entrypoint, so invoking
+it with `node` fails with a `SyntaxError`.
 
 The api container connects as the `rhud` superuser via `DATABASE_URL` for
 migrations and as `rhud_app` via `APP_DATABASE_URL` for runtime queries.
