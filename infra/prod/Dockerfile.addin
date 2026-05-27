@@ -1,0 +1,42 @@
+# Outlook add-in image. Builds the static bundle in a Node stage and serves
+# it from a tiny Caddy stage. Two stages keep the final image to ~50 MB —
+# no pnpm/Node in the runtime layer.
+#
+# Build context is the monorepo root (see infra/prod/docker-compose.yml).
+
+# ── Stage 1: build the Vite bundle ────────────────────────────────────
+FROM node:22-alpine AS build
+
+# Mirror the pnpm version pinned in the root package.json's packageManager
+# field. corepack reads that pin from the root package.json automatically.
+RUN corepack enable
+
+WORKDIR /repo
+
+# Copy the workspace manifests first so the dep-install layer is cached
+# until any of them change. Without this, every source edit busts the
+# install cache (slow on EC2 with cold layers).
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY apps/outlook-addin/package.json apps/outlook-addin/
+
+# Install only what the addin needs. --filter ...^ pulls in its workspace
+# deps too (none today, but future-proofs against shared utility packages).
+RUN pnpm install --filter @rhud/outlook-addin... --frozen-lockfile
+
+# Now the source.
+COPY apps/outlook-addin apps/outlook-addin
+
+# Build. Vite emits to apps/outlook-addin/dist.
+RUN pnpm --filter @rhud/outlook-addin build
+
+# ── Stage 2: serve static files via Caddy ─────────────────────────────
+FROM caddy:2-alpine
+
+# A minimal Caddyfile that just serves /srv. The outer Caddy at
+# infra/prod/Caddyfile handles TLS + the public hostname; this inner
+# Caddy is only reached via the rhud bridge network on port 80.
+COPY infra/prod/addin.Caddyfile /etc/caddy/Caddyfile
+
+COPY --from=build /repo/apps/outlook-addin/dist /srv
+
+EXPOSE 80

@@ -176,6 +176,15 @@ model Engagement {
   /// flow + outbound Odoo push are skipped for these (the canonical
   /// source is Odoo; we mirror it).
   importedFromOdoo    Boolean  @default(false) @map("imported_from_odoo")
+  /// RFC822 Message-Id of the inbound email that this engagement was
+  /// created from (Outlook / Gmail add-in flow). Stored solely for
+  /// idempotency: the add-in retries are non-rare (user clicks twice,
+  /// network blip), so the create endpoint short-circuits when it sees
+  /// a Message-Id it's already processed for this tenant.
+  ///
+  /// Per-tenant unique (see @@unique below): two tenants can independently
+  /// receive forwards of the same email without colliding.
+  sourceMessageId     String?  @map("source_message_id")
   // Loop cursor state, keyed by loop node id:
   //   { "<loopNodeId>": { iter: <currentIteration>, status: 'iterating'|'done' } }
   // The runtime updates this as the responder enters/exits each loop;
@@ -262,6 +271,11 @@ model Engagement {
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([salesEmployeeId])
+  // Per-tenant unique on source_message_id. Postgres treats multiple NULLs
+  // as distinct, so engagements created natively (sourceMessageId = NULL)
+  // never collide with each other. Only inbound-email-created rows compete
+  // for uniqueness — exactly the dedup behaviour we want.
+  @@unique([tenantId, sourceMessageId], name: "engagement_tenant_source_message_id_uniq")
   @@map("engagements")
 }
 

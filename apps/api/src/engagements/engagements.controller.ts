@@ -16,7 +16,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
 import { EngagementsService } from './engagements.service.js';
-import { CreateEngagementDto, UpdateClientInfoDto } from './dto.js';
+import { CreateEngagementDto, CreateOpportunityFromEmailDto, UpdateClientInfoDto } from './dto.js';
 
 /** PATCH body for the reviewer-fillable scope fields (assumptions,
  *  exclusions, delivery timeline override). Phase A. All optional —
@@ -43,6 +43,29 @@ export class EngagementsController {
   create(@Req() req: AuthedRequest, @Body() dto: CreateEngagementDto) {
     const baseUrl = process.env.WEB_PUBLIC_URL ?? 'http://localhost:3000';
     return this.svc.issue({
+      tenantId: req.tenantId,
+      salesEmployeeId: req.user.sub,
+      dto,
+      publicBaseUrl: baseUrl,
+    });
+  }
+
+  /**
+   * Create an opportunity from an inbound email. Used by the Outlook
+   * add-in (apps/outlook-addin) — the task pane reads the open message
+   * via Office.js, lets the rep pick a template, and POSTs the structured
+   * payload here.
+   *
+   * Same auth + roles as the regular create route. Idempotent on
+   * (tenantId, messageId) — clicking the add-in's button twice for the
+   * same email returns the original engagement instead of duplicating.
+   */
+  @Post('from-email')
+  @Roles('sales_employee', 'sales_manager', 'admin')
+  @HttpCode(201)
+  createFromEmail(@Req() req: AuthedRequest, @Body() dto: CreateOpportunityFromEmailDto) {
+    const baseUrl = process.env.WEB_PUBLIC_URL ?? 'http://localhost:3000';
+    return this.svc.issueFromEmail({
       tenantId: req.tenantId,
       salesEmployeeId: req.user.sub,
       dto,

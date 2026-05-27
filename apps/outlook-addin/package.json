@@ -1,0 +1,20 @@
+{
+  "name": "@rhud/outlook-addin",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Rhud Outlook add-in — turn an inbound email into a Rhud opportunity",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/office-js": "^1.0.470",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

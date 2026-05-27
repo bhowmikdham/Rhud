@@ -1,0 +1,27 @@
+# Inner Caddyfile baked into the addin container. Only ever reachable on
+# the rhud bridge network (port 80); TLS termination happens at the outer
+# Caddy in front of all services.
+#
+# `try_files` makes the SPA-style routing work — falls back to index.html
+# for any path that doesn't match a real file. Today the addin has only
+# two real entry HTMLs (index, auth-callback), so the fallback rarely
+# fires, but it's cheap insurance against future client-side routes.
+
+:80 {
+    root * /srv
+    encode gzip
+    file_server
+
+    # Cache static assets aggressively. The Vite build emits hashed
+    # filenames for JS/CSS, so they're safe to cache forever; HTML is
+    # served fresh so manifest URL changes propagate.
+    @assets path *.js *.css *.png *.jpg *.svg *.woff *.woff2
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+    @html path *.html
+    header @html Cache-Control "no-cache, must-revalidate"
+
+    # Office requires the manifest XML to be served with the right
+    # content-type. Caddy infers this for .xml; explicit for safety.
+    @manifest path *.xml
+    header @manifest Content-Type "application/xml; charset=utf-8"
+}

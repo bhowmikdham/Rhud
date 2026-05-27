@@ -14,6 +14,31 @@ www.rhud.net {
     redir https://rhud.net{uri} permanent
 }
 
+# ── addin.rhud.net — Outlook add-in static bundle ──────────────────
+# Hosts the task pane HTML, the auth-callback bridge, and the manifest
+# at https://addin.rhud.net/manifest.xml. The Outlook host fetches these
+# every time the task pane opens; Office requires HTTPS, which Caddy
+# provisions automatically via Let's Encrypt the same way as the apex.
+addin.rhud.net {
+    encode gzip zstd
+    header {
+        Strict-Transport-Security  "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options     "nosniff"
+        # NB: not X-Frame-Options DENY — the Outlook host loads the
+        # task pane in a sandboxed iframe, and DENY would break it.
+        # We rely on the manifest's AppDomains allow-list as the
+        # frame-source policy.
+        Referrer-Policy            "strict-origin-when-cross-origin"
+        -Server
+    }
+    reverse_proxy outlook-addin:80
+    log {
+        output stdout
+        format console
+        level  INFO
+    }
+}
+
 # ── apex: rhud.net ─────────────────────────────────────────────────
 rhud.net {
     encode gzip zstd

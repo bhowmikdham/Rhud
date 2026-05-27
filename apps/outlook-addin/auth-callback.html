@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rhud · Sign-in</title>
+    <!--
+      This page lives at https://addin.rhud.net/auth-callback.html and is
+      ONLY ever loaded inside an Office sign-in dialog. The flow:
+        1. taskpane.ts opens an Office dialog to https://rhud.net/login?return=addin
+        2. The user signs in on the existing Rhud login page.
+        3. The login page detects ?return=addin and redirects to
+             https://addin.rhud.net/auth-callback.html#token=<jwt>&user=<base64-json>
+        4. This page runs auth-callback.ts: parses the fragment, calls
+             Office.context.ui.messageParent({token, user}), and closes.
+        5. The parent task pane receives the token via DialogMessageReceived
+             and caches it in localStorage.
+    -->
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; padding: 16px; color: #333; }
+    </style>
+  </head>
+  <body>
+    <p>Signing you in to Rhud…</p>
+    <script type="module" src="/src/auth-callback.ts"></script>
+  </body>
+</html>

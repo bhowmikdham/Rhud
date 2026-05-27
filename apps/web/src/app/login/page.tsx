@@ -2,16 +2,35 @@
 
 import './login.css';
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { auth } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Icon } from '@/components/icon';
+
+/**
+ * When the login page is opened by the Outlook add-in's sign-in dialog,
+ * we don't redirect to /dashboard on success. Instead, the page redirects
+ * to a hardcoded callback URL on addin.rhud.net with the JWT in the URL
+ * fragment, which the add-in's bridge page reads and hands back to the
+ * task pane via Office.context.ui.messageParent.
+ *
+ * Hardcoded (not from a query param) on purpose — otherwise an attacker
+ * could craft /login?return=https://evil.example/ to siphon tokens.
+ */
+const ADDIN_CALLBACK_URL = process.env.NEXT_PUBLIC_ADDIN_CALLBACK_URL
+  ?? 'https://addin.rhud.net/auth-callback.html';
 
 type Status = 'idle' | 'submitting' | 'success';
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading, signIn } = useAuth();
+
+  // `?return=addin` is set by apps/outlook-addin when it opens this page
+  // inside an Office dialog. Triggers the alternate redirect path that
+  // hands the token back to the add-in instead of going to /dashboard.
+  const isAddinFlow = searchParams.get('return') === 'addin';
 
   const [mode, setMode] = useState<'password' | 'magic'>('password');
   const [email, setEmail] = useState('');
@@ -24,8 +43,26 @@ export default function LoginPage() {
   const [magicNote, setMagicNote] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!loading && user) router.replace('/dashboard');
-  }, [loading, user, router]);
+    // Don't auto-redirect to /dashboard for the addin flow — if the user
+    // happens to already be signed in, we still want to bounce them
+    // through the callback so the addin gets the token.
+    if (!loading && user && !isAddinFlow) router.replace('/dashboard');
+  }, [loading, user, router, isAddinFlow]);
+
+  /**
+   * Hand the JWT back to the Outlook add-in by redirecting to the
+   * addin-hosted callback page with token + user in the URL fragment
+   * (fragments aren't sent to servers, so the JWT doesn't show up in
+   * access logs). The callback page reads the fragment and calls
+   * Office.context.ui.messageParent to deliver it to the task pane.
+   */
+  function redirectToAddinCallback(token: string, userPayload: object): void {
+    const userB64 = btoa(JSON.stringify(userPayload));
+    const target = `${ADDIN_CALLBACK_URL}#token=${encodeURIComponent(token)}&user=${encodeURIComponent(userB64)}`;
+    // Hard navigation rather than router.replace — we're leaving the
+    // Next.js app for the add-in's static origin.
+    window.location.replace(target);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -40,6 +77,13 @@ export default function LoginPage() {
       const r = await auth.login(email, password);
       setStatus('success');
       setTimeout(() => {
+        if (isAddinFlow) {
+          // Skip signIn() — we don't want the add-in's sign-in to also
+          // affect the user's main rhud.net browser tab. The add-in
+          // keeps its own JWT in its own localStorage (different origin).
+          redirectToAddinCallback(r.token, r.user);
+          return;
+        }
         signIn(r.token, r.user);
         router.replace('/dashboard');
       }, 600);

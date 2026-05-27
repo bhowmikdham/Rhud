@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rhud · Create Opportunity</title>
+    <!--
+      Office.js is loaded from Microsoft's CDN per Office Add-in policy —
+      bundling our own copy is explicitly not supported (Outlook expects
+      the CDN script so it can match versions to the host). The page must
+      wait for Office.onReady() before touching the mailbox item.
+    -->
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="pane">
+      <header class="pane-head">
+        <div class="brand">
+          <span class="brand-mark">r</span>
+          <span class="brand-text">Rhud</span>
+        </div>
+        <div class="pane-title">New opportunity from this email</div>
+      </header>
+
+      <!-- Filled by taskpane.ts on Office.onReady. The user can edit any
+           field before submitting. -->
+      <form id="opportunity-form" class="form">
+        <label class="field">
+          <span class="field-label">Template</span>
+          <select id="templateId" required>
+            <option value="">Loading…</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Client email</span>
+          <input id="fromEmail" type="email" required />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Contact name</span>
+          <input id="fromName" type="text" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Client name</span>
+          <input id="clientNameOverride" type="text" placeholder="Defaults to contact name" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Subject</span>
+          <input id="subject" type="text" required />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Body (preview)</span>
+          <textarea id="body" rows="4" readonly></textarea>
+        </label>
+
+        <button id="create" type="submit" class="primary">Create opportunity</button>
+        <button id="signout" type="button" class="link">Sign out</button>
+      </form>
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </main>
+
+    <script type="module" src="/src/taskpane.ts"></script>
+  </body>
+</html>

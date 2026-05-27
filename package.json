@@ -12,6 +12,8 @@
     "api:dev": "pnpm --filter @rhud/api dev",
     "web:dev": "pnpm --filter @rhud/web dev",
     "ml:dev": "cd apps/ml && uvicorn rhud_ml.main:app --reload --port 8001",
+    "addin:dev": "pnpm --filter @rhud/outlook-addin dev",
+    "addin:build": "pnpm --filter @rhud/outlook-addin build",
     "dev:all": "concurrently --names api,web,ml --prefix-colors blue,magenta,green --kill-others-on-fail \"pnpm api:dev\" \"pnpm web:dev\" \"pnpm ml:dev\"",
     "doctor": "bash scripts/doctor.sh",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d",

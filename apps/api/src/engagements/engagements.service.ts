@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { TenantDb } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { hashToken, mintToken } from '../gathering/token.util.js';
-import type { CreateEngagementDto } from './dto.js';
+import type { CreateEngagementDto, CreateOpportunityFromEmailDto } from './dto.js';
 
 export interface IssuedLink {
   engagementId: string;
@@ -156,6 +156,126 @@ export class EngagementsService {
       url: `${args.publicBaseUrl.replace(/\/$/, '')}/g/${token}`,
       expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  /**
+   * Create an engagement from an inbound email (Outlook add-in flow).
+   *
+   * Two responsibilities on top of {@link issue}:
+   *   1. **Idempotency.** We look up `(tenantId, messageId)` first; if the
+   *      same email has already been processed, return the existing
+   *      engagement instead of creating a duplicate. This protects against
+   *      double-clicks, retries, and the user opening the add-in twice on
+   *      the same message.
+   *   2. **Provenance.** We persist `sourceMessageId` on the row and emit
+   *      an `engagement_created_from_email` thread event so the audit
+   *      timeline shows which inbound email kicked off the opportunity.
+   *
+   * Field mapping (email → engagement):
+   *   - subject       → name (truncated to 200 chars, the column's limit)
+   *   - fromEmail     → clientEmail
+   *   - fromName      → contactName
+   *   - clientNameOverride (or fromName) → clientName
+   */
+  async issueFromEmail(args: {
+    tenantId: string;
+    salesEmployeeId: string;
+    dto: CreateOpportunityFromEmailDto;
+    publicBaseUrl: string;
+  }): Promise<IssuedLink> {
+    // Idempotency check — separate tx is fine, RLS scopes it to this tenant.
+    const existing = await this.tenantDb.run(args.tenantId, async (db) => {
+      return db.engagement.findFirst({
+        where: { sourceMessageId: args.dto.messageId },
+        select: { id: true },
+      });
+    });
+    if (existing) {
+      // Pull the existing token so the add-in still gets a usable URL.
+      // The `getById` path returns `gatheringLink: { url, ... }`; we
+      // unwrap to the IssuedLink shape the add-in expects.
+      const detail = await this.getById(args.tenantId, existing.id, {
+        publicBaseUrl: args.publicBaseUrl,
+      });
+      if (!detail.gatheringLink) {
+        // Defensive: an engagement always has a token unless something
+        // hand-deleted it. Treat as a server error rather than silently
+        // re-issuing — the operator wants to know.
+        throw new BadRequestException('existing_engagement_missing_token');
+      }
+      return {
+        engagementId: existing.id,
+        // The plaintext token isn't separately exposed by getById; parse
+        // it back out of the URL. This avoids changing getById's return
+        // shape just for this code path.
+        token: detail.gatheringLink.url.split('/g/').pop() ?? '',
+        url: detail.gatheringLink.url,
+        expiresAt: detail.gatheringLink.expiresAt,
+      };
+    }
+
+    // Map email → CreateEngagementDto. Subject becomes the human-readable
+    // name (it's almost always more descriptive than auto-generated ones).
+    const mappedDto: CreateEngagementDto = {
+      templateId: args.dto.templateId,
+      clientEmail: args.dto.fromEmail,
+      name: args.dto.subject.slice(0, 200),
+      // Spread optionals only if set — strict exactOptionalPropertyTypes.
+      ...((args.dto.clientNameOverride ?? args.dto.fromName)
+        ? { clientName: args.dto.clientNameOverride ?? args.dto.fromName }
+        : {}),
+      ...(args.dto.fromName ? { contactName: args.dto.fromName } : {}),
+    };
+
+    // Delegate to the standard issue path — gets us the template
+    // validation, gathering token, link_issued event, notification
+    // fan-out, all for free.
+    const issued = await this.issue({
+      tenantId: args.tenantId,
+      salesEmployeeId: args.salesEmployeeId,
+      dto: mappedDto,
+      publicBaseUrl: args.publicBaseUrl,
+    });
+
+    // Backfill the source_message_id (issue() doesn't take it) and emit
+    // the provenance thread event. Both happen in the same tx so the
+    // engagement is never in a half-attributed state.
+    await this.tenantDb.run(args.tenantId, async (db) => {
+      await db.engagement.update({
+        where: { id: issued.engagementId },
+        data: { sourceMessageId: args.dto.messageId },
+      });
+      await this.thread.emitWithin(db, args.tenantId, {
+        engagementId: issued.engagementId,
+        eventType: 'engagement_created_from_email',
+        actorType: 'user',
+        actorId: args.salesEmployeeId,
+        payload: {
+          source: args.dto.source ?? 'outlook',
+          messageId: args.dto.messageId,
+          fromEmail: args.dto.fromEmail,
+          ...(args.dto.fromName ? { fromName: args.dto.fromName } : {}),
+          subject: args.dto.subject,
+          // 500-char snippet keeps the timeline readable; the rep can
+          // always go back to the original email in their inbox for the
+          // full body.
+          bodySnippet: args.dto.bodyText.slice(0, 500),
+        },
+      });
+    });
+
+    void this.thread.dispatchAfterCommit(args.tenantId, {
+      engagementId: issued.engagementId,
+      eventType: 'engagement_created_from_email',
+      actorType: 'user',
+      actorId: args.salesEmployeeId,
+      payload: {
+        source: args.dto.source ?? 'outlook',
+        messageId: args.dto.messageId,
+      },
+    });
+
+    return issued;
   }
 
   async list(tenantId: string): Promise<EngagementSummary[]> {

@@ -27,9 +27,28 @@ services:
         condition: service_started
       api:
         condition: service_started
+      outlook-addin:
+        condition: service_started
     deploy:
       resources:
         limits: { memory: 100M }
+    networks: [rhud]
+
+  # ── Outlook add-in (static files served by inner Caddy) ──────────
+  # Served at https://addin.rhud.net via the outer Caddy vhost. The
+  # build stage in Dockerfile.addin emits apps/outlook-addin/dist and
+  # the runtime stage copies it into /srv. Tiny image (~50 MB), tiny
+  # memory footprint (~20 MB).
+  outlook-addin:
+    image: rhud-outlook-addin:latest
+    container_name: rhud-outlook-addin
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: infra/prod/Dockerfile.addin
+    deploy:
+      resources:
+        limits: { memory: 64M }
     networks: [rhud]
 
   # ── Next.js front-end ────────────────────────────────────────────

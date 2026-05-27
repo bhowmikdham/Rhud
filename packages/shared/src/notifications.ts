@@ -110,6 +110,11 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   final_approval_requested:  ['sales_employee', 'sales_manager'],
   final_approval_granted:    ['sales_employee', 'sales_manager'],
   final_approval_rejected:   ['sales_employee', 'sales_manager'],
+  // Inbound-email creation (Outlook add-in). The rep who created it
+  // already knows — they just clicked the button — so no rep email.
+  // Sales manager gets the heads-up so they see new inbound work
+  // landing in the pipeline without having to refresh the dashboard.
+  engagement_created_from_email: ['sales_manager'],
 };
 
 /**

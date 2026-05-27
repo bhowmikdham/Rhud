@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Outlook Add-in manifest for Rhud.
+
+  Two things to fill in before sideloading or submitting to AppSource:
+    1. <Id> — generate a stable v4 GUID per environment (dev / staging /
+       prod). DO NOT reuse the same GUID across environments; Outlook
+       treats the GUID as the add-in's identity and will conflict.
+    2. The four hardcoded URLs (https://addin.rhud.net/...) — change to
+       your dev URL (e.g. https://localhost:4000) for local testing.
+
+  Icon URLs (16/32/64/80/128 px) currently point at addin.rhud.net/icons/
+  — those PNGs are placeholders. Replace with real Rhud branding before
+  shipping. AppSource requires all five sizes.
+
+  Manifest schema reference:
+    https://learn.microsoft.com/en-us/office/dev/add-ins/reference/manifest/
+
+  This manifest uses the v1.1 schema + VersionOverrides v1.0, which is
+  the maximum compatible with all Outlook hosts (Win, Mac, Web, mobile).
+  The newer Microsoft 365 unified JSON manifest is web-only as of 2026.
+-->
+<OfficeApp
+    xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+    xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0"
+    xsi:type="MailApp">
+
+  <!-- Stable identity for the DEV environment. Generate a fresh GUID
+       (`uuidgen` on macOS, `[guid]::NewGuid()` on Windows) for staging
+       and prod — Outlook treats the GUID as the add-in's identity and
+       refuses to install two add-ins with the same Id in one mailbox. -->
+  <Id>50da4d3a-2967-48ed-8669-2c42acbb35c7</Id>
+  <Version>0.1.0</Version>
+  <ProviderName>Rhud</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Rhud" />
+  <Description DefaultValue="Turn an inbound email into a Rhud opportunity in one click." />
+  <IconUrl DefaultValue="https://addin.rhud.net/icons/icon-64.png" />
+  <HighResolutionIconUrl DefaultValue="https://addin.rhud.net/icons/icon-128.png" />
+  <SupportUrl DefaultValue="https://rhud.net/support" />
+
+  <!-- AppDomains: any origin the task pane will fetch from or navigate
+       to. Outlook blocks anything not listed here. -->
+  <AppDomains>
+    <AppDomain>https://rhud.net</AppDomain>
+    <AppDomain>https://addin.rhud.net</AppDomain>
+  </AppDomains>
+
+  <Hosts>
+    <Host Name="Mailbox" />
+  </Hosts>
+
+  <Requirements>
+    <!-- Mailbox 1.5 is the lowest set that supports
+         displayDialogAsync — needed for our sign-in flow. -->
+    <Sets>
+      <Set Name="Mailbox" MinVersion="1.5" />
+    </Sets>
+  </Requirements>
+
+  <!-- Legacy <FormSettings> block. Required even when we override with
+       VersionOverrides below; older Outlook clients fall back to this.
+       The ribbon button only appears on hosts that honour
+       VersionOverrides; on older hosts the user opens the pane from
+       the "View add-ins" menu instead. -->
+  <FormSettings>
+    <Form xsi:type="ItemRead">
+      <DesktopSettings>
+        <SourceLocation DefaultValue="https://addin.rhud.net/index.html" />
+        <RequestedHeight>450</RequestedHeight>
+      </DesktopSettings>
+    </Form>
+  </FormSettings>
+
+  <!-- ReadWriteMailbox: needed so item.body.getAsync returns the full
+       body, not just the visible portion. ReadItem is too narrow. -->
+  <Permissions>ReadWriteMailbox</Permissions>
+
+  <!-- Only activate on actual message reads. Skips appointments,
+       drafts, and reading-pane previews of non-messages. -->
+  <Rule xsi:type="RuleCollection" Mode="Or">
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read" />
+  </Rule>
+
+  <DisableEntityHighlighting>false</DisableEntityHighlighting>
+
+  <!--
+    VersionOverrides — the modern part of the manifest. Adds the ribbon
+    button + supports the newer Outlook hosts. Old hosts ignore this
+    block and use FormSettings above.
+  -->
+  <VersionOverrides
+      xmlns="http://schemas.microsoft.com/office/mailappversionoverrides"
+      xsi:type="VersionOverridesV1_0">
+    <Requirements>
+      <bt:Sets DefaultMinVersion="1.5">
+        <bt:Set Name="Mailbox" />
+      </bt:Sets>
+    </Requirements>
+    <Hosts>
+      <Host xsi:type="MailHost">
+        <DesktopFormFactor>
+          <!-- FunctionFile is required even if we don't use a UI-less
+               command — the schema demands the element. -->
+          <FunctionFile resid="FunctionFileUrl" />
+
+          <!-- The message-read ribbon. This is where the button appears
+               when the user is reading an email. -->
+          <ExtensionPoint xsi:type="MessageReadCommandSurface">
+            <OfficeTab id="TabDefault">
+              <Group id="rhudGroup">
+                <Label resid="GroupLabel" />
+                <Control xsi:type="Button" id="createOpportunityBtn">
+                  <Label resid="BtnLabel" />
+                  <Supertip>
+                    <Title resid="BtnLabel" />
+                    <Description resid="BtnDesc" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon16" />
+                    <bt:Image size="32" resid="Icon32" />
+                    <bt:Image size="80" resid="Icon80" />
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <SourceLocation resid="TaskpaneUrl" />
+                    <SupportsPinning>true</SupportsPinning>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon16" DefaultValue="https://addin.rhud.net/icons/icon-16.png" />
+        <bt:Image id="Icon32" DefaultValue="https://addin.rhud.net/icons/icon-32.png" />
+        <bt:Image id="Icon80" DefaultValue="https://addin.rhud.net/icons/icon-80.png" />
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="TaskpaneUrl" DefaultValue="https://addin.rhud.net/index.html" />
+        <!-- Reserved for future UI-less ribbon commands (e.g. a
+             one-click "create from email with default template"). Today
+             the file just no-ops on load. -->
+        <bt:Url id="FunctionFileUrl" DefaultValue="https://addin.rhud.net/index.html" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="GroupLabel" DefaultValue="Rhud" />
+        <bt:String id="BtnLabel" DefaultValue="Create Opportunity" />
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="BtnDesc" DefaultValue="Create a Rhud opportunity from this email." />
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

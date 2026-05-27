@@ -1,0 +1,45 @@
+import { defineConfig } from 'vite';
+import { resolve } from 'node:path';
+
+/**
+ * Two HTML entry points:
+ *   - index.html         → the task pane (the main "Create Opportunity" UI)
+ *   - auth-callback.html → tiny bridge page that runs inside the sign-in
+ *                          dialog popup. It reads the JWT out of the URL
+ *                          fragment (set by the rhud.net /login redirect)
+ *                          and hands it back to the parent task pane via
+ *                          Office.context.ui.messageParent().
+ *
+ * Both are emitted to dist/ as plain static files. The Caddy container at
+ * infra/prod serves dist/ on addin.rhud.net.
+ *
+ * Office add-ins require HTTPS for both prod and dev. For local development,
+ * `pnpm --filter @rhud/outlook-addin dev` runs Vite with --https, which
+ * generates a self-signed cert. You'll need to trust that cert in your OS
+ * keychain before Outlook will load the manifest.
+ */
+export default defineConfig({
+  root: '.',
+  base: '/',
+  publicDir: 'public',
+  server: {
+    port: 4000,
+    // Office requires HTTPS to load add-in sourceLocation URLs. Vite
+    // generates a self-signed cert when `https: true` and no cert files
+    // are provided — fine for dev; you'll get a browser warning the first
+    // time and need to accept it.
+    https: {},
+    host: '0.0.0.0',
+    strictPort: true,
+  },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        taskpane: resolve(__dirname, 'index.html'),
+        authCallback: resolve(__dirname, 'auth-callback.html'),
+      },
+    },
+  },
+});

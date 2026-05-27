@@ -109,6 +109,16 @@ export const THREAD_EVENT_TYPES = [
   /// VP or CEO rejected the gated approval; status → 'rejected'.
   /// Payload: `{ level, approverRole, reason }`
   'final_approval_rejected',
+  /// Engagement was created from an external email (e.g. via the Outlook
+  /// add-in). Emitted once at creation time alongside `link_issued`, so the
+  /// audit timeline preserves provenance — the rep can see which inbound
+  /// email kicked off the opportunity. Payload:
+  ///   { source: 'outlook' | 'gmail' | 'manual_paste',
+  ///     messageId, fromEmail, fromName?, subject, bodySnippet }
+  /// `bodySnippet` is the first ~500 chars of the email body (full body is
+  /// not stored — too noisy for the timeline and we don't have a separate
+  /// raw-email store yet).
+  'engagement_created_from_email',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];
