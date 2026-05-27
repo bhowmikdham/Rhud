@@ -28,6 +28,14 @@ export interface StructuredField {
   value: string;
 }
 
+/** Hard cap on how many rows we return from `extractStructuredFields`.
+ *  A pathological email with thousands of `<table>` rows could otherwise
+ *  freeze the add-in's `innerHTML` render and bloat the API response.
+ *  100 is well past the largest RFP questionnaires we've seen (~40 rows).
+ *  Truncation is silent — the add-in's "Detected fields (N)" chip will
+ *  just stop counting at 100; nothing breaks. */
+export const MAX_STRUCTURED_FIELDS = 100;
+
 /**
  * If the apparent sender is internal (same address or same domain as
  * the signed-in tenant user), walk the forwarded thread headers in the
@@ -60,9 +68,16 @@ export function disambiguateForwardedSender(args: {
   // (closest to current), the last is the original sender. We want the
   // *first non-internal* one — that's the closest external party, the
   // real prospect.
+  //
+  // Only accept a `From:` line as a real forwarded header if it's
+  // followed within the next ~5 non-empty lines by one of `To:`,
+  // `Date:`, `Sent:`, or `Subject:`. Bare `From:` lines in quoted
+  // blocks, code snippets, and body prose ("From now on we'll do…")
+  // would otherwise produce false-positive senders.
   const fromLineRe = /^[ \t]*From:\s*(.+)$/gim;
   let m: RegExpExecArray | null;
   while ((m = fromLineRe.exec(args.bodyText)) !== null) {
+    if (!looksLikeForwardedHeaderBlock(args.bodyText, m.index)) continue;
     const parsed = parseFromHeader(m[1]!);
     if (!parsed) continue;
     const d = domainOf(parsed.email.toLowerCase());
@@ -74,17 +89,44 @@ export function disambiguateForwardedSender(args: {
 }
 
 /**
+ * Confirm the `From:` line at byteOffset is part of an Outlook-style
+ * forwarded header block by looking for any of To:/Date:/Sent:/Subject:
+ * within the next few non-empty lines. Without this guard the disambiguator
+ * latches onto bare `From:` mentions in body prose.
+ */
+function looksLikeForwardedHeaderBlock(body: string, byteOffset: number): boolean {
+  // Look at the next ~600 chars (typically covers 5-6 lines including
+  // long display names). Outlook's forwarded block fits well within this;
+  // anything beyond is almost certainly not a real header block.
+  const window = body.slice(byteOffset, byteOffset + 600);
+  return /^[ \t]*(To|Date|Sent|Subject)\s*:/im.test(window);
+}
+
+/**
  * Pull structured key/value pairs out of HTML tables in the body.
  *
- * Heuristics:
+ * Heuristics for what counts as a "real" data table (vs. layout / signature
+ * / spacer):
+ *   - Skip tables nested deeper than 2 levels — these are almost always
+ *     Outlook's layout containers wrapping the actual message body.
+ *   - Skip tables whose rows are entirely images / nbsp / empty — image
+ *     spacer scaffolding that Outlook web emits.
+ *   - Skip tables that contribute fewer than 2 data rows (after header
+ *     row filtering). One-row "tables" are usually signature cards or
+ *     stray inline KV pairs that pollute the panel.
+ *
+ * Row-shape heuristics:
  *   - 2-column rows  → [label, value]
  *   - 3-column rows  → [serial, label, value]   (e.g. "1 | Foo | Bar")
  *   - >3 columns     → first non-empty as label, last non-empty as value
- *   - Header rows (cells like "S. No.", "Parameter", "Description") skipped
+ *   - Header rows skipped via two rules: any `<th>` in the row, OR the
+ *     first cell matches a header token ("S. No.", "Particulars", etc.)
  *   - Repeated labels deduped (questionnaires often re-state a section
  *     header across multiple tables)
  *   - Empty values are kept (`"—"` placeholder produced client-side) so
- *     the rep sees which fields the prospect left blank
+ *     the rep sees which fields the prospect left blank.
+ *
+ * Output is hard-capped at {@link MAX_STRUCTURED_FIELDS} rows.
  */
 export function extractStructuredFields(bodyHtml: string): StructuredField[] {
   if (!bodyHtml || bodyHtml.length === 0) return [];
@@ -101,13 +143,33 @@ export function extractStructuredFields(bodyHtml: string): StructuredField[] {
   const seen = new Set<string>();
 
   for (const tbl of tables) {
-    // Skip tables that look like layout wrappers — single row, single
-    // cell, or no rows at all. These show up in Outlook's signature
-    // blocks and forwarded-header containers.
+    if (out.length >= MAX_STRUCTURED_FIELDS) break;
+
+    // Skip tables that contain other tables — those are layout wrappers
+    // (Outlook desktop nests the actual message in 2-3 layers of these).
+    // Only LEAF tables hold real data. This also fixes the descendant-
+    // querySelector pitfall: tbl.querySelectorAll('tr') would otherwise
+    // pull rows from every nested table too, scrambling the outer
+    // table's cell counts.
+    if (tbl.querySelectorAll('table').length > 0) continue;
+
+    // Belt-and-braces: skip anything past depth 2 in case a leaf table
+    // ever ends up deeply buried (signature footers occasionally do).
+    if (tableNestingDepth(tbl) > 2) continue;
+
+    // Skip image-only tables. These are spacers / decorative blocks
+    // (calendar invites, marketing-style HTML), never data.
+    if (isImageOnlyTable(tbl)) continue;
+
     const rows = tbl.querySelectorAll('tr');
     if (rows.length === 0) continue;
 
+    // Collect candidate rows from this table first so we can apply the
+    // "needs ≥2 data rows" guard. Single-row "tables" are almost always
+    // signature cards or stray KV pairs masquerading as questionnaires.
+    const candidates: StructuredField[] = [];
     for (const row of rows) {
+      if (rowHasHeaderCells(row)) continue;
       const cells = row
         .querySelectorAll('td, th')
         .map((c) => normaliseCell(c.text));
@@ -131,18 +193,70 @@ export function extractStructuredFields(bodyHtml: string): StructuredField[] {
         continue;
       }
       if (!label) continue;
-      if (isHeaderLabel(label) && isHeaderLabel(value)) continue;
+      // Header detection #2: the label cell itself matches a known
+      // header token (catches plain-`<td>` header rows where the first
+      // rule's `<th>` check doesn't fire).
+      if (isHeaderLabel(label)) continue;
 
-      const key = label.toLowerCase();
+      candidates.push({ label, value });
+    }
+    if (candidates.length < 2) continue;
+
+    for (const c of candidates) {
+      if (out.length >= MAX_STRUCTURED_FIELDS) break;
+      const key = c.label.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ label, value });
+      out.push(c);
     }
   }
   return out;
 }
 
+/** Count how many `<table>` ancestors this table has. Real data tables
+ *  live near the top; depth ≥3 is almost always Outlook layout scaffolding. */
+function tableNestingDepth(el: HTMLElement): number {
+  let depth = 0;
+  let cur: HTMLElement | null = el.parentNode as HTMLElement | null;
+  while (cur) {
+    if (cur.tagName === 'TABLE') depth++;
+    cur = cur.parentNode as HTMLElement | null;
+  }
+  return depth;
+}
+
+/** True when every non-empty cell in the table contains only image
+ *  elements (or only whitespace). Image-spacer tables are decorative,
+ *  never data. */
+function isImageOnlyTable(tbl: HTMLElement): boolean {
+  const cells = tbl.querySelectorAll('td, th');
+  if (cells.length === 0) return false;
+  let sawAnyNonEmpty = false;
+  for (const cell of cells) {
+    const text = normaliseCell(cell.text);
+    const hasImg = cell.querySelectorAll('img').length > 0;
+    if (text.length > 0) {
+      sawAnyNonEmpty = true;
+      // Cell has real text → not image-only.
+      return false;
+    }
+    if (hasImg) sawAnyNonEmpty = true;
+  }
+  return sawAnyNonEmpty;
+}
+
+/** Treat the row as a header row if any of its cells is a `<th>`.
+ *  Catches the common case where the questionnaire's first row is
+ *  `<tr><th>S. No.</th><th>Parameter</th><th>Description</th></tr>`. */
+function rowHasHeaderCells(row: HTMLElement): boolean {
+  return row.querySelectorAll('th').length > 0;
+}
+
+// Header-cell vocabulary. Lowercased, whitespace-normalised before
+// comparison. The list is intentionally biased toward "column-header"
+// shapes that show up in the FIRST cell of an RFP questionnaire row.
 const HEADER_TOKENS = new Set([
+  // Serial-number column headers.
   's. no.',
   's. no',
   's no',
@@ -153,13 +267,34 @@ const HEADER_TOKENS = new Set([
   'sl no',
   'sno',
   'sr. no.',
+  'sr. no',
   'sr no',
+  'no.',
+  '#',
+  // Generic label-column headers.
   'parameter',
   'parameters',
+  'particular',
+  'particulars',
   'description',
   'value',
   'field',
   'fields',
+  'item',
+  'items',
+  'aspect',
+  'aspects',
+  'q',
+  'q.',
+  'question',
+  'questions',
+  'remarks',
+  'remark',
+  'notes',
+  'note',
+  'criteria',
+  'attribute',
+  'attributes',
 ]);
 
 function isHeaderLabel(s: string): boolean {
@@ -171,7 +306,7 @@ function normaliseCell(text: string): string {
   // Replace non-breaking spaces (U+00A0, HTML's &nbsp;). Outlook
   // table cells almost always contain them; without this they survive
   // the \s+ collapse and print as sticky-nbsp blocks in the panel.
-  return text.replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function domainOf(email: string): string | null {

@@ -18,7 +18,6 @@ import type { AuthedRequest } from '../auth/auth.types.js';
 import { EngagementsService } from './engagements.service.js';
 import {
   CreateEngagementDto,
-  CreateOpportunityFromEmailDto,
   CreateOpportunityFromEmailIngestDto,
   PreviewFromEmailDto,
   UpdateClientInfoDto,
@@ -54,35 +53,6 @@ export class EngagementsController {
   create(@Req() req: AuthedRequest, @Body() dto: CreateEngagementDto) {
     const baseUrl = process.env.WEB_PUBLIC_URL ?? 'http://localhost:3000';
     return this.svc.issue({
-      tenantId: req.tenantId,
-      salesEmployeeId: req.user.sub,
-      dto,
-      publicBaseUrl: baseUrl,
-    });
-  }
-
-  /**
-   * Create an opportunity from an inbound email. Used by the Outlook
-   * add-in (apps/outlook-addin) — the task pane reads the open message
-   * via Office.js, lets the rep pick a template, and POSTs the structured
-   * payload here.
-   *
-   * Same auth + roles as the regular create route. Idempotent on
-   * (tenantId, messageId) — clicking the add-in's button twice for the
-   * same email returns the original engagement instead of duplicating.
-   *
-   * Note: this is the Outlook-add-in path, deliberately separate from
-   * /opportunities/from-ingest. The add-in pre-fills the link-share
-   * wizard from an email; from-ingest takes pre-uploaded artifacts.
-   * Both write into the same Engagement table — `source` distinguishes.
-   * See docs/direct-ingest.md §6.
-   */
-  @Post('from-email')
-  @Roles('sales_employee', 'sales_manager', 'admin')
-  @HttpCode(201)
-  createFromEmail(@Req() req: AuthedRequest, @Body() dto: CreateOpportunityFromEmailDto) {
-    const baseUrl = process.env.WEB_PUBLIC_URL ?? 'http://localhost:3000';
-    return this.svc.issueFromEmail({
       tenantId: req.tenantId,
       salesEmployeeId: req.user.sub,
       dto,

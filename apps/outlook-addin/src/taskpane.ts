@@ -158,23 +158,26 @@ Office.onReady(async (info) => {
   });
 
   // Lazy-load templates the first time the rep opens the disclosure.
-  // toggle fires for both open and close — guard with a flag so a
-  // subsequent close→open doesn't re-fetch. Authenticates fresh in
-  // case the cached token expired since pane load.
-  let templatesLoaded = false;
-  document.getElementById('link-disclosure')!.addEventListener('toggle', async () => {
+  // toggle fires for both open and close — we cache the in-flight
+  // promise so that:
+  //   - A rapid open → close → open while the fetch is in flight
+  //     awaits the SAME promise instead of starting a second request
+  //     and racing the previous flag-set (the old `templatesLoaded`
+  //     boolean had this race — set-before-await meant a second open
+  //     during the await would silently skip the load).
+  //   - On failure we drop the cached promise so the next open
+  //     retries — likely just an expired token or transient blip.
+  let templatesPromise: Promise<void> | null = null;
+  document.getElementById('link-disclosure')!.addEventListener('toggle', () => {
     const details = document.getElementById('link-disclosure') as HTMLDetailsElement;
-    if (!details.open || templatesLoaded) return;
-    templatesLoaded = true;
-    try {
+    if (!details.open || templatesPromise) return;
+    templatesPromise = (async () => {
       const auth = await getOrAuthRhudJwt();
       await loadTemplates(auth.token);
-    } catch (err) {
-      // Reset the flag so the next open retries — likely just an
-      // expired token or transient network blip.
-      templatesLoaded = false;
+    })().catch((err: unknown) => {
+      templatesPromise = null;
       setStatus(`Couldn't load templates: ${(err as Error).message}`, 'error');
-    }
+    });
   });
 });
 

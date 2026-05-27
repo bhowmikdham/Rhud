@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   disambiguateForwardedSender,
   extractStructuredFields,
+  MAX_STRUCTURED_FIELDS,
 } from './email-parser.js';
 
 describe('disambiguateForwardedSender', () => {
@@ -102,7 +103,14 @@ Subject: ...`;
   });
 
   it('suppresses redundant "email <email>" as display name', () => {
-    const body = `From: yash.gupta@techspire.co.in <yash.gupta@techspire.co.in>`;
+    // Needs a real forwarded-header block (To:/Date:/Subject: nearby) to
+    // pass the stricter `looksLikeForwardedHeaderBlock` guard. The shape
+    // we're testing is the parser's name-suppression behaviour, not the
+    // header-detection logic.
+    const body = `From: yash.gupta@techspire.co.in <yash.gupta@techspire.co.in>
+Date: Tue, 12 May 2026
+To: nitesh@gisconsulting.in
+Subject: RFP`;
     const result = disambiguateForwardedSender({
       sender: { email: 'nitesh@gisconsulting.in' },
       tenantUserEmail: 'me@gisconsulting.in',
@@ -118,6 +126,41 @@ Subject: ...`;
       bodyText: '',
     });
     expect(result).toBeNull();
+  });
+
+  it('ignores bare "From:" mentions in body prose (no To:/Date:/Subject: nearby)', () => {
+    // Real-world false positive: replies/notes containing things like
+    // "From: the team — go ahead with X" should not be misread as
+    // forwarded headers.
+    const body = `Quick comment from me.
+
+    From: the analyst team's perspective, our notes are:
+    - alice@external.com mentioned the deadline
+    - bob@othercompany.net asked about pricing
+
+    Let me know.`;
+    const result = disambiguateForwardedSender({
+      sender: { email: 'me@gisconsulting.in' },
+      tenantUserEmail: 'me@gisconsulting.in',
+      bodyText: body,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('still matches a real forwarded header with only Sent: + Subject:', () => {
+    // Outlook desktop often uses "Sent:" instead of "Date:". Confirm
+    // our nearby-header check accepts that form.
+    const body = `Forwarded.
+
+From: real.prospect@external.com
+Sent: Tuesday, 12 May 2026 11:53 AM
+Subject: RFP`;
+    const result = disambiguateForwardedSender({
+      sender: { email: 'me@gisconsulting.in' },
+      tenantUserEmail: 'me@gisconsulting.in',
+      bodyText: body,
+    });
+    expect(result?.email).toBe('real.prospect@external.com');
   });
 });
 
@@ -151,13 +194,17 @@ describe('extractStructuredFields', () => {
   });
 
   it('skips obvious header rows', () => {
+    // Two data rows needed after header is dropped (the "real data table"
+    // guard requires ≥2 surviving rows).
     const html = `<table>
       <tr><th>S. No.</th><th>Parameters</th><th>Description</th></tr>
       <tr><td>1</td><td>Mobile Application Name</td><td>Biasearch</td></tr>
+      <tr><td>2</td><td>Development Platform</td><td>Android</td></tr>
     </table>`;
     const fields = extractStructuredFields(html);
     expect(fields).toEqual([
       { label: 'Mobile Application Name', value: 'Biasearch' },
+      { label: 'Development Platform', value: 'Android' },
     ]);
   });
 
@@ -173,14 +220,23 @@ describe('extractStructuredFields', () => {
   });
 
   it('dedupes repeated labels across tables', () => {
+    // Both tables need ≥2 data rows to pass the "real data table" guard.
     const html = `<table>
       <tr><td>1</td><td>Total No. of input fields</td><td>NA</td></tr>
+      <tr><td>2</td><td>Architecture</td><td>3-tier</td></tr>
     </table>
     <table>
       <tr><td>5</td><td>Total No. of input fields</td><td>-</td></tr>
+      <tr><td>6</td><td>Database</td><td>Oracle</td></tr>
     </table>`;
     const fields = extractStructuredFields(html);
-    expect(fields).toHaveLength(1);
+    // 3 unique labels — "Total No. of input fields" from the first table
+    // wins; the second table's row is deduped.
+    expect(fields.map((f) => f.label)).toEqual([
+      'Total No. of input fields',
+      'Architecture',
+      'Database',
+    ]);
     expect(fields[0]?.value).toBe('NA');
   });
 
@@ -192,9 +248,107 @@ describe('extractStructuredFields', () => {
   it('collapses whitespace in cell text', () => {
     const html = `<table>
       <tr><td>  Application\n  Name  </td><td>MESA,\t\tMBIS</td></tr>
+      <tr><td>Architecture</td><td>3-tier</td></tr>
     </table>`;
     const fields = extractStructuredFields(html);
     expect(fields[0]).toEqual({ label: 'Application Name', value: 'MESA, MBIS' });
+  });
+
+  // ── new heuristics (signature pollution / layout-table guards) ────
+
+  it('skips signature-card tables (single row of contact info)', () => {
+    // Outlook injects a contact-card table at the bottom of forwarded
+    // messages. One row, looks like 2-col KV. We don't want it surfacing
+    // as a "Detected field."
+    const html = `<table>
+      <tr><td>Mobile</td><td>+91-99999-99999</td></tr>
+    </table>`;
+    const fields = extractStructuredFields(html);
+    expect(fields).toEqual([]);
+  });
+
+  it('skips image-only spacer tables (marketing / calendar invite)', () => {
+    const html = `<table>
+      <tr><td><img src="x" /></td><td><img src="y" /></td></tr>
+      <tr><td><img src="z" /></td><td><img src="w" /></td></tr>
+    </table>`;
+    const fields = extractStructuredFields(html);
+    expect(fields).toEqual([]);
+  });
+
+  it('skips tables nested deeper than 2 levels (Outlook layout scaffolding)', () => {
+    // Outlook desktop wraps the message in nested layout tables.
+    // Anything at depth ≥3 is layout, not data. Depth counts table
+    // ancestors of the table being considered, so the innermost
+    // here is at depth 3 (three table parents).
+    const html = `<table><tr><td>
+      <table><tr><td>
+        <table><tr><td>
+          <table>
+            <tr><td>Foo</td><td>Bar</td></tr>
+            <tr><td>Baz</td><td>Qux</td></tr>
+          </table>
+        </td></tr></table>
+      </td></tr></table>
+    </td></tr></table>`;
+    const fields = extractStructuredFields(html);
+    expect(fields).toEqual([]);
+  });
+
+  it('skips header rows where any cell is a <th> (catches plain-styled headers)', () => {
+    // Earlier rule required BOTH label and value to look like headers.
+    // Real headers usually only have a header-shape in column 1.
+    const html = `<table>
+      <tr><th>Particulars</th><th>Description</th></tr>
+      <tr><td>Real Label</td><td>Real Value</td></tr>
+      <tr><td>Another</td><td>One</td></tr>
+    </table>`;
+    const fields = extractStructuredFields(html);
+    expect(fields.map((f) => f.label)).toEqual(['Real Label', 'Another']);
+  });
+
+  it('skips header rows where first cell matches the broader token list', () => {
+    // No <th> tags — pure <td> table. Detect via first-cell token match.
+    // Tokens added: particulars, item, q., question, aspect, remarks, etc.
+    const html = `<table>
+      <tr><td>Item</td><td>Notes</td></tr>
+      <tr><td>Real Label</td><td>Real Value</td></tr>
+      <tr><td>Another</td><td>One</td></tr>
+    </table>`;
+    const fields = extractStructuredFields(html);
+    expect(fields.map((f) => f.label)).toEqual(['Real Label', 'Another']);
+  });
+
+  it('caps output at MAX_STRUCTURED_FIELDS to guard the pane render', () => {
+    // Synthesize a table with twice the cap. Should silently truncate.
+    const rows = Array.from({ length: MAX_STRUCTURED_FIELDS * 2 }, (_, i) =>
+      `<tr><td>Label ${i}</td><td>Value ${i}</td></tr>`,
+    ).join('');
+    const fields = extractStructuredFields(`<table>${rows}</table>`);
+    expect(fields).toHaveLength(MAX_STRUCTURED_FIELDS);
+    expect(fields[0]?.label).toBe('Label 0');
+  });
+
+  it('keeps the original CII multi-table fixture working end-to-end', () => {
+    // Both tables have ≥2 data rows so they survive the new guard.
+    // Headers are skipped, dedupe still works.
+    const html = `
+      <table>
+        <tr><td>1</td><td>Application Name</td><td>MESA, MBIS (Thick Clients)</td></tr>
+        <tr><td>2</td><td>Details of Architecture</td><td>3-tier</td></tr>
+        <tr><td>3</td><td>Supporting OS for software</td><td>Linux 7.4 &amp; Windows 2016 Standard</td></tr>
+      </table>
+      <table>
+        <tr><th>S. No.</th><th>Parameters</th><th>Description</th></tr>
+        <tr><td>1</td><td>Mobile Application Name</td><td>Biasearch</td></tr>
+        <tr><td>2</td><td>Development platform Details</td><td>Android</td></tr>
+        <tr><td>13</td><td>Is there any payment gateway ?</td><td>No</td></tr>
+      </table>`;
+    const labels = extractStructuredFields(html).map((f) => f.label);
+    expect(labels).toContain('Application Name');
+    expect(labels).toContain('Mobile Application Name');
+    expect(labels).not.toContain('S. No.');
+    expect(labels).not.toContain('Parameters');
   });
 
   it('handles real-world CII questionnaire (multi-table + headers + empties)', () => {
