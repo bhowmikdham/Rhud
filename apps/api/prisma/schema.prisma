@@ -1370,22 +1370,20 @@ model EngagementSummary {
 
 // ── Phase B: opportunity classification + routing ─────────────────────
 
-/// One row per category in the taxonomy.
+/// Per-tenant scope-classification taxonomy.
 ///
-/// Dual scoping via `tenantId`:
-///   - `tenantId = null` rows are SYSTEM categories seeded by the
-///     migration. They're readable by every tenant, immutable from
-///     application code (RLS WITH CHECK requires tenant_id match).
-///   - `tenantId = <tenant>` rows are that tenant's custom additions.
+/// Every row is owned by exactly one tenant (`tenant_id NOT NULL`). At
+/// signup the tenant clones a picked industry template's categories
+/// into its own rows, after which the taxonomy is fully editable
+/// per-tenant. RLS isolates strictly by tenant_id.
 ///
-/// The PM-defined taxonomy is seeded as system rows. Tenants can add
-/// custom categories on top.
+/// (Pre-Phase-4 history: the table briefly held cross-tenant "system
+/// rows" with `tenant_id IS NULL` seeded by the original Phase B
+/// migration. Those were removed and the column tightened to NOT NULL
+/// by `20260722000000_drop_legacy_system_categories`.)
 model OpportunityCategory {
   id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  /// Null for system rows (legacy — being phased out); populated for
-  /// tenant-owned rows (the new norm, populated by clone-on-signup or
-  /// by tenant edits).
-  tenantId   String?   @map("tenant_id") @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
   /// Stable identifier ('security_testing', 'vapt', 'grc', …). The LLM
   /// classifier emits this string; the routing rules key on it.
   slug       String
@@ -1402,7 +1400,7 @@ model OpportunityCategory {
   archivedAt DateTime? @map("archived_at") @db.Timestamptz
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
-  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([parentSlug])
   @@map("opportunity_categories")

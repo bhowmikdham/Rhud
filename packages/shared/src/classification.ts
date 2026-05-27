@@ -4,9 +4,10 @@
 
 export interface OpportunityCategoryRow {
   id: string;
-  /** Null = system row (visible to every tenant). Non-null = tenant's
-   *  custom category. */
-  tenantId: string | null;
+  /** Owning tenant. Every category row is tenant-scoped (see schema
+   *  comment on the `OpportunityCategory` model — system rows were
+   *  removed in Phase 4 of the industry-template work). */
+  tenantId: string;
   slug: string;
   name: string;
   /** For subcategories, the parent's slug. Null for top-level rows. */
