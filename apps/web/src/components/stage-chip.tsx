@@ -3,6 +3,9 @@
 import { Icon } from './icon';
 
 const TONE: Record<string, { chip: string; label: string; icon: keyof typeof Icon }> = {
+  // Direct-ingest initial state — artifacts attached, extraction running.
+  // See docs/direct-ingest.md §3.2.
+  ingesting:        { chip: 'accent', label: 'Ingesting',        icon: 'Sparkle' },
   issued:           { chip: 'accent', label: 'Issued',           icon: 'Link' },
   in_progress:      { chip: 'accent', label: 'In progress',      icon: 'Thread' },
   submitted:        { chip: 'ok',     label: 'Submitted',        icon: 'Send' },

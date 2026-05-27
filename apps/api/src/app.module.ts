@@ -16,6 +16,7 @@ import { LlmModule } from './llm/llm.module.js';
 import { GammaModule } from './gamma/gamma.module.js';
 import { IntegrationsModule } from './integrations/integrations.module.js';
 import { ExtractionModule } from './extraction/extraction.module.js';
+import { IngestionModule } from './ingestion/ingestion.module.js';
 import { SiteEnumModule } from './site-enum/site-enum.module.js';
 import { LeadManagementModule } from './lead-management/lead-management.module.js';
 import { ClassificationModule } from './classification/classification.module.js';
@@ -46,6 +47,7 @@ import { HealthController } from './health.controller.js';
     LlmModule,
     IntegrationsModule,
     ExtractionModule,
+    IngestionModule,
     SiteEnumModule,
     LeadManagementModule,
     ClassificationModule,

@@ -349,8 +349,16 @@ export const templates = {
 
 export interface EngagementSummary {
   id: string;
-  templateId: string;
-  templateName: string;
+  /** NULL on direct-ingest opportunities until a template is attached.
+   *  See docs/direct-ingest.md §3.2. UI falls back to `name` for display. */
+  templateId: string | null;
+  /** NULL on direct-ingest opportunities (no template, no template name). */
+  templateName: string | null;
+  /** How this opportunity entered Rhud. One of EngagementSource —
+   *  manual_form / direct_upload / paste_text / voice_note /
+   *  email_import / whatsapp_import / rfp_import / sow_import /
+   *  odoo_import / api. Drives the source chip in the UI. */
+  source: string;
   /** Free-text label set when the opportunity was created. */
   name: string | null;
   clientEmail: string;
@@ -485,6 +493,68 @@ export const opportunities = {
       method: 'PATCH',
       body: JSON.stringify(input),
     }),
+
+  // ── Direct-ingest pipeline — see docs/direct-ingest.md ────────────
+  /** Promote already-ingested artifact(s) into a fresh opportunity.
+   *  Used by the "I have it" UI mode after the rep has uploaded files
+   *  via /ingest/file/presign or pasted text. */
+  fromIngest: (dto: {
+    artifactIds: string[];
+    clientEmail: string;
+    name?: string;
+    clientName?: string;
+    clientAddress?: string;
+    contactName?: string;
+    contactPhone?: string;
+  }) =>
+    request<{ engagementId: string; artifactIds: string[] }>(
+      '/opportunities/from-ingest',
+      { method: 'POST', body: JSON.stringify(dto) },
+    ),
+
+  /** Mint a gathering link against an existing opportunity. Works for:
+   *  - Direct-ingest opportunities needing follow-up scoping (first link).
+   *  - Link-share opportunities needing re-scoping (re-issue). */
+  issueLink: (
+    id: string,
+    dto: { templateId: string; expiresInDays?: number; reason?: string },
+  ) =>
+    request<IssuedLink>(`/opportunities/${id}/links`, {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+};
+
+// ── Direct-ingest channel adapters ──────────────────────────────────────────
+// See docs/direct-ingest.md §5.1. Each call creates an IngestionArtifact +
+// (for the one-shot endpoints) a fresh opportunity in a single request.
+
+export const ingest = {
+  /** Paste-text one-shot: rep pastes an email body / WhatsApp transcript /
+   *  call notes; the API creates an artifact + engagement together. */
+  text: (dto: {
+    rawText: string;
+    clientEmail: string;
+    name?: string;
+    clientName?: string;
+    clientAddress?: string;
+    contactName?: string;
+    contactPhone?: string;
+  }) =>
+    request<{ engagementId: string; artifactIds: string[] }>(
+      '/ingest/text',
+      { method: 'POST', body: JSON.stringify(dto) },
+    ),
+
+  /** Two-step file upload — step 1: get a presigned PUT URL + artifactId.
+   *  Client uploads to `uploadUrl`, then calls opportunities.fromIngest()
+   *  with the returned artifactId to promote the artifact into an
+   *  opportunity. */
+  filePresign: (dto: { filename: string; contentType: string; sizeBytes: number }) =>
+    request<{ artifactId: string; uploadUrl: string; s3Key: string; expiresAt: string }>(
+      '/ingest/file/presign',
+      { method: 'POST', body: JSON.stringify(dto) },
+    ),
 };
 
 // ── Phase A: quote line items (travel, tools, resource, discount, custom) ───

@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { TenantDb } from '../db/with-tenant.js';
+import { TenantDb, type PrismaTx } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { hashToken, mintToken } from '../gathering/token.util.js';
 import type { CreateEngagementDto, CreateOpportunityFromEmailDto } from './dto.js';
+import type { EngagementSource } from '@rhud/shared';
 
 export interface IssuedLink {
   engagementId: string;
@@ -13,8 +14,14 @@ export interface IssuedLink {
 
 export interface EngagementSummary {
   id: string;
-  templateId: string;
-  templateName: string;
+  /** NULL on direct-ingest opportunities until a template is attached.
+   *  See docs/direct-ingest.md §3.2. */
+  templateId: string | null;
+  /** NULL on direct-ingest opportunities (no template → no template name).
+   *  UI falls back to the engagement `name` for display. */
+  templateName: string | null;
+  /** How this engagement entered Rhud. See @rhud/shared EngagementSource. */
+  source: string;
   /** User-facing label ("Acme Q3 Security Assessment"). Null on legacy rows. */
   name: string | null;
   clientEmail: string;
@@ -77,17 +84,8 @@ export class EngagementsService {
     publicBaseUrl: string;
   }): Promise<IssuedLink> {
     const expiresInDays = args.dto.expiresInDays ?? 7;
-    const expiresAt = new Date(Date.now() + expiresInDays * 86_400_000);
 
-    const token = mintToken();
-    const tokenHash = await hashToken(token);
-
-    const linkIssuedPayload = {
-      clientEmail: args.dto.clientEmail,
-      expiresAt: expiresAt.toISOString(),
-    };
-
-    const engagement = await this.tenantDb.run(args.tenantId, async (db) => {
+    const { engagement, mint } = await this.tenantDb.run(args.tenantId, async (db) => {
       // Pull the template inside the same transaction (RLS scopes it to this tenant).
       const tmpl = await db.template.findUnique({
         where: { id: args.dto.templateId },
@@ -103,6 +101,7 @@ export class EngagementsService {
           tenantId: args.tenantId,
           templateId: tmpl.id,
           templateVersion: tmpl.version,
+          source: 'manual_form',
           salesEmployeeId: args.salesEmployeeId,
           ...(args.dto.salesManagerId ? { salesManagerId: args.dto.salesManagerId } : {}),
           clientEmail: args.dto.clientEmail,
@@ -116,28 +115,23 @@ export class EngagementsService {
         },
       });
 
-      await db.gatheringToken.create({
-        data: {
-          tenantId: args.tenantId,
-          engagementId: created.id,
-          tokenHash,
-          // Stored so the rep can look the URL up later from the
-          // opportunity detail page. Trade-off documented in the
-          // 20260607000000_gathering_token_plain migration.
-          tokenPlain: token,
-          expiresAt,
+      // Shared mint + event helper. emits `link_issued` for the first
+      // token, `link_reissued` for subsequent ones — see helper docs.
+      const m = await this.mintGatheringTokenWithin(db, {
+        tenantId: args.tenantId,
+        engagementId: created.id,
+        actorId: args.salesEmployeeId,
+        expiresInDays,
+        // First link on a brand-new engagement — payload mirrors the
+        // legacy shape so downstream consumers (notifications,
+        // dashboards) still see clientEmail + expiresAt on link_issued.
+        legacyLinkIssuedPayload: {
+          clientEmail: args.dto.clientEmail,
+          expiresAt: new Date(Date.now() + expiresInDays * 86_400_000).toISOString(),
         },
       });
 
-      await this.thread.emitWithin(db, args.tenantId, {
-        engagementId: created.id,
-        eventType: 'link_issued',
-        actorType: 'user',
-        actorId: args.salesEmployeeId,
-        payload: linkIssuedPayload,
-      });
-
-      return created;
+      return { engagement: created, mint: m };
     });
 
     // Post-commit: fan out notifications. Fire-and-forget — failures are
@@ -147,14 +141,255 @@ export class EngagementsService {
       eventType: 'link_issued',
       actorType: 'user',
       actorId: args.salesEmployeeId,
-      payload: linkIssuedPayload,
+      payload: {
+        clientEmail: args.dto.clientEmail,
+        expiresAt: mint.expiresAt.toISOString(),
+      },
     });
 
     return {
       engagementId: engagement.id,
+      token: mint.token,
+      url: `${args.publicBaseUrl.replace(/\/$/, '')}/g/${mint.token}`,
+      expiresAt: mint.expiresAt.toISOString(),
+    };
+  }
+
+  /**
+   * Create a bare engagement from an ingested artifact (no template,
+   * no gathering token). Called by IngestionService.promote() once the
+   * artifact lifecycle has reached the point where an opportunity
+   * should materialise — typically immediately for the in-app paste/
+   * drop UI, later (after rep review) for inbound webhooks.
+   *
+   * The engagement starts at status='ingesting'; extraction runs over
+   * its attached files and transitions to 'submitted' when every file
+   * is ready (mirrors the post-link-share flow).
+   *
+   * See docs/direct-ingest.md §4.2.
+   */
+  async createFromIngest(args: {
+    tenantId: string;
+    salesEmployeeId: string;
+    source: EngagementSource;
+    clientEmail: string;
+    client?: {
+      clientName?: string | null;
+      clientAddress?: string | null;
+      contactName?: string | null;
+      contactPhone?: string | null;
+    };
+    /** The "primary" IngestionArtifact id — back-pointer field on the
+     *  Engagement row. NULL for opportunities created entirely by the
+     *  UI without a single dominant artifact (rare in practice). */
+    ingestionId?: string;
+    name?: string;
+  }): Promise<{ engagementId: string }> {
+    const created = await this.tenantDb.run(args.tenantId, async (db) => {
+      return db.engagement.create({
+        data: {
+          tenantId: args.tenantId,
+          // templateId + templateVersion intentionally null — direct-ingest.
+          source: args.source,
+          salesEmployeeId: args.salesEmployeeId,
+          clientEmail: args.clientEmail,
+          status: 'ingesting',
+          ...(args.name ? { name: args.name } : {}),
+          ...(args.ingestionId ? { ingestionId: args.ingestionId } : {}),
+          ...(args.client?.clientName?.trim()    ? { clientName:    args.client.clientName.trim() }    : {}),
+          ...(args.client?.clientAddress?.trim() ? { clientAddress: args.client.clientAddress.trim() } : {}),
+          ...(args.client?.contactName?.trim()   ? { contactName:   args.client.contactName.trim() }   : {}),
+          ...(args.client?.contactPhone?.trim()  ? { contactPhone:  args.client.contactPhone.trim() }  : {}),
+        },
+        select: { id: true },
+      });
+    });
+    return { engagementId: created.id };
+  }
+
+  /**
+   * Mint a gathering token against an existing engagement. Works for:
+   *   - Direct-ingest opportunities (the *first* link — attaches a
+   *     template at the same time, codifying the invariant from
+   *     docs/direct-ingest.md §3.2: token ⇒ templateId NOT NULL).
+   *   - Link-share opportunities the rep wants to re-scope or follow
+   *     up on (the *re-issue* — engagement.templateId is already set).
+   *
+   * Emits `link_issued` when this is the first token on the engagement,
+   * `link_reissued` otherwise. The event distinction lets the timeline
+   * show "client invited" vs "follow-up sent" without the UI having to
+   * count tokens.
+   *
+   * Refuses to switch templates: if engagement already has a templateId
+   * different from `args.templateId`, throws `template_mismatch_with_existing`.
+   * Switching templates would orphan existing answers; out of scope for v1.
+   */
+  async issueLinkForExisting(args: {
+    tenantId: string;
+    engagementId: string;
+    salesEmployeeId: string;
+    templateId: string;
+    expiresInDays?: number;
+    reason?: string;
+    publicBaseUrl: string;
+  }): Promise<IssuedLink> {
+    const expiresInDays = args.expiresInDays ?? 7;
+
+    const { mint, isFirst } = await this.tenantDb.run(args.tenantId, async (db) => {
+      // 1. Verify the engagement exists.
+      const eng = await db.engagement.findUnique({
+        where: { id: args.engagementId },
+        select: { id: true, templateId: true, clientEmail: true },
+      });
+      if (!eng) throw new NotFoundException('engagement_not_found');
+
+      // 2. Validate the chosen template is real + published.
+      const tmpl = await db.template.findUnique({
+        where: { id: args.templateId },
+        select: { id: true, version: true, status: true },
+      });
+      if (!tmpl) throw new NotFoundException('template_not_found');
+      if (tmpl.status !== 'published') {
+        throw new BadRequestException('template_not_published');
+      }
+
+      // 3. Reject template switches. Re-using the same template is
+      //    fine (idempotent on the field below); switching would
+      //    invalidate existing answers and isn't supported in v1.
+      if (eng.templateId && eng.templateId !== tmpl.id) {
+        throw new BadRequestException('template_mismatch_with_existing');
+      }
+
+      // 4. Attach the template to the engagement if it didn't have
+      //    one (the direct-ingest case). updateMany is a no-op when
+      //    the value already matches.
+      if (!eng.templateId) {
+        await db.engagement.update({
+          where: { id: args.engagementId },
+          data: { templateId: tmpl.id, templateVersion: tmpl.version },
+        });
+      }
+
+      // 5. Mint the token + emit link_issued / link_reissued.
+      const m = await this.mintGatheringTokenWithin(db, {
+        tenantId: args.tenantId,
+        engagementId: args.engagementId,
+        actorId: args.salesEmployeeId,
+        expiresInDays,
+        ...(args.reason ? { reason: args.reason } : {}),
+        // First-token compatibility: keep the legacy link_issued
+        // payload shape so existing notification templates work.
+        legacyLinkIssuedPayload: {
+          clientEmail: eng.clientEmail,
+          expiresAt: new Date(Date.now() + expiresInDays * 86_400_000).toISOString(),
+        },
+      });
+
+      return { mint: m, isFirst: m.isFirst };
+    });
+
+    // Post-commit notification — only fan out on the first-issuance
+    // event; re-issues are silent per packages/shared/src/notifications.ts.
+    if (isFirst) {
+      void this.thread.dispatchAfterCommit(args.tenantId, {
+        engagementId: args.engagementId,
+        eventType: 'link_issued',
+        actorType: 'user',
+        actorId: args.salesEmployeeId,
+        payload: {
+          clientEmail: mint.clientEmail,
+          expiresAt: mint.expiresAt.toISOString(),
+        },
+      });
+    }
+
+    return {
+      engagementId: args.engagementId,
+      token: mint.token,
+      url: `${args.publicBaseUrl.replace(/\/$/, '')}/g/${mint.token}`,
+      expiresAt: mint.expiresAt.toISOString(),
+    };
+  }
+
+  /**
+   * Shared core: mint a GatheringToken row + emit the matching thread
+   * event inside an existing transaction. Returns the plaintext token
+   * (which only exists in memory until persisted as a hash) so the
+   * caller can build the URL handed to the rep.
+   *
+   * `isFirst` is computed by counting prior tokens — drives the
+   * `link_issued` vs `link_reissued` choice.
+   */
+  private async mintGatheringTokenWithin(
+    db: PrismaTx,
+    args: {
+      tenantId: string;
+      engagementId: string;
+      actorId: string;
+      expiresInDays: number;
+      reason?: string;
+      /** Optional — when set, link_issued payload uses this shape for
+       *  back-compat with the legacy issue() path. Ignored when the
+       *  emitted event is link_reissued. */
+      legacyLinkIssuedPayload?: { clientEmail: string; expiresAt: string };
+    },
+  ): Promise<{
+    token: string;
+    expiresAt: Date;
+    tokenId: string;
+    isFirst: boolean;
+    clientEmail: string;
+  }> {
+    const priorCount = await db.gatheringToken.count({
+      where: { engagementId: args.engagementId },
+    });
+    const isFirst = priorCount === 0;
+
+    const token = mintToken();
+    const tokenHash = await hashToken(token);
+    const expiresAt = new Date(Date.now() + args.expiresInDays * 86_400_000);
+
+    const created = await db.gatheringToken.create({
+      data: {
+        tenantId: args.tenantId,
+        engagementId: args.engagementId,
+        tokenHash,
+        tokenPlain: token,
+        expiresAt,
+      },
+    });
+
+    // For link_issued (first token) keep the legacy payload shape so
+    // any handlers that rely on { clientEmail, expiresAt } still work.
+    // For link_reissued, emit the docs/direct-ingest.md §3.5 payload.
+    const eventType: 'link_issued' | 'link_reissued' = isFirst ? 'link_issued' : 'link_reissued';
+    const payload = isFirst
+      ? (args.legacyLinkIssuedPayload ?? {
+          // Defensive default — shouldn't be reached because the
+          // public callers always pass legacyLinkIssuedPayload.
+          tokenId: created.id,
+          expiresAt: expiresAt.toISOString(),
+        })
+      : {
+          tokenId: created.id,
+          expiresAt: expiresAt.toISOString(),
+          ...(args.reason ? { reason: args.reason } : {}),
+        };
+
+    await this.thread.emitWithin(db, args.tenantId, {
+      engagementId: args.engagementId,
+      eventType,
+      actorType: 'user',
+      actorId: args.actorId,
+      payload,
+    });
+
+    return {
       token,
-      url: `${args.publicBaseUrl.replace(/\/$/, '')}/g/${token}`,
-      expiresAt: expiresAt.toISOString(),
+      expiresAt,
+      tokenId: created.id,
+      isFirst,
+      clientEmail: args.legacyLinkIssuedPayload?.clientEmail ?? '',
     };
   }
 
@@ -237,13 +472,19 @@ export class EngagementsService {
       publicBaseUrl: args.publicBaseUrl,
     });
 
-    // Backfill the source_message_id (issue() doesn't take it) and emit
-    // the provenance thread event. Both happen in the same tx so the
-    // engagement is never in a half-attributed state.
+    // Backfill the source_message_id + correct the source attribution
+    // (issue() defaults to 'manual_form' — for Outlook-add-in rows we
+    // want 'email_import' so the source chip on the list/detail reads
+    // "Email" rather than "Link"). Also emit the provenance thread
+    // event. All three happen in the same tx so the engagement is
+    // never in a half-attributed state.
     await this.tenantDb.run(args.tenantId, async (db) => {
       await db.engagement.update({
         where: { id: issued.engagementId },
-        data: { sourceMessageId: args.dto.messageId },
+        data: {
+          sourceMessageId: args.dto.messageId,
+          source: 'email_import',
+        },
       });
       await this.thread.emitWithin(db, args.tenantId, {
         engagementId: issued.engagementId,
@@ -546,8 +787,11 @@ export class EngagementsService {
 
 function rowToSummary(r: {
   id: string;
-  templateId: string;
-  template: { name: string };
+  // Both fields are nullable on direct-ingest opportunities (no template
+  // attached) per docs/direct-ingest.md §3.2.
+  templateId: string | null;
+  template: { name: string } | null;
+  source: string;
   name: string | null;
   clientEmail: string;
   status: string;
@@ -579,7 +823,8 @@ function rowToSummary(r: {
   return {
     id: r.id,
     templateId: r.templateId,
-    templateName: r.template.name,
+    templateName: r.template?.name ?? null,
+    source: r.source,
     name: r.name,
     clientEmail: r.clientEmail,
     status: r.status,

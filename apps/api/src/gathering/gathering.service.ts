@@ -244,6 +244,15 @@ export class GatheringService {
           files: true,
         },
       });
+      // Invariant from docs/direct-ingest.md §3.2: a GatheringToken
+      // cannot exist on an engagement with templateId IS NULL. If we
+      // resolved a token whose engagement has no template, something
+      // upstream broke the invariant — fail loud rather than crash on
+      // a null deref. The rep needs to attach a template before this
+      // gathering URL can be served.
+      if (!engagement.template) {
+        throw new NotFoundException('no_template_attached');
+      }
       const tmpl: TemplateWithNodes = {
         id: engagement.template.id,
         tenantId: engagement.template.tenantId,
@@ -609,6 +618,13 @@ export class GatheringService {
         answers: true,
       },
     });
+    // Same invariant guard as resolveToken — see docs/direct-ingest.md §3.2.
+    // findCurrentNode is called only after token resolution succeeds, so
+    // this is belt-and-braces: if we somehow get here on a template-less
+    // engagement, fail loud rather than null-deref.
+    if (!engagement.template) {
+      throw new NotFoundException('no_template_attached');
+    }
     const tmpl: TemplateWithNodes = {
       id: engagement.template.id,
       tenantId: engagement.template.tenantId,

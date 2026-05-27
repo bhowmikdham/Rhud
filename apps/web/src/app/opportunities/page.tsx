@@ -7,6 +7,7 @@ import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
 import { StageChip } from '@/components/stage-chip';
+import { SourceChip } from '@/components/source-chip';
 import { RowActions } from '@/components/row-actions';
 import { DeleteConfirmModal } from '@/components/delete-confirm-modal';
 
@@ -127,7 +128,9 @@ export default function OpportunitiesListPage() {
       if (filter === 'sent' && !['sent', 'closed'].includes(e.status)) return false;
       if (query) {
         const q = query.toLowerCase();
-        const hay = (e.clientEmail + e.templateName + e.id).toLowerCase();
+        // templateName is null for direct-ingest opportunities; fall back
+        // to an empty string so the search still works on email + id.
+        const hay = (e.clientEmail + (e.templateName ?? '') + (e.name ?? '') + e.id).toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -365,9 +368,17 @@ function ListRow({
     <tr onClick={() => location.assign(`/opportunities/${e.id}`)}>
       <td><span className="cell-mono">{e.id.slice(0, 8)}</span></td>
       <td>
-        <div className="cell-strong">{e.name ?? e.clientEmail}</div>
+        <div className="cell-strong" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {e.name ?? e.clientEmail}
+          <SourceChip source={e.source} />
+        </div>
         <div className="cell-muted" style={{ fontSize: 12 }}>
-          {e.name ? `${e.clientEmail} · ${e.templateName}` : e.templateName}
+          {/* Template name is null for direct-ingest opportunities; fall
+              back to the engagement label / client email so the row
+              still says something useful. */}
+          {e.name
+            ? `${e.clientEmail}${e.templateName ? ` · ${e.templateName}` : ''}`
+            : e.templateName ?? e.clientEmail}
         </div>
       </td>
       <td><StageChip stage={e.status} /></td>
@@ -582,7 +593,9 @@ function KanbanCard({
 }) {
   const e = engagement;
   const title = e.name ?? e.clientEmail;
-  const subtitle = e.name ? e.clientEmail : e.templateName;
+  // Direct-ingest opportunities have no template; fall back to the
+  // client email so the kanban card subtitle isn't blank.
+  const subtitle = e.name ? e.clientEmail : (e.templateName ?? e.clientEmail);
   const updatedAt = e.submittedAt ?? e.createdAt;
   const priceLabel = e.predictedPriceCents != null
     ? formatPrice(e.predictedPriceCents, e.currency)
@@ -684,6 +697,7 @@ function KanbanCard({
         marginTop: 2,
       }}>
         <StageChip stage={e.status} />
+        <SourceChip source={e.source} />
         {priceLabel && (
           <span style={{
             fontSize: 11, fontVariantNumeric: 'tabular-nums',
@@ -710,7 +724,7 @@ function KanbanCard({
           <Icon.FileText size={9} />
           <span style={{
             overflow: 'hidden', textOverflow: 'ellipsis',
-          }}>{e.templateName}</span>
+          }}>{e.templateName ?? 'No template'}</span>
         </span>
         <span className="mono" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{relativeTime(updatedAt)}</span>
       </div>

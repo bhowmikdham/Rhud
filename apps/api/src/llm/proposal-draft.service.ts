@@ -982,14 +982,26 @@ export class ProposalDraftService {
         : [];
       const questionByNodeId = new Map(nodes.map((n) => [n.id, n.question]));
 
+      // Direct-ingest opportunities (docs/direct-ingest.md §3.2) may not
+      // have a template attached. In that case we fall back to engagement
+      // name + classifier-set categorySlug for context, and skip the
+      // scaffold path entirely. The LLM-synthesis path still works on
+      // extracted points + assumptions/exclusions.
+      const tmpl = engagement.template;
       return {
         status: engagement.status,
         clientEmail: engagement.clientEmail,
         opportunityName: engagement.name,
-        templateName: engagement.template.name,
-        serviceLine: engagement.template.serviceLine,
-        gammaTemplateId: engagement.template.gammaTemplateId ?? null,
-        proposalScaffold: engagement.template.proposalScaffold ?? null,
+        // Falls back to the opportunity name (and ultimately a generic
+        // label) so the proposal still has *something* to call this
+        // engagement in headings.
+        templateName: tmpl?.name ?? engagement.name ?? '(Untitled)',
+        // Without a template the classifier-set category is the best
+        // hint at service line. Surface that when available; otherwise
+        // a generic label that won't show up in customer-visible copy.
+        serviceLine: tmpl?.serviceLine ?? engagement.categorySlug ?? 'Engagement',
+        gammaTemplateId: tmpl?.gammaTemplateId ?? null,
+        proposalScaffold: tmpl?.proposalScaffold ?? null,
         tenantName: tenant?.name ?? 'Our team',
         currency: quote.currency,
         baseTotalCents: Number(quote.baseTotalCents),

@@ -115,6 +115,15 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   // Sales manager gets the heads-up so they see new inbound work
   // landing in the pipeline without having to refresh the dashboard.
   engagement_created_from_email: ['sales_manager'],
+  // Direct-ingest pipeline (Sprint 1).
+  // requirements_ingested: the rep just created an opportunity from an
+  //   artifact they already had. They're already on the page; no email
+  //   needed. Manager learns about it via dashboard / digest later.
+  // link_reissued: silent by default — it's the rep choosing to send
+  //   a follow-up scoping link. They know they did it. The client
+  //   receives the email separately (mailto: bridge / Outlook flow).
+  requirements_ingested:     [],
+  link_reissued:             [],
 };
 
 /**

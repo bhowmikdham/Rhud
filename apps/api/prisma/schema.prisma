@@ -157,10 +157,33 @@ model Template {
 model Engagement {
   id                            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId                      String    @map("tenant_id") @db.Uuid
-  templateId                    String    @map("template_id") @db.Uuid
+  // NULL for direct-ingest opportunities (paste-text, file-drop, voice,
+  // WhatsApp) that don't have a template attached at creation. The
+  // Outlook add-in path (POST /opportunities/from-email) still picks a
+  // template up-front, so its rows have templateId set.
+  // A rep can attach a template later via POST /opportunities/:id/links —
+  // doing so issues a gathering token AND sets templateId+templateVersion
+  // in the same transaction. Invariant: a GatheringToken exists iff
+  // templateId IS NOT NULL. See docs/direct-ingest.md §3.2.
+  templateId                    String?   @map("template_id") @db.Uuid
   // Snapshot of the template version this engagement was issued against, so
   // editing the template later doesn't change in-flight engagements.
-  templateVersion               Int       @default(1) @map("template_version")
+  templateVersion               Int?      @map("template_version")
+  // How this engagement entered Rhud. `manual_form` is the existing
+  // link-share wizard (default; backfilled for pre-migration rows);
+  // every other value is a direct-ingest variant. See
+  // packages/shared/src/ingestion.ts ENGAGEMENT_SOURCES + CHECK
+  // constraint in migration. Replaces the deprecated `importedFromOdoo`
+  // boolean (now read via `source == 'odoo_import'`).
+  source                        String    @default("manual_form") @map("source")
+  // Back-pointer to the primary IngestionArtifact that originated this
+  // engagement (the email body, the pasted text, the file, the voice
+  // note). NULL for `manual_form` opportunities and for engagements
+  // created by the Outlook add-in (which doesn't go through the
+  // IngestionArtifact pipeline — it uses sourceMessageId below).
+  // Attachments on an email-import via the artifact pipeline live as
+  // separate IngestionArtifact rows pointing back via `IngestionArtifact.engagementId`.
+  ingestionId                   String?   @map("ingestion_id") @db.Uuid
   salesEmployeeId               String    @map("sales_employee_id") @db.Uuid
   salesManagerId                String?   @map("sales_manager_id") @db.Uuid
   clientEmail                   String    @map("client_email") @db.Citext
@@ -262,8 +285,17 @@ model Engagement {
   proposalPdfUrl       String?   @map("proposal_pdf_url")
   proposalPdfExpiresAt DateTime? @map("proposal_pdf_expires_at") @db.Timestamptz
 
-  tenant          Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template        Template             @relation(fields: [templateId], references: [id])
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template        Template?           @relation(fields: [templateId], references: [id])
+  // The artifact that originated this engagement (direct-ingest only).
+  // Named relation because IngestionArtifact also has a back-pointer
+  // collection (`artifacts`) — Prisma requires names to disambiguate.
+  originArtifact  IngestionArtifact?  @relation("EngagementOriginArtifact", fields: [ingestionId], references: [id], onDelete: SetNull)
+  // All artifacts attached to this engagement. Usually = 1 for paste-text
+  // / file-drop / voice; can be N for email-import via the artifact
+  // pipeline. Empty for Outlook-add-in engagements (which don't use
+  // IngestionArtifact — see sourceMessageId above).
+  artifacts       IngestionArtifact[] @relation("EngagementAttachedArtifacts")
   tokens          GatheringToken[]
   answers         EngagementAnswer[]
   files           EngagementFile[]
@@ -282,6 +314,7 @@ model Engagement {
   @@unique([tenantId, sourceMessageId], name: "engagement_tenant_source_message_id_uniq")
   @@index([tenantId])
   @@index([tenantId, status])
+  @@index([tenantId, source])
   @@index([salesEmployeeId])
   @@map("engagements")
 }
@@ -474,13 +507,96 @@ model EngagementFile {
   /// debuggable separately from LLM-quality issues. See
   /// packages/shared/src/document.ts (RhudDocument).
   parsedDocument      Json?     @map("parsed_document")
+  /// IngestionArtifact this file materialised from. NULL for files
+  /// uploaded via the link-share gathering flow (the historical path)
+  /// or via the engagement-level Quick-fill upload. Set when the file
+  /// was created as the byte representation of a direct-ingest artifact
+  /// — e.g. paste-text body rendered as text/plain in S3, or an email
+  /// attachment promoted through IngestionService.promote().
+  /// See docs/direct-ingest.md §3.4.
+  originArtifactId    String?   @map("origin_artifact_id") @db.Uuid
 
-  engagement Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  engagement     Engagement         @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  originArtifact IngestionArtifact? @relation(fields: [originArtifactId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([engagementId])
   @@index([engagementId, extractionStatus])
+  @@index([originArtifactId])
   @@map("engagement_files")
+}
+
+/// Captures the raw input that produced an opportunity (direct-ingest
+/// pipeline). One opportunity may have multiple artifacts: an email →
+/// one `email` artifact for the body + one `file` artifact per
+/// attachment. Artifacts may arrive *before* an opportunity exists
+/// (WhatsApp webhook, SES inbound) and sit unassigned until promoted by
+/// a rep through the dashboard. See docs/direct-ingest.md §3.3.
+model IngestionArtifact {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+
+  // Set after promotion. NULL while pending (webhook-arrived; not yet
+  // attached to an opportunity). Many artifacts → one engagement.
+  engagementId  String?  @map("engagement_id") @db.Uuid
+
+  // One of ENGAGEMENT_SOURCES in @rhud/shared. CHECK in migration.
+  source        String
+  // One of ARTIFACT_KINDS in @rhud/shared. CHECK in migration:
+  // 'text' | 'file' | 'audio' | 'email'.
+  kind          String
+
+  // Text-shaped artifacts (paste-text, email body, voice transcript).
+  // Capped at ~256KB by the application; longer bodies materialise to
+  // S3 and live as a `file` artifact alongside this one.
+  rawText       String?  @map("raw_text")
+
+  // Email-specific metadata. Also used for WhatsApp messages where we
+  // have an analog of "from" / "subject" (e.g. phone number, contact
+  // name). NULL for non-message artifacts.
+  emailSubject  String?  @map("email_subject")
+  emailFrom     String?  @map("email_from")
+  emailTo       String[] @map("email_to")
+  emailDate     DateTime? @map("email_date") @db.Timestamptz
+  emailHeaders  Json?    @map("email_headers")
+  /// Provider-side message identifier — RFC 5322 Message-ID for email,
+  /// `wamid` for WhatsApp, etc. Used to deduplicate inbound webhooks
+  /// that may fire multiple times for the same message.
+  externalId    String?  @map("external_id")
+
+  // File-shaped artifacts (file, audio). Standalone uploads OR
+  // attachments to an `email` artifact. The artifact row's s3Key is
+  // the primary storage location; once promoted, the matching
+  // EngagementFile row is created and references this artifact via
+  // its `originArtifactId`.
+  s3Key         String?  @map("s3_key")
+  contentType   String?  @map("content_type")
+  sizeBytes     Int?     @map("size_bytes")
+  originalName  String?  @map("original_name")
+
+  // Lifecycle. One of INGESTION_STATUSES in @rhud/shared. CHECK in
+  // migration: 'received' | 'processing' | 'promoted' | 'failed'.
+  status        String   @default("received")
+  failureReason String?  @map("failure_reason")
+
+  receivedAt    DateTime @default(now()) @map("received_at") @db.Timestamptz
+  receivedBy    String?  @map("received_by") @db.Uuid
+  promotedAt    DateTime? @map("promoted_at") @db.Timestamptz
+
+  engagement     Engagement?      @relation("EngagementAttachedArtifacts", fields: [engagementId], references: [id], onDelete: SetNull)
+  // Inverse of Engagement.originArtifact. Usually 0 or 1 engagements
+  // point to a given artifact as their origin.
+  originatedFor  Engagement[]     @relation("EngagementOriginArtifact")
+  // Files materialised from this artifact (1:1 for text/file/audio;
+  // 0 or more for email — though attachments are usually separate
+  // `file` artifacts).
+  files          EngagementFile[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, externalId])
+  @@index([engagementId])
+  @@map("ingestion_artifacts")
 }
 
 model AuditChainLink {

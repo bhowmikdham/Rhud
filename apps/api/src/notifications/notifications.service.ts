@@ -143,7 +143,10 @@ export class NotificationsService {
       const portalUrl = `${this.portalBase.replace(/\/$/, '')}/engagements/${engagement.id}`;
       const baseCtx: Omit<EmailContext, 'recipientRole'> = {
         engagementId: engagement.id,
-        templateName: engagement.template.name,
+        // Direct-ingest opportunities may have no template attached.
+        // Fall back to the engagement label so the email subject line
+        // is still meaningful. See docs/direct-ingest.md §11.1.
+        templateName: engagement.template?.name ?? engagement.name ?? '(Untitled)',
         clientEmail: engagement.clientEmail,
         portalUrl,
         payload: args.payload,

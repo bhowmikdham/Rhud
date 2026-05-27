@@ -15,6 +15,7 @@ import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
 import { Toggle } from '@/components/toggle';
+import { DirectIngestForm } from './direct-ingest-form';
 
 const TTL_OPTIONS: Array<{ key: string; label: string; days: number; hint?: string }> = [
   { key: '24h', label: '24 hours', days: 1, hint: 'Tightest — clients respond same-day' },
@@ -24,11 +25,15 @@ const TTL_OPTIONS: Array<{ key: string; label: string; days: number; hint?: stri
 ];
 
 type Step = 1 | 2 | 3;
+/** Top-level mode selector — link-share wizard vs direct-ingest "I have it".
+ *  See docs/direct-ingest.md §7.1. */
+type Mode = 'link' | 'have_it';
 
 export default function NewOpportunityPage() {
   const user = useRequireAuth();
   const router = useRouter();
 
+  const [mode, setMode] = useState<Mode>('link');
   const [step, setStep] = useState<Step>(1);
   const [list, setList] = useState<Template[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -117,11 +122,34 @@ export default function NewOpportunityPage() {
           </button>
         </div>
 
-        <div style={{ marginBottom: 22 }}>
+        <div style={{ marginBottom: 18 }}>
           <h1 className="page-title" style={{ marginBottom: 4 }}>New opportunity</h1>
           <p className="page-subtitle" style={{ margin: 0, color: 'var(--fg-muted)' }}>
-            Issue a tokenised scoping link. The client opens it in a browser — no account, no install.
+            {mode === 'link'
+              ? 'Issue a tokenised scoping link. The client opens it in a browser — no account, no install.'
+              : 'Already got the requirements? Drop a file or paste the notes. We extract structured points after the opportunity lands.'}
           </p>
+        </div>
+
+        {/* Mode toggle — Sprint 1 of the direct-ingest pipeline.
+            See docs/direct-ingest.md §7.1. */}
+        <div
+          style={{
+            display: 'inline-flex',
+            gap: 4,
+            padding: 4,
+            background: 'var(--bg-sunk)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            marginBottom: 18,
+          }}
+        >
+          <ModeButton active={mode === 'link'} onClick={() => setMode('link')} icon="Send">
+            Send a scoping link
+          </ModeButton>
+          <ModeButton active={mode === 'have_it'} onClick={() => setMode('have_it')} icon="Paperclip">
+            I already have it
+          </ModeButton>
         </div>
 
         {err && (
@@ -134,6 +162,9 @@ export default function NewOpportunityPage() {
           </div>
         )}
 
+        {mode === 'have_it' && <DirectIngestForm />}
+
+        {mode === 'link' && (
         <div style={{
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) 320px',
@@ -417,8 +448,49 @@ export default function NewOpportunityPage() {
             issued={issued}
           />
         </div>
+        )}
       </div>
     </AppShell>
+  );
+}
+
+/** Small segmented-control button used by the mode toggle. */
+function ModeButton({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick(): void;
+  icon: keyof typeof Icon;
+  children: React.ReactNode;
+}) {
+  const I = Icon[icon];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        appearance: 'none',
+        cursor: 'pointer',
+        padding: '8px 14px',
+        borderRadius: 7,
+        background: active ? 'var(--bg)' : 'transparent',
+        border: '1px solid ' + (active ? 'var(--border)' : 'transparent'),
+        boxShadow: active ? '0 1px 2px rgba(0,0,0,0.04)' : 'none',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 12.5,
+        fontWeight: active ? 600 : 500,
+        color: active ? 'var(--fg)' : 'var(--fg-muted)',
+        transition: 'background .15s, color .15s',
+      }}
+    >
+      <I size={12} />
+      {children}
+    </button>
   );
 }
 

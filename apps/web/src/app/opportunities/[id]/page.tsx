@@ -36,10 +36,12 @@ import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
 import { StageChip } from '@/components/stage-chip';
+import { SourceChip } from '@/components/source-chip';
 import { Portal } from '@/components/portal';
 import { RowActions } from '@/components/row-actions';
 import { DeleteConfirmModal } from '@/components/delete-confirm-modal';
 import { useConfirm } from '@/components/confirm';
+import { IssueLinkModal } from '@/components/issue-link-modal';
 import { LeadHud } from './lead-hud';
 import { LeadSummaryInline } from './lead-summary-inline';
 import {
@@ -116,6 +118,10 @@ export default function OpportunityDetailPage() {
   const [err, setErr] = useState<string | null>(null);
   const [predicting, setPredicting] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  // Drives the "Send scoping questions" / "Re-issue link" modal. The
+  // modal calls opportunities.issueLink; on success we reload the
+  // engagement so the gathering-link card picks up the new token.
+  const [showIssueLink, setShowIssueLink] = useState(false);
   /** Scroll target — the prediction/quote surface at the top of the
    *  artifact body. SiteScopeCard's "Compute quote" smooth-scrolls
    *  here after the conventional flow updates the QuoteCard. */
@@ -273,8 +279,12 @@ export default function OpportunityDetailPage() {
                 <div className="thread-title">{headerTitle}</div>
                 <div className="thread-meta">
                   <span className="mono" style={{ color: 'var(--fg-subtle)' }}>{eng.id.slice(0, 8)}</span>
-                  <span className="dot">·</span>
-                  <span>{eng.templateName}</span>
+                  {/* Direct-ingest opportunities have no template; skip the
+                      separator + label rather than render "No template" inline. */}
+                  {eng.templateName && (<>
+                    <span className="dot">·</span>
+                    <span>{eng.templateName}</span>
+                  </>)}
                   {eng.name && (<>
                     <span className="dot">·</span>
                     <span>{eng.clientEmail}</span>
@@ -296,6 +306,7 @@ export default function OpportunityDetailPage() {
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
               <StageChip stage={eng.status} />
+              <SourceChip source={eng.source} />
               <span className="chip"><Icon.Mail size={10} />{eng.clientEmail}</span>
               <span className="chip"><Icon.Calendar size={10} />{new Date(eng.createdAt).toLocaleDateString()}</span>
             </div>
@@ -470,14 +481,37 @@ export default function OpportunityDetailPage() {
               <div className="section-label" style={{ marginBottom: 10 }}>Opportunity</div>
               {eng.name && <Row k="Name" v={eng.name} />}
               <Row k="Client email" v={eng.clientEmail} />
-              <Row k="Template" v={eng.templateName} />
+              {/* Template row hidden for direct-ingest opportunities — they
+                  have no template attached until the rep issues a scoping
+                  link from the "Send scoping questions" card. */}
+              {eng.templateName && <Row k="Template" v={eng.templateName} />}
               <Row k="Created" v={new Date(eng.createdAt).toLocaleString()} />
               {eng.submittedAt && <Row k="Submitted" v={new Date(eng.submittedAt).toLocaleString()} />}
               <Row k="Opportunity id" v={<span className="mono">{eng.id}</span>} />
             </div>
 
-            {eng.gatheringLink && (
-              <GatheringLinkCard link={eng.gatheringLink} />
+            <ScopingQuestionsCard
+              engagementId={eng.id}
+              currentTemplateId={eng.templateId}
+              link={eng.gatheringLink}
+              onOpenModal={() => setShowIssueLink(true)}
+            />
+            {showIssueLink && (
+              <IssueLinkModal
+                engagementId={eng.id}
+                currentTemplateId={eng.templateId}
+                // Re-issue mode when there's any prior token at all
+                // (live, expired, or revoked). On the first link for
+                // a direct-ingest opportunity, gatheringLink is null
+                // — that's the link_issued path.
+                isReissue={!!eng.gatheringLink}
+                onIssued={async () => {
+                  setShowIssueLink(false);
+                  const refreshed = await opportunities.get(id);
+                  setEng(refreshed);
+                }}
+                onClose={() => setShowIssueLink(false)}
+              />
             )}
 
             <SiteScopeCard
@@ -1440,6 +1474,87 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
       <div style={{ color: 'var(--fg-muted)', fontSize: 12.5 }}>{k}</div>
       <div style={{ fontSize: 13, fontWeight: 500 }}>{v}</div>
     </div>
+  );
+}
+
+/**
+ * Wraps the gathering-link card with a "Send scoping questions" /
+ * "Re-issue link" CTA. Visible on every opportunity, not just ones
+ * that already have a link:
+ *
+ *   - Direct-ingest opportunity, no link yet → big "Send scoping
+ *     questions to client" CTA. Pressing it opens IssueLinkModal,
+ *     which attaches a template + mints the first token in one call
+ *     (POST /opportunities/:id/links, emits link_issued).
+ *   - Link-share / already-linked opportunity → shows the existing
+ *     GatheringLinkCard, plus a smaller "Re-issue link" button
+ *     (emits link_reissued; the previous link can be revoked
+ *     separately if needed).
+ *
+ * See docs/direct-ingest.md §7.2.
+ */
+function ScopingQuestionsCard({
+  engagementId,
+  currentTemplateId,
+  link,
+  onOpenModal,
+}: {
+  engagementId: string;
+  currentTemplateId: string | null;
+  link: GatheringLinkInfo | null;
+  onOpenModal(): void;
+}) {
+  void engagementId; // Used by parent's modal; the card itself only renders.
+  void currentTemplateId;
+  if (!link) {
+    return (
+      <div
+        className="card"
+        style={{
+          padding: 22,
+          marginTop: 16,
+          background: 'var(--bg-elev)',
+        }}
+      >
+        <div
+          className="section-label"
+          style={{
+            marginBottom: 10,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <Icon.Link size={11} /> Need more from the client?
+        </div>
+        <p
+          style={{
+            margin: '0 0 14px',
+            fontSize: 12.5,
+            color: 'var(--fg-muted)',
+            lineHeight: 1.55,
+          }}
+        >
+          Send a tokenised scoping link with follow-up questions. Useful
+          when the requirements you already imported leave gaps — pick a
+          template, set how long the link stays live, and the client
+          fills it in their browser.
+        </p>
+        <button className="btn accent" onClick={onOpenModal}>
+          <Icon.Send size={12} /> Send scoping questions
+        </button>
+      </div>
+    );
+  }
+  return (
+    <>
+      <GatheringLinkCard link={link} />
+      <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+        <button className="btn sm ghost" onClick={onOpenModal}>
+          <Icon.Refresh size={11} /> Re-issue link
+        </button>
+      </div>
+    </>
   );
 }
 

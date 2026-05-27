@@ -401,7 +401,11 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         const arr = r.inferredEntities as unknown as Array<{ confidence?: number }>;
         return sum + arr.filter((e) => (e.confidence ?? 0) >= 0.6).length;
       }, 0);
-      const tpl = eng
+      // Direct-ingest engagements may have no template attached
+      // (docs/direct-ingest.md §3.2). In that case there's no rate
+      // card to look up — leave `tpl` null and downstream logic falls
+      // back to its "no rate card bound" path.
+      const tpl = eng?.templateId
         ? await db.template.findUnique({
             where: { id: eng.templateId },
             select: { rateCardId: true },
@@ -661,7 +665,11 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         where: { id: engagementId },
         select: { templateId: true },
       });
-      if (!eng) return [];
+      // Direct-ingest engagements have no template, so there are no
+      // template questions to match against — extraction proceeds with
+      // unmatched points (the LLM still emits structured key/value
+      // pairs; they just don't bind to a node).
+      if (!eng?.templateId) return [];
       return db.templateNode.findMany({
         where: {
           templateId: eng.templateId,
@@ -897,7 +905,8 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         where: { id: engagementId },
         select: { templateId: true },
       });
-      if (!eng) return [];
+      // No template attached → no nodes to match against. See above.
+      if (!eng?.templateId) return [];
       const nodes = await db.templateNode.findMany({
         where: {
           templateId: eng.templateId,
@@ -1390,11 +1399,13 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       if (passing.length === 0) return { created: 0, iterationsCreated: 0 };
 
       // Resolve template + index body nodes by their binding slug.
+      // Direct-ingest engagements have no template → no body nodes,
+      // so there's nothing to project entities into. Skip cleanly.
       const eng = await db.engagement.findUnique({
         where: { id: engagementId },
         select: { templateId: true },
       });
-      if (!eng) return { created: 0, iterationsCreated: 0 };
+      if (!eng?.templateId) return { created: 0, iterationsCreated: 0 };
       const nodes = await db.templateNode.findMany({
         where: { templateId: eng.templateId },
         select: { id: true, parentNodeId: true, binding: true },
@@ -1511,7 +1522,8 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         where: { id: engagementId },
         select: { templateId: true },
       });
-      if (!eng) return 0;
+      // No template → no nodes to promote into. Skip cleanly.
+      if (!eng?.templateId) return 0;
       const validNodes = await db.templateNode.findMany({
         where: {
           templateId: eng.templateId,

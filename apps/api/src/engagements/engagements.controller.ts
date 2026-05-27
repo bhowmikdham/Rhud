@@ -17,6 +17,8 @@ import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
 import { EngagementsService } from './engagements.service.js';
 import { CreateEngagementDto, CreateOpportunityFromEmailDto, UpdateClientInfoDto } from './dto.js';
+import { IngestionService } from '../ingestion/ingestion.service.js';
+import { IssueLinkForExistingDto, PromoteIngestDto } from '../ingestion/dto.js';
 
 /** PATCH body for the reviewer-fillable scope fields (assumptions,
  *  exclusions, delivery timeline override). Phase A. All optional —
@@ -35,7 +37,10 @@ class UpdateScopeDto {
 @Controller(['opportunities', 'engagements'])
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class EngagementsController {
-  constructor(private readonly svc: EngagementsService) {}
+  constructor(
+    private readonly svc: EngagementsService,
+    private readonly ingestion: IngestionService,
+  ) {}
 
   @Post()
   @Roles('sales_employee', 'sales_manager', 'admin')
@@ -59,6 +64,12 @@ export class EngagementsController {
    * Same auth + roles as the regular create route. Idempotent on
    * (tenantId, messageId) — clicking the add-in's button twice for the
    * same email returns the original engagement instead of duplicating.
+   *
+   * Note: this is the Outlook-add-in path, deliberately separate from
+   * /opportunities/from-ingest. The add-in pre-fills the link-share
+   * wizard from an email; from-ingest takes pre-uploaded artifacts.
+   * Both write into the same Engagement table — `source` distinguishes.
+   * See docs/direct-ingest.md §6.
    */
   @Post('from-email')
   @Roles('sales_employee', 'sales_manager', 'admin')
@@ -70,6 +81,66 @@ export class EngagementsController {
       salesEmployeeId: req.user.sub,
       dto,
       publicBaseUrl: baseUrl,
+    });
+  }
+
+  /**
+   * Direct-ingest: promote one or more pre-existing IngestionArtifact
+   * rows into a fresh opportunity. The "I have it" UI mode hits this
+   * after the rep has uploaded files (via /ingest/file/presign) and
+   * confirmed client metadata. See docs/direct-ingest.md §5.1.
+   */
+  @Post('from-ingest')
+  @Roles('sales_employee', 'sales_manager', 'admin')
+  @HttpCode(201)
+  createFromIngest(
+    @Req() req: AuthedRequest,
+    @Body() dto: PromoteIngestDto,
+  ): Promise<{ engagementId: string; artifactIds: string[] }> {
+    return this.ingestion.promote({
+      tenantId: req.tenantId,
+      artifactIds: dto.artifactIds,
+      salesEmployeeId: req.user.sub,
+      ...(dto.name ? { name: dto.name } : {}),
+      overrides: {
+        clientEmail: dto.clientEmail,
+        ...(dto.clientName !== undefined    ? { clientName:    dto.clientName }    : {}),
+        ...(dto.clientAddress !== undefined ? { clientAddress: dto.clientAddress } : {}),
+        ...(dto.contactName !== undefined   ? { contactName:   dto.contactName }   : {}),
+        ...(dto.contactPhone !== undefined  ? { contactPhone:  dto.contactPhone }  : {}),
+      },
+    });
+  }
+
+  /**
+   * Mint a gathering link against an existing opportunity. Two use
+   * cases:
+   *   - Direct-ingest opportunity needs follow-up scoping: rep picks
+   *     a template, this endpoint attaches it + issues the first
+   *     link (emits link_issued).
+   *   - Link-share opportunity needs re-scoping: rep picks a template
+   *     (must match the existing one), this endpoint mints a fresh
+   *     token (emits link_reissued).
+   *
+   * See docs/direct-ingest.md §4.2 + §7.2.
+   */
+  @Post(':id/links')
+  @Roles('sales_employee', 'sales_manager', 'admin')
+  @HttpCode(201)
+  issueLink(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: IssueLinkForExistingDto,
+  ) {
+    const baseUrl = process.env.WEB_PUBLIC_URL ?? 'http://localhost:3000';
+    return this.svc.issueLinkForExisting({
+      tenantId: req.tenantId,
+      engagementId: id,
+      salesEmployeeId: req.user.sub,
+      templateId: dto.templateId,
+      publicBaseUrl: baseUrl,
+      ...(dto.expiresInDays !== undefined ? { expiresInDays: dto.expiresInDays } : {}),
+      ...(dto.reason !== undefined ? { reason: dto.reason } : {}),
     });
   }
 

@@ -107,11 +107,15 @@ export class JustificationService {
         : [];
       const questionByNodeId = new Map(nodes.map((n) => [n.id, n.question]));
 
+      // Direct-ingest opportunities may have no template; fall back to
+      // the engagement label and the classifier-set category, the same
+      // approach ProposalDraftService takes. See docs/direct-ingest.md §4.4.
+      const tmpl = engagement.template;
       return {
         clientEmail: engagement.clientEmail,
         opportunityName: engagement.name,
-        templateName: engagement.template.name,
-        serviceLine: engagement.template.serviceLine,
+        templateName: tmpl?.name ?? engagement.name ?? '(No template)',
+        serviceLine: tmpl?.serviceLine ?? engagement.categorySlug ?? 'General',
         currency: quote.currency,
         baseTotalCents: Number(quote.baseTotalCents),
         approvedPriceCents:

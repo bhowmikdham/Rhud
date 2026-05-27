@@ -119,6 +119,22 @@ export const THREAD_EVENT_TYPES = [
   /// not stored — too noisy for the timeline and we don't have a separate
   /// raw-email store yet).
   'engagement_created_from_email',
+  // Direct-ingest pipeline — see docs/direct-ingest.md §3.5.
+  /// One or more IngestionArtifact rows were promoted into this
+  /// engagement (paste-text, file-drop, voice, WhatsApp). Note: the
+  /// Outlook add-in path emits `engagement_created_from_email` above
+  /// instead — it doesn't use the IngestionArtifact pipeline.
+  /// Distinct from `link_issued` — no gathering token exists yet.
+  /// Payload: `{ source, artifactIds, kind }` where `source` is an
+  /// EngagementSource value and `kind` is an ArtifactKind value.
+  'requirements_ingested',
+  /// A gathering link was minted against an *existing* engagement —
+  /// either the first link on a direct-ingest opportunity (rep needs
+  /// follow-up scoping) or a re-issue on a previously-linked one.
+  /// Distinct from `link_issued`, which only fires on the very first
+  /// token for an engagement created via the link-share wizard.
+  /// Payload: `{ tokenId, expiresAt, reason? }`.
+  'link_reissued',
 ] as const;
 
 export type ThreadEventType = (typeof THREAD_EVENT_TYPES)[number];

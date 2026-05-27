@@ -1,5 +1,13 @@
 // Engagement lifecycle states — matches the design doc §4.4 `engagements.status` CHECK.
 export const ENGAGEMENT_STATUSES = [
+  /// Direct-ingest initial state. The engagement was created from one or
+  /// more IngestionArtifact rows (paste-text, file-drop, email, voice,
+  /// WhatsApp). Extraction is running on the attached files; transitions
+  /// to `submitted` when every EngagementFile reaches `extraction.status`
+  /// = ready. Distinct from `issued` because no gathering token exists
+  /// for this engagement — the rep already had the requirements.
+  /// See docs/direct-ingest.md §3.2.
+  'ingesting',
   'issued',
   'in_progress',
   'submitted',

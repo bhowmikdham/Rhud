@@ -90,6 +90,16 @@ export class QuoteService {
         },
       });
       if (!eng) throw new NotFoundException('engagement_not_found');
+      // Direct-ingest opportunities (docs/direct-ingest.md §3.2) may have
+      // no template attached. There's no rate card to walk in that case
+      // — skip base-price computation. Pricing can still happen later
+      // via Layer-3 (extracted-points → modifier ML); the quote row
+      // stays null until a template is attached via "Send scoping
+      // questions" or until the rep manually authors line items.
+      if (!eng.template) {
+        this.logger.debug(`engagement ${engagementId} has no template (direct-ingest); skipping base quote`);
+        return null;
+      }
       if (!eng.template.rateCardId) {
         this.logger.debug(`engagement ${engagementId} template has no rate card; skipping quote`);
         return null;

@@ -126,6 +126,48 @@ export class S3Service {
     throw final;
   }
 
+  /**
+   * Write a small buffer (≤ ~5MB) directly from the API process to S3.
+   * Used by paths where the API legitimately holds the bytes — e.g. a
+   * paste-text ingestion (the rep's pasted body is materialised as a
+   * tiny .txt object so the extraction pipeline can run unchanged).
+   *
+   * For large or rep-uploaded files, use `presignPut` and let the
+   * client upload directly. This method bypasses the no-API-proxy
+   * principle and should not be called on the request hot path for
+   * arbitrary user-provided bytes.
+   */
+  async putBytes(opts: {
+    key: string;
+    contentType: string;
+    body: Buffer | Uint8Array | string;
+  }): Promise<void> {
+    const cmd = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: opts.key,
+      ContentType: opts.contentType,
+      Body: typeof opts.body === 'string' ? Buffer.from(opts.body, 'utf8') : opts.body,
+    });
+    await this.client.send(cmd);
+  }
+
+  /**
+   * Canonical S3 key for an ingestion artifact's bytes. Mirrors
+   * `keyForEngagementFile`'s shape but is tenant-scoped at the top
+   * level since artifacts may exist before an engagement does
+   * (webhook-arrived, pending promotion). Once promoted, the
+   * EngagementFile created from the artifact re-uses this key — no
+   * server-to-server copy needed.
+   */
+  static keyForIngestionArtifact(args: {
+    tenantId: string;
+    artifactId: string;
+    filename: string;
+  }): string {
+    const safe = args.filename.replace(/[^\w.-]/g, '_').slice(0, 200);
+    return `ingestion/${args.tenantId}/${args.artifactId}/${safe}`;
+  }
+
   /** Build the canonical S3 key for an engagement file. */
   static keyForEngagementFile(args: {
     tenantId: string;
