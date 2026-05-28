@@ -267,13 +267,15 @@ export class IngestionService {
       if (artifacts.length !== args.artifactIds.length) {
         throw new NotFoundException('artifact_not_found');
       }
-      // Defensive: a 'promoted' artifact with no engagementId is a corrupt
-      // half-state (shouldn't happen — promotion sets both atomically). The
-      // idempotency short-circuit above already handled the normal case.
-      const corruptPromoted = artifacts.find((a) => a.status === 'promoted' && !a.engagementId);
-      if (corruptPromoted) {
-        throw new BadRequestException('artifact_already_promoted');
-      }
+      // A 'promoted' artifact whose engagementId is NULL means its
+      // opportunity was deleted (ingestion_artifacts.engagement_id is
+      // ON DELETE SET NULL, and delete doesn't reset the status). That's
+      // not corrupt — it's a re-importable orphan. We deliberately fall
+      // through and re-promote it into a FRESH opportunity (the update at
+      // the end of this flow re-points engagementId + promotedAt). The
+      // idempotency short-circuit above already returned early for the
+      // case where the linked opportunity still exists, so reaching here
+      // with a promoted+linked artifact can't happen.
 
       // Primary artifact: prefer email > text > file > audio, then
       // earliest received. This is the one the Engagement.ingestionId
