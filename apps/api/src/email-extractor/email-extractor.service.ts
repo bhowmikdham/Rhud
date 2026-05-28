@@ -74,6 +74,13 @@ const llmSchema = z.object({
 const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 const CACHE_TTL_DAYS = 30;
 
+// Bump whenever the extraction logic / prompt changes in a way that should
+// invalidate previously-cached results. Cached rows tagged with an older
+// version are treated as a miss → re-extracted with the new logic → re-cached.
+// v2: anchor fields on the deterministic HTML-table parser (fixes the
+//     label/value misalignment from LLM-on-flattened-text).
+const EXTRACTOR_VERSION = 2;
+
 @Injectable()
 export class EmailExtractorService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EmailExtractorService.name);
@@ -157,16 +164,34 @@ export class EmailExtractorService implements OnModuleInit, OnModuleDestroy {
       '',
       'Identify the real prospective CLIENT (party 3): usually named in the scope sheet, the signature, or the innermost forwarded headers. Extract its contact details when present: company, contact person, email, phone, postal address, website.',
       'If an external intermediary (party 2) is present, capture its company / contact / email as `partner`. If the only forwarder is an internal colleague (party 1), `partner` is null.',
-      'Extract every scope/requirement field you can find — whether laid out as a table (Label | Value) or written as prose. Use the document\'s own labels verbatim. Include fields that are asked but left blank, with an empty-string value.',
+      '',
+      'SCOPE FIELDS — extract every requirement field, from tables (Label | Value) or prose. Use the document\'s own labels verbatim. Include asked-but-blank fields with an empty-string value.',
+      'COPY VALUES VERBATIM. Never summarise, paraphrase, shorten, or move a value from one row onto a different label. A long or multi-line value MUST be reproduced in full. If you are unsure which value belongs to a label, leave it blank rather than borrowing a nearby value.',
+      'You will be given PRE-PARSED TABLE ROWS — parsed straight from the email\'s HTML cells, so their label→value pairing is reliable. Treat those pairings as the source of truth: reproduce each one exactly, and only ADD fields that appear in prose but are absent from the parsed rows.',
       '',
       'Output ONLY a single JSON object, no markdown fences, no commentary. Schema:',
       '{"client":{"company":string|null,"contactName":string|null,"email":string|null,"phone":string|null,"address":string|null,"website":string|null},"partner":{"company":string|null,"contactName":string|null,"email":string|null}|null,"isForwarded":boolean,"forwardedFrom":string|null,"fields":[{"label":string,"value":string}]}',
     ].join('\n');
 
+    // Parse the HTML tables deterministically — these label→value pairs
+    // read the actual <td> cells, so their alignment is reliable (unlike
+    // the LLM working off Office.js's flattened plain text, which can
+    // mis-pair a long multi-line value onto the wrong label).
+    const parsedRows = dto.bodyHtml ? extractStructuredFields(dto.bodyHtml) : [];
+    const parsedBlock =
+      parsedRows.length > 0
+        ? [
+            '',
+            'PRE-PARSED TABLE ROWS (reliable label→value pairings — source of truth for these fields):',
+            ...parsedRows.map((r, i) => `${i + 1}. ${r.label} => ${r.value || '(blank)'}`),
+          ].join('\n')
+        : '';
+
     const user = [
       `Signed-in Rhud user (internal — NOT the client): ${tenantUserEmail}`,
       `Email's apparent From address: ${dto.fromEmail}`,
       `Subject: ${dto.subject}`,
+      parsedBlock,
       '',
       '<email>',
       dto.bodyText.slice(0, 20_000),
@@ -186,6 +211,19 @@ export class EmailExtractorService implements OnModuleInit, OnModuleDestroy {
 
     const parsed = this.parseLlmJson(res.text);
     const result = this.coerce(parsed, dto);
+
+    // Alignment safety net: when the deterministic parser found table rows,
+    // they win for the fields they cover (correct values by construction).
+    // The LLM only contributes fields it found in prose that the parser
+    // missed. For prose-only emails (no parsed rows) the LLM output stands.
+    if (parsedRows.length > 0) {
+      const seen = new Set(parsedRows.map((r) => r.label.toLowerCase()));
+      const proseExtras = result.structuredFields.filter(
+        (f) => !seen.has(f.label.toLowerCase()),
+      );
+      result.structuredFields = [...parsedRows, ...proseExtras].slice(0, MAX_STRUCTURED_FIELDS);
+    }
+
     return { result, model: res.model ?? null };
   }
 
@@ -281,7 +319,13 @@ export class EmailExtractorService implements OnModuleInit, OnModuleDestroy {
         where: { email_extraction_tenant_message_uniq: { tenantId, messageId } },
         select: { payload: true },
       });
-      return row ? (row.payload as unknown as EmailExtractionResult) : null;
+      if (!row) return null;
+      // Payload is versioned: { v, result }. A missing / older version means
+      // the extraction logic has changed since — treat as a miss so we
+      // re-extract and overwrite with the current logic's output.
+      const wrapped = row.payload as unknown as { v?: number; result?: EmailExtractionResult };
+      if (wrapped?.v !== EXTRACTOR_VERSION || !wrapped.result) return null;
+      return wrapped.result;
     });
   }
 
@@ -291,11 +335,12 @@ export class EmailExtractorService implements OnModuleInit, OnModuleDestroy {
     result: EmailExtractionResult,
     model: string | null,
   ): Promise<void> {
+    const payload = { v: EXTRACTOR_VERSION, result } as unknown as object;
     await this.tenantDb.run(tenantId, async (db) => {
       await db.emailExtractionCache.upsert({
         where: { email_extraction_tenant_message_uniq: { tenantId, messageId } },
-        create: { tenantId, messageId, payload: result as unknown as object, ...(model ? { model } : {}) },
-        update: { payload: result as unknown as object, ...(model ? { model } : {}) },
+        create: { tenantId, messageId, payload, ...(model ? { model } : {}) },
+        update: { payload, ...(model ? { model } : {}) },
       });
     });
   }
