@@ -3,113 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Rhud · Create Opportunity</title>
+    <title>Rhud · New opportunity</title>
     <!--
       Office.js is loaded from Microsoft's CDN per Office Add-in policy —
       bundling our own copy is explicitly not supported (Outlook expects
-      the CDN script so it can match versions to the host). The page must
-      wait for Office.onReady() before touching the mailbox item.
+      the CDN script so it can match versions to the host). The React app
+      waits for Office.onReady() in main.tsx before touching the mailbox.
     -->
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
-    <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <main class="pane">
-      <header class="pane-head">
-        <div class="brand">
-          <span class="brand-mark">r</span>
-          <span class="brand-text">Rhud</span>
-        </div>
-        <div class="pane-title">New opportunity from this email</div>
-      </header>
-
-      <!-- Sign-in prompt. Shown when no cached JWT. We don't auto-open the
-           sign-in dialog on pane load because browsers (Chrome, Edge,
-           Safari) treat that as an unsolicited popup and block it with
-           "Browser restrictions prevented us from creating the dialog box."
-           Requiring an explicit user click satisfies the popup heuristic. -->
-      <div id="signin-prompt" class="signin-prompt" hidden>
-        <p>Sign in to Rhud to create opportunities from this email.</p>
-        <button id="signin" type="button" class="primary">Sign in</button>
-      </div>
-
-      <!-- Filled by taskpane.ts on Office.onReady. The user can edit any
-           field before submitting. -->
-      <form id="opportunity-form" class="form" hidden>
-        <label class="field">
-          <span class="field-label">
-            Client email
-            <!-- Surfaced when we detect the apparent From: was a teammate
-                 forwarding the email and we resolved an external sender
-                 upstream. Tells the rep we changed the value out from
-                 under them so they don't think it's a bug. -->
-            <span id="fromEmail-hint" class="field-hint" hidden></span>
-          </span>
-          <input id="fromEmail" type="email" required />
-        </label>
-
-        <label class="field">
-          <span class="field-label">Contact name</span>
-          <input id="fromName" type="text" />
-        </label>
-
-        <label class="field">
-          <span class="field-label">Client name</span>
-          <input id="clientNameOverride" type="text" placeholder="Defaults to contact name" />
-        </label>
-
-        <label class="field">
-          <span class="field-label">Subject</span>
-          <input id="subject" type="text" required />
-        </label>
-
-        <!-- Server-extracted key/value rows from any HTML tables in the
-             email body. Most inbound RFPs are questionnaires laid out as
-             tables; surfacing them as a structured list gives the rep a
-             one-glance read of what the prospect actually asked for.
-             Hidden when the server returns no fields (plain-text email,
-             no tables) — we fall back to the textarea below. -->
-        <div class="field structured-wrap" id="structured-wrap" hidden>
-          <span class="field-label">
-            Detected fields
-            <span id="structured-count" class="field-hint"></span>
-          </span>
-          <div id="structured-fields" class="structured-fields"></div>
-        </div>
-
-        <label class="field" id="body-wrap">
-          <span class="field-label">Body (preview)</span>
-          <textarea id="body" rows="4" readonly></textarea>
-        </label>
-
-        <!-- Collapsed by default. The common case is "capture this email
-             as an opportunity, I'll deal with follow-up scope later from
-             Rhud." When the rep DOES want to send a gathering link in
-             the same click, expanding this surfaces the template
-             dropdown so the add-in can fire a second request to
-             /opportunities/:id/links after the create succeeds. -->
-        <details class="link-disclosure" id="link-disclosure">
-          <summary>Send a follow-up link too…</summary>
-          <p class="link-disclosure-note">
-            Pick a template and we'll mint a gathering link the client
-            can use to fill out structured questions. Optional — most
-            email-imported opportunities don't need this.
-          </p>
-          <label class="field">
-            <span class="field-label">Template</span>
-            <select id="templateId">
-              <option value="">Loading…</option>
-            </select>
-          </label>
-        </details>
-
-        <button id="create" type="submit" class="primary">Create opportunity</button>
-        <button id="signout" type="button" class="link">Sign out</button>
-      </form>
-
-      <div id="status" class="status" role="status" aria-live="polite"></div>
-    </main>
-
-    <script type="module" src="/src/taskpane.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
