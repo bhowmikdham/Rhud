@@ -5,6 +5,7 @@ import type { ReviewField } from '../lib/types';
 interface Props {
   fields: ReviewField[];
   askClient: Set<number>;
+  source: 'llm' | 'heuristic' | null;
   clientEmail: string;
   contactName: string;
   clientName: string;
@@ -53,6 +54,13 @@ export function StepReview(props: Props) {
       <p className="sub" style={{ fontSize: 13, marginBottom: 14 }}>
         Confirm the client, then tap any value to edit. Blank fields can take a value or get queued for the client.
       </p>
+
+      {props.source === 'heuristic' && (
+        <div className="v3-ai-note">
+          <I.sparkles size={12} />
+          <span>Read with basic parsing. Connect an AI provider in Rhud settings for sharper client + scope extraction.</span>
+        </div>
+      )}
 
       <div className="v3-prog">
         <div style={{ width: pct + '%' }} />

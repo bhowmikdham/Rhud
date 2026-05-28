@@ -55,6 +55,9 @@ export function App() {
 
   const [fields, setFields] = useState<ReviewField[]>([]);
   const [askClient, setAskClient] = useState<Set<number>>(() => new Set());
+  // 'heuristic' when the tenant has no LLM configured (or it errored) and
+  // we fell back to regex extraction — the Review step nudges toward AI.
+  const [extractionSource, setExtractionSource] = useState<'llm' | 'heuristic' | null>(null);
 
   const [action, setAction] = useState<CreateAction>('opportunity-only');
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
@@ -72,6 +75,7 @@ export function App() {
     try {
       const p = await fetchPreview(a.token, m);
       setFields(deriveFields(p.structuredFields));
+      setExtractionSource(p.source);
       // The LLM resolves the real external client (company/contact/email/
       // phone/address) — disambiguating internal forwarders. Each field
       // overrides the raw-message seed only when the model found it.
@@ -273,6 +277,7 @@ export function App() {
               <StepReview
                 fields={fields}
                 askClient={askClient}
+                source={extractionSource}
                 clientEmail={clientEmail}
                 contactName={contactName}
                 clientName={clientName}
