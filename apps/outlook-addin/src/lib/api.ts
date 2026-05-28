@@ -38,7 +38,8 @@ async function call<T>(path: string, jwt: string, init: RequestInit = {}): Promi
   return (res.status === 204 ? null : await res.json()) as T;
 }
 
-/** Stateless preview — resolves the forwarded sender + extracts table fields. */
+/** LLM preview — resolves the real client + scope fields (regex fallback
+ *  server-side). messageId lets the server cache the result per email. */
 export function preview(jwt: string, msg: MessageContext): Promise<PreviewResponse> {
   return call<PreviewResponse>('/opportunities/preview-from-email', jwt, {
     method: 'POST',
@@ -47,8 +48,10 @@ export function preview(jwt: string, msg: MessageContext): Promise<PreviewRespon
       fromName: msg.fromName || undefined,
       subject: msg.subject,
       bodyText: msg.bodyText,
-      // Cap HTML well under the server's 200K DTO limit.
+      // Cap HTML well under the server's 200K DTO limit. Only the
+      // heuristic fallback uses it; the LLM reads bodyText.
       bodyHtml: msg.bodyHtml.slice(0, 180_000),
+      messageId: msg.messageId,
     }),
   });
 }
@@ -56,7 +59,14 @@ export function preview(jwt: string, msg: MessageContext): Promise<PreviewRespon
 /** Create the opportunity via the direct-ingest pipeline (no template). */
 export function createOpportunity(
   jwt: string,
-  args: { msg: MessageContext; fromEmail: string; fromName?: string; clientNameOverride?: string },
+  args: {
+    msg: MessageContext;
+    fromEmail: string;
+    fromName?: string;
+    clientNameOverride?: string;
+    contactPhone?: string;
+    clientAddress?: string;
+  },
 ): Promise<CreateResponse> {
   return call<CreateResponse>('/opportunities/from-email-ingest', jwt, {
     method: 'POST',
@@ -64,6 +74,8 @@ export function createOpportunity(
       fromEmail: args.fromEmail,
       fromName: args.fromName || undefined,
       clientNameOverride: args.clientNameOverride || undefined,
+      contactPhone: args.contactPhone || undefined,
+      clientAddress: args.clientAddress || undefined,
       subject: args.msg.subject,
       bodyText: args.msg.bodyText,
       messageId: args.msg.messageId,

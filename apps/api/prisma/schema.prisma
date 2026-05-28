@@ -319,6 +319,34 @@ model Engagement {
   @@map("engagements")
 }
 
+/// LLM extraction cache for the Outlook add-in preview. The add-in calls
+/// /opportunities/preview-from-email on every pane open; the LLM pass that
+/// resolves the real client + scope fields is the expensive part, so we
+/// cache its JSON result keyed by (tenantId, messageId). Reopening the same
+/// email is then free. Rows are purged after 30 days by a cross-tenant
+/// sweep (UnscopedDb.purgeStaleEmailExtractions) — the cache is a
+/// convenience, never a system of record.
+///
+/// No Prisma `tenant` relation on purpose (keeps the Tenant model
+/// untouched); the FK + ON DELETE CASCADE live in the migration.
+model EmailExtractionCache {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  /// RFC822 Message-Id of the source email.
+  messageId String   @map("message_id")
+  /// The extractor's structured result: { client, isForwarded,
+  /// forwardedFrom, structuredFields }. Stored verbatim.
+  payload   Json
+  /// Provider-reported model id that produced this result. Null for
+  /// heuristic-fallback rows (which we don't cache) and older rows.
+  model     String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([tenantId, messageId], name: "email_extraction_tenant_message_uniq")
+  @@index([createdAt])
+  @@map("email_extraction_cache")
+}
+
 // Persisted output of the deterministic Stage 2 base price computation,
 // plus space for Stage 3 modifier predictions and manager overrides.
 // One per engagement; recomputed on submit.

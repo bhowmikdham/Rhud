@@ -45,10 +45,12 @@ export function App() {
   const [msg, setMsg] = useState<MessageContext | null>(null);
   const [auth, setAuth] = useState<CachedAuth | null>(null);
 
-  // Editable client identity (seeded from message + server preview).
+  // Editable client identity (seeded from message + LLM preview).
   const [clientEmail, setClientEmail] = useState('');
   const [contactName, setContactName] = useState('');
   const [clientName, setClientName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [clientAddress, setClientAddress] = useState('');
   const [forwardedFrom, setForwardedFrom] = useState<string | null>(null);
 
   const [fields, setFields] = useState<ReviewField[]>([]);
@@ -70,13 +72,16 @@ export function App() {
     try {
       const p = await fetchPreview(a.token, m);
       setFields(deriveFields(p.structuredFields));
-      if (p.parsedSender) {
-        setClientEmail(p.parsedSender.email);
-        if (p.parsedSender.name) setContactName(p.parsedSender.name);
-        if (p.parsedSender.email.toLowerCase() !== m.fromEmail.toLowerCase()) {
-          setForwardedFrom(m.fromEmail);
-        }
-      }
+      // The LLM resolves the real external client (company/contact/email/
+      // phone/address) — disambiguating internal forwarders. Each field
+      // overrides the raw-message seed only when the model found it.
+      const c = p.client;
+      if (c.email) setClientEmail(c.email);
+      if (c.contactName) setContactName(c.contactName);
+      if (c.company) setClientName(c.company);
+      if (c.phone) setContactPhone(c.phone);
+      if (c.address) setClientAddress(c.address);
+      if (p.forwardedFrom) setForwardedFrom(p.forwardedFrom);
     } catch (e) {
       if (e instanceof AuthExpiredError) {
         clearAuth();
@@ -177,6 +182,8 @@ export function App() {
         fromEmail: clientEmail,
         fromName: contactName,
         clientNameOverride: clientName,
+        contactPhone,
+        clientAddress,
       });
       let linkUrl: string | undefined;
       if (action === 'with-link' && templateId) {
@@ -257,6 +264,7 @@ export function App() {
                 detected={detected}
                 missing={missing}
                 total={fields.length}
+                company={clientName}
                 clientEmail={clientEmail}
                 forwardedFrom={forwardedFrom}
               />
@@ -268,10 +276,14 @@ export function App() {
                 clientEmail={clientEmail}
                 contactName={contactName}
                 clientName={clientName}
+                contactPhone={contactPhone}
+                clientAddress={clientAddress}
                 forwardedFrom={forwardedFrom}
                 setClientEmail={setClientEmail}
                 setContactName={setContactName}
                 setClientName={setClientName}
+                setContactPhone={setContactPhone}
+                setClientAddress={setClientAddress}
                 updateField={updateField}
                 markNA={markNA}
                 toggleAsk={toggleAsk}

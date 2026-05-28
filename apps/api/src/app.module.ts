@@ -7,6 +7,7 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { ThreadModule } from './thread/thread.module.js';
 import { StorageModule } from './storage/storage.module.js';
 import { EngagementsModule } from './engagements/engagements.module.js';
+import { EmailExtractorModule } from './email-extractor/email-extractor.module.js';
 import { GatheringModule } from './gathering/gathering.module.js';
 import { AuditModule } from './audit/audit.module.js';
 import { MlModule } from './ml/ml.module.js';
@@ -38,6 +39,7 @@ import { HealthController } from './health.controller.js';
     AuthModule,
     TemplatesModule,
     EngagementsModule,
+    EmailExtractorModule,
     GatheringModule,
     AuditModule,
     MlModule,

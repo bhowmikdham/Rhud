@@ -6,18 +6,21 @@ interface Props {
   detected: number;
   missing: number;
   total: number;
+  /** The LLM-resolved client/company name (falls back to the email domain). */
+  company: string;
   clientEmail: string;
   forwardedFrom: string | null;
 }
 
 /** Step 0 — single-sentence framing of what Rhud read, three quiet stats,
  *  the source email pinned below. No quote (per design: nothing up front). */
-export function StepDetected({ msg, detected, missing, total, clientEmail, forwardedFrom }: Props) {
-  const company = domainCompany(clientEmail);
+export function StepDetected({ msg, detected, missing, total, company, clientEmail, forwardedFrom }: Props) {
+  // Prefer the LLM's company name; fall back to the email-domain heuristic.
+  const co = company.trim() || domainCompany(clientEmail);
   const headline =
     total > 0
-      ? `${total}-field scope ${company ? `from ${company}` : 'detected'}.`
-      : `Email from ${company ?? clientEmail} ready to capture.`;
+      ? `${total}-field scope ${co ? `from ${co}` : 'detected'}.`
+      : `Email from ${co ?? clientEmail} ready to capture.`;
 
   return (
     <div className="v3-page">

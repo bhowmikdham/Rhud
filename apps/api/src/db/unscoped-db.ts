@@ -291,6 +291,22 @@ export class UnscopedDb {
     }));
   }
 
+  /**
+   * Delete LLM email-extraction cache rows older than `days` days, across
+   * all tenants. Runs as the system role because the sweep has no tenant
+   * scope (it's a timer, not a request). The cache is a convenience layer
+   * over the preview LLM call — purging stale rows just forces a fresh
+   * extraction next time that email is opened.
+   *
+   * Returns the number of rows deleted (for logging).
+   */
+  async purgeStaleEmailExtractions(days = 30): Promise<number> {
+    const deleted = await this.prisma.$executeRaw`
+      DELETE FROM email_extraction_cache
+       WHERE created_at < now() - make_interval(days => ${days})`;
+    return deleted;
+  }
+
   /** Tenant name for the invite-preview page; needs no tenant scope. */
   async findTenantName(tenantId: string): Promise<string | null> {
     const rows = await this.prisma.$queryRaw<Array<{ name: string }>>`

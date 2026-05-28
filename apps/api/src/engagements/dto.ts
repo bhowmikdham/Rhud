@@ -45,45 +45,9 @@ export class UpdateClientInfoDto {
   @IsOptional() @IsString() @MaxLength(50)  contactPhone?: string | null;
 }
 
-/**
- * POST /opportunities/preview-from-email body.
- *
- * The Outlook add-in calls this *before* the user clicks "Create" so we
- * can show them what the opportunity will actually look like:
- *   - sender resolved against forwarded thread headers (the apparent
- *     `From:` is often a teammate, not the prospect),
- *   - structured key/value rows extracted from any HTML tables in the
- *     body (RFPs are very often questionnaires).
- *
- * Read-only — no DB writes, no engagement created. Safe to call on every
- * pane open / field edit. See engagements.service.ts → previewFromEmail.
- *
- * Why HTML is much larger than bodyText's cap: Outlook embeds extensive
- * MSO style blocks in forwarded HTML. 200K is comfortable for any real
- * message; runaway HTML still gets rejected at the Express body limit.
- */
-export class PreviewFromEmailDto {
-  @IsEmail()
-  fromEmail!: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  fromName?: string;
-
-  @IsString()
-  @MaxLength(500)
-  subject!: string;
-
-  @IsString()
-  @MaxLength(20000)
-  bodyText!: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(200_000)
-  bodyHtml?: string;
-}
+// NOTE: PreviewFromEmailDto moved to ../email-extractor/dto.ts — the
+// preview endpoint now lives in its own module (it needs LlmModule, which
+// can't be imported here without a module cycle).
 
 /**
  * POST /opportunities/from-email-ingest body.
@@ -142,6 +106,20 @@ export class CreateOpportunityFromEmailIngestDto {
   @IsString()
   @MaxLength(200)
   clientNameOverride?: string;
+
+  /** Contact phone, surfaced from the LLM extraction and editable in the
+   *  add-in's Review step. Stored as the opportunity's contactPhone. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  contactPhone?: string;
+
+  /** Client postal address, from the LLM extraction (signature/body).
+   *  Stored as the opportunity's clientAddress. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  clientAddress?: string;
 
   /** Which add-in / channel this came from. Cosmetic — recorded on the
    *  ingestion artifact for audit. */

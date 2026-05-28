@@ -19,11 +19,27 @@ export interface MessageContext {
   dateLabel: string;
 }
 
+/** The client the server extracted from the email (LLM, or heuristic
+ *  fallback). Any field may be null when not present / not found. */
+export interface ExtractedClient {
+  company: string | null;
+  contactName: string | null;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  website: string | null;
+}
+
 /** Server preview response — POST /opportunities/preview-from-email. */
 export interface PreviewResponse {
-  parsedSender: { email: string; name?: string } | null;
+  client: ExtractedClient;
   isForwarded: boolean;
+  /** The internal forwarder's address, when the real client was traced
+   *  through a forward. Surfaced as a "forwarded by …" note. */
+  forwardedFrom: string | null;
   structuredFields: Array<{ label: string; value: string }>;
+  /** 'llm' when a model produced this, 'heuristic' on regex fallback. */
+  source: 'llm' | 'heuristic';
 }
 
 /** A template option for the optional follow-up scoping link. */

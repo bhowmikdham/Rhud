@@ -8,10 +8,14 @@ interface Props {
   clientEmail: string;
   contactName: string;
   clientName: string;
+  contactPhone: string;
+  clientAddress: string;
   forwardedFrom: string | null;
   setClientEmail: (v: string) => void;
   setContactName: (v: string) => void;
   setClientName: (v: string) => void;
+  setContactPhone: (v: string) => void;
+  setClientAddress: (v: string) => void;
   updateField: (id: number, value: string) => void;
   markNA: (id: number) => void;
   toggleAsk: (id: number) => void;
@@ -54,16 +58,23 @@ export function StepReview(props: Props) {
         <div style={{ width: pct + '%' }} />
       </div>
 
-      {/* Client identity */}
+      {/* Client identity — seeded by the LLM (real external client, traced
+          through forwards), every field editable before create. */}
       <div className="v3-ident">
         <IdentityRow label="Client email" hint={props.forwardedFrom ? `forwarded by ${props.forwardedFrom}` : undefined}>
           <input className="v3-ident-input" type="email" value={props.clientEmail} onChange={(e) => props.setClientEmail(e.target.value)} />
         </IdentityRow>
+        <IdentityRow label="Company">
+          <input className="v3-ident-input" type="text" placeholder="Client organisation" value={props.clientName} onChange={(e) => props.setClientName(e.target.value)} />
+        </IdentityRow>
         <IdentityRow label="Contact name">
           <input className="v3-ident-input" type="text" value={props.contactName} onChange={(e) => props.setContactName(e.target.value)} />
         </IdentityRow>
-        <IdentityRow label="Client name">
-          <input className="v3-ident-input" type="text" placeholder="Defaults to contact name" value={props.clientName} onChange={(e) => props.setClientName(e.target.value)} />
+        <IdentityRow label="Phone">
+          <input className="v3-ident-input" type="tel" placeholder="Not in the email" value={props.contactPhone} onChange={(e) => props.setContactPhone(e.target.value)} />
+        </IdentityRow>
+        <IdentityRow label="Address">
+          <input className="v3-ident-input" type="text" placeholder="Not in the email" value={props.clientAddress} onChange={(e) => props.setClientAddress(e.target.value)} />
         </IdentityRow>
       </div>
 

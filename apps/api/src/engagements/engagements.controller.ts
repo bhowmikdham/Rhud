@@ -19,7 +19,6 @@ import { EngagementsService } from './engagements.service.js';
 import {
   CreateEngagementDto,
   CreateOpportunityFromEmailIngestDto,
-  PreviewFromEmailDto,
   UpdateClientInfoDto,
 } from './dto.js';
 import { IngestionService } from '../ingestion/ingestion.service.js';
@@ -125,28 +124,11 @@ export class EngagementsController {
             ? { clientName: dto.fromName }
             : {}),
         ...(dto.fromName ? { contactName: dto.fromName } : {}),
+        // Phone + address come from the LLM extraction surfaced in the
+        // add-in's Review step (the rep can edit them before submitting).
+        ...(dto.contactPhone ? { contactPhone: dto.contactPhone } : {}),
+        ...(dto.clientAddress ? { clientAddress: dto.clientAddress } : {}),
       },
-    });
-  }
-
-  /**
-   * Stateless preview for the Outlook add-in (and any future inbound-
-   * email surface). Resolves the apparent `From:` against the forwarded
-   * thread (the visible sender is usually a teammate, not the prospect)
-   * and pulls structured key/value rows out of HTML tables in the body
-   * (RFPs are usually questionnaires).
-   *
-   * Does NOT create an engagement — the rep still has to click Create.
-   * No DB writes. Same auth/roles as the create path so unauthenticated
-   * clients can't probe arbitrary email content through the parser.
-   */
-  @Post('preview-from-email')
-  @Roles('sales_employee', 'sales_manager', 'admin')
-  @HttpCode(200)
-  previewFromEmail(@Req() req: AuthedRequest, @Body() dto: PreviewFromEmailDto) {
-    return this.svc.previewFromEmail({
-      tenantUserEmail: req.user.email,
-      dto,
     });
   }
 
