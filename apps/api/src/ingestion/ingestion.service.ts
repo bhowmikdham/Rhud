@@ -233,6 +233,27 @@ export class IngestionService {
       throw new BadRequestException('no_artifacts_to_promote');
     }
 
+    // Idempotency: if these artifacts were already promoted, return the
+    // opportunity they're linked to instead of erroring. Re-creating from
+    // the same email (same Message-Id → same artifact) is a no-op that
+    // hands back the original opportunity — that's what the rep wants when
+    // they click Create twice, not an "artifact_already_promoted" 400.
+    const existingEngagementId = await this.tenantDb.run(args.tenantId, async (db) => {
+      const promoted = await db.ingestionArtifact.findFirst({
+        where: {
+          id: { in: args.artifactIds },
+          tenantId: args.tenantId,
+          status: 'promoted',
+          engagementId: { not: null },
+        },
+        select: { engagementId: true },
+      });
+      return promoted?.engagementId ?? null;
+    });
+    if (existingEngagementId) {
+      return { engagementId: existingEngagementId, artifactIds: args.artifactIds };
+    }
+
     const { engagementId, source, kind } = await this.tenantDb.run(args.tenantId, async (db) => {
       const artifacts = await db.ingestionArtifact.findMany({
         where: { id: { in: args.artifactIds }, tenantId: args.tenantId },
@@ -240,8 +261,11 @@ export class IngestionService {
       if (artifacts.length !== args.artifactIds.length) {
         throw new NotFoundException('artifact_not_found');
       }
-      const alreadyPromoted = artifacts.find((a) => a.status === 'promoted');
-      if (alreadyPromoted) {
+      // Defensive: a 'promoted' artifact with no engagementId is a corrupt
+      // half-state (shouldn't happen — promotion sets both atomically). The
+      // idempotency short-circuit above already handled the normal case.
+      const corruptPromoted = artifacts.find((a) => a.status === 'promoted' && !a.engagementId);
+      if (corruptPromoted) {
         throw new BadRequestException('artifact_already_promoted');
       }
 
