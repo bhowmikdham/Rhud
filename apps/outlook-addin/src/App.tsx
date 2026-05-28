@@ -53,6 +53,13 @@ export function App() {
   const [clientAddress, setClientAddress] = useState('');
   const [forwardedFrom, setForwardedFrom] = useState<string | null>(null);
 
+  // Partner / distributor party (external intermediary). Empty for direct
+  // deals; seeded from the LLM extraction when one is detected.
+  const [partnerCompany, setPartnerCompany] = useState('');
+  const [partnerContact, setPartnerContact] = useState('');
+  const [partnerEmail, setPartnerEmail] = useState('');
+  const [partnerRole, setPartnerRole] = useState<'partner' | 'distributor'>('partner');
+
   const [fields, setFields] = useState<ReviewField[]>([]);
   const [askClient, setAskClient] = useState<Set<number>>(() => new Set());
   // 'heuristic' when the tenant has no LLM configured (or it errored) and
@@ -86,6 +93,13 @@ export function App() {
       if (c.phone) setContactPhone(c.phone);
       if (c.address) setClientAddress(c.address);
       if (p.forwardedFrom) setForwardedFrom(p.forwardedFrom);
+      // Seed the partner section when the LLM found an external intermediary.
+      if (p.partner) {
+        if (p.partner.company) setPartnerCompany(p.partner.company);
+        if (p.partner.contactName) setPartnerContact(p.partner.contactName);
+        if (p.partner.email) setPartnerEmail(p.partner.email);
+        // Default role is 'partner'; rep can switch to 'distributor'.
+      }
     } catch (e) {
       if (e instanceof AuthExpiredError) {
         clearAuth();
@@ -188,6 +202,10 @@ export function App() {
         clientNameOverride: clientName,
         contactPhone,
         clientAddress,
+        partnerCompany,
+        partnerContact,
+        partnerEmail,
+        partnerRole,
       });
       let linkUrl: string | undefined;
       if (action === 'with-link' && templateId) {
@@ -215,7 +233,10 @@ export function App() {
     } finally {
       setBusy(false);
     }
-  }, [auth, msg, clientEmail, contactName, clientName, action, templateId]);
+  }, [
+    auth, msg, clientEmail, contactName, clientName, contactPhone, clientAddress,
+    partnerCompany, partnerContact, partnerEmail, partnerRole, action, templateId,
+  ]);
 
   // ── Render ────────────────────────────────────────────────────────────
   const detected = fields.filter((f) => f.status === 'detected').length;
@@ -284,11 +305,19 @@ export function App() {
                 contactPhone={contactPhone}
                 clientAddress={clientAddress}
                 forwardedFrom={forwardedFrom}
+                partnerCompany={partnerCompany}
+                partnerContact={partnerContact}
+                partnerEmail={partnerEmail}
+                partnerRole={partnerRole}
                 setClientEmail={setClientEmail}
                 setContactName={setContactName}
                 setClientName={setClientName}
                 setContactPhone={setContactPhone}
                 setClientAddress={setClientAddress}
+                setPartnerCompany={setPartnerCompany}
+                setPartnerContact={setPartnerContact}
+                setPartnerEmail={setPartnerEmail}
+                setPartnerRole={setPartnerRole}
                 updateField={updateField}
                 markNA={markNA}
                 toggleAsk={toggleAsk}

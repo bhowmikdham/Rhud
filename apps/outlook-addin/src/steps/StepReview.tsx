@@ -12,11 +12,19 @@ interface Props {
   contactPhone: string;
   clientAddress: string;
   forwardedFrom: string | null;
+  partnerCompany: string;
+  partnerContact: string;
+  partnerEmail: string;
+  partnerRole: 'partner' | 'distributor';
   setClientEmail: (v: string) => void;
   setContactName: (v: string) => void;
   setClientName: (v: string) => void;
   setContactPhone: (v: string) => void;
   setClientAddress: (v: string) => void;
+  setPartnerCompany: (v: string) => void;
+  setPartnerContact: (v: string) => void;
+  setPartnerEmail: (v: string) => void;
+  setPartnerRole: (v: 'partner' | 'distributor') => void;
   updateField: (id: number, value: string) => void;
   markNA: (id: number) => void;
   toggleAsk: (id: number) => void;
@@ -84,6 +92,35 @@ export function StepReview(props: Props) {
         <IdentityRow label="Address">
           <input className="v3-ident-input" type="text" placeholder="Not in the email" value={props.clientAddress} onChange={(e) => props.setClientAddress(e.target.value)} />
         </IdentityRow>
+      </div>
+
+      {/* Partner / distributor party — the external intermediary brokering
+          the deal (auto-filled when the LLM finds one). Optional. */}
+      <div className="v3-partner">
+        <div className="v3-partner-head">
+          <span className="v3-ident-label" style={{ fontWeight: 600, color: 'var(--v3-fg-2)' }}>Partner / distributor</span>
+          {(props.partnerCompany || props.partnerContact || props.partnerEmail) && (
+            <button
+              type="button"
+              className="v3-partner-clear"
+              onClick={() => { props.setPartnerCompany(''); props.setPartnerContact(''); props.setPartnerEmail(''); }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+        <p className="v3-partner-note">
+          An external reseller or distributor brokering this deal for the client. Leave blank for direct deals.
+        </p>
+        <div className="v3-partner-roles" role="radiogroup" aria-label="Partner role">
+          <button type="button" className={'v3-role ' + (props.partnerRole === 'partner' ? 'sel' : '')} onClick={() => props.setPartnerRole('partner')}>Partner</button>
+          <button type="button" className={'v3-role ' + (props.partnerRole === 'distributor' ? 'sel' : '')} onClick={() => props.setPartnerRole('distributor')}>Distributor</button>
+        </div>
+        <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+          <input className="v3-ident-input" type="text" placeholder="Company (e.g. Techspire Services)" value={props.partnerCompany} onChange={(e) => props.setPartnerCompany(e.target.value)} />
+          <input className="v3-ident-input" type="text" placeholder="Contact name" value={props.partnerContact} onChange={(e) => props.setPartnerContact(e.target.value)} />
+          <input className="v3-ident-input" type="email" placeholder="Contact email" value={props.partnerEmail} onChange={(e) => props.setPartnerEmail(e.target.value)} />
+        </div>
       </div>
 
       {fields.length === 0 ? (

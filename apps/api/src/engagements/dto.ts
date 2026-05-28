@@ -1,4 +1,4 @@
-import { IsEmail, IsInt, IsOptional, IsString, Matches, MaxLength, Min } from 'class-validator';
+import { IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min } from 'class-validator';
 
 // UUID-shape match. `@IsUUID()` requires version 1-5; some of our seed
 // fixtures use version 0 ("nil-ish") UUIDs for stable references, so we
@@ -120,6 +120,16 @@ export class CreateOpportunityFromEmailIngestDto {
   @IsString()
   @MaxLength(1000)
   clientAddress?: string;
+
+  // ── Partner / distributor party ───────────────────────────────────
+  // The external intermediary (reseller / distributor) who forwarded the
+  // RFP on behalf of the end client. All optional — most deals are direct.
+  @IsOptional() @IsString() @MaxLength(200)  partnerCompany?: string;
+  @IsOptional() @IsString() @MaxLength(200)  partnerContact?: string;
+  @IsOptional() @IsEmail()                   partnerEmail?: string;
+  /** Role on the deal. Constrained server-side to the engagements
+   *  partner_role CHECK (partner | distributor). */
+  @IsOptional() @IsIn(['partner', 'distributor']) partnerRole?: 'partner' | 'distributor';
 
   /** Which add-in / channel this came from. Cosmetic — recorded on the
    *  ingestion artifact for audit. */

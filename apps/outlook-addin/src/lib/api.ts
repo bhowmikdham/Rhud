@@ -66,6 +66,10 @@ export function createOpportunity(
     clientNameOverride?: string;
     contactPhone?: string;
     clientAddress?: string;
+    partnerCompany?: string;
+    partnerContact?: string;
+    partnerEmail?: string;
+    partnerRole?: 'partner' | 'distributor';
   },
 ): Promise<CreateResponse> {
   return call<CreateResponse>('/opportunities/from-email-ingest', jwt, {
@@ -76,6 +80,12 @@ export function createOpportunity(
       clientNameOverride: args.clientNameOverride || undefined,
       contactPhone: args.contactPhone || undefined,
       clientAddress: args.clientAddress || undefined,
+      partnerCompany: args.partnerCompany || undefined,
+      partnerContact: args.partnerContact || undefined,
+      partnerEmail: args.partnerEmail || undefined,
+      // Only send a role when there's an actual partner (else the server's
+      // IsIn validation would reject an empty string).
+      partnerRole: args.partnerCompany || args.partnerContact || args.partnerEmail ? args.partnerRole : undefined,
       subject: args.msg.subject,
       bodyText: args.msg.bodyText,
       messageId: args.msg.messageId,

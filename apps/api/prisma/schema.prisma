@@ -252,6 +252,16 @@ model Engagement {
   clientAddress                 String?   @map("client_address")
   contactName                   String?   @map("contact_name")
   contactPhone                  String?   @map("contact_phone")
+  /// Intermediary party (channel partner / distributor) brokering the deal
+  /// between us and the end client — captured from a forwarded RFP where
+  /// an external company (e.g. a reseller) forwards on behalf of the real
+  /// client. Distinct from `clientName` (the end client) and from an
+  /// internal colleague who merely forwarded the mail. All nullable; most
+  /// opportunities have no partner. `partnerRole` ∈ (partner | distributor).
+  partnerCompany                String?   @map("partner_company")
+  partnerContact                String?   @map("partner_contact")
+  partnerEmail                  String?   @map("partner_email")
+  partnerRole                   String?   @map("partner_role")
   createdAt                     DateTime  @default(now()) @map("created_at") @db.Timestamptz
   submittedAt                   DateTime? @map("submitted_at") @db.Timestamptz
   closedAt                      DateTime? @map("closed_at") @db.Timestamptz

@@ -96,15 +96,21 @@ export interface PromoteArgs {
   tenantId: string;
   artifactIds: string[];
   salesEmployeeId: string;
-  /** Rep-provided client metadata overrides. When LLM extraction also
-   *  proposes values, the rep's overrides win. Sprint 1 keeps this
-   *  simple — no LLM-extracted client metadata yet. */
+  /** Rep-confirmed client + partner metadata (seeded by the LLM
+   *  extraction in the add-in, editable before create). The rep's values
+   *  win over anything inferred from the artifact. */
   overrides?: {
     clientEmail?: string;
     clientName?: string | null;
     clientAddress?: string | null;
     contactName?: string | null;
     contactPhone?: string | null;
+    // External intermediary (channel partner / distributor) brokering the
+    // deal. All optional — absent for direct deals.
+    partnerCompany?: string | null;
+    partnerContact?: string | null;
+    partnerEmail?: string | null;
+    partnerRole?: 'partner' | 'distributor' | null;
   };
   /** Free-text engagement label. */
   name?: string;
@@ -332,6 +338,12 @@ export class IngestionService {
                 ...(args.overrides.clientAddress !== undefined ? { clientAddress: args.overrides.clientAddress } : {}),
                 ...(args.overrides.contactName !== undefined   ? { contactName:   args.overrides.contactName }   : {}),
                 ...(args.overrides.contactPhone !== undefined  ? { contactPhone:  args.overrides.contactPhone }  : {}),
+              },
+              partner: {
+                ...(args.overrides.partnerCompany !== undefined ? { company: args.overrides.partnerCompany } : {}),
+                ...(args.overrides.partnerContact !== undefined ? { contact: args.overrides.partnerContact } : {}),
+                ...(args.overrides.partnerEmail   !== undefined ? { email:   args.overrides.partnerEmail }   : {}),
+                ...(args.overrides.partnerRole    !== undefined ? { role:    args.overrides.partnerRole }    : {}),
               },
             }
           : {}),

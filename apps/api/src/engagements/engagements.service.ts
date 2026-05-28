@@ -179,6 +179,13 @@ export class EngagementsService {
       contactName?: string | null;
       contactPhone?: string | null;
     };
+    /** External intermediary (channel partner / distributor). Optional. */
+    partner?: {
+      company?: string | null;
+      contact?: string | null;
+      email?: string | null;
+      role?: 'partner' | 'distributor' | null;
+    };
     /** The "primary" IngestionArtifact id — back-pointer field on the
      *  Engagement row. NULL for opportunities created entirely by the
      *  UI without a single dominant artifact (rare in practice). */
@@ -200,6 +207,16 @@ export class EngagementsService {
           ...(args.client?.clientAddress?.trim() ? { clientAddress: args.client.clientAddress.trim() } : {}),
           ...(args.client?.contactName?.trim()   ? { contactName:   args.client.contactName.trim() }   : {}),
           ...(args.client?.contactPhone?.trim()  ? { contactPhone:  args.client.contactPhone.trim() }  : {}),
+          ...(args.partner?.company?.trim() ? { partnerCompany: args.partner.company.trim() } : {}),
+          ...(args.partner?.contact?.trim() ? { partnerContact: args.partner.contact.trim() } : {}),
+          ...(args.partner?.email?.trim()   ? { partnerEmail:   args.partner.email.trim() }   : {}),
+          // Default the role to 'partner' when a partner company/contact
+          // is given but the rep left the role unset.
+          ...(args.partner?.role
+            ? { partnerRole: args.partner.role }
+            : (args.partner?.company?.trim() || args.partner?.contact?.trim())
+              ? { partnerRole: 'partner' }
+              : {}),
         },
         select: { id: true },
       });

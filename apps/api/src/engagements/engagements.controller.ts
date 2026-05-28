@@ -128,6 +128,12 @@ export class EngagementsController {
         // add-in's Review step (the rep can edit them before submitting).
         ...(dto.contactPhone ? { contactPhone: dto.contactPhone } : {}),
         ...(dto.clientAddress ? { clientAddress: dto.clientAddress } : {}),
+        // Partner / distributor party (external intermediary), when the
+        // rep kept or set one in the add-in's Partner section.
+        ...(dto.partnerCompany ? { partnerCompany: dto.partnerCompany } : {}),
+        ...(dto.partnerContact ? { partnerContact: dto.partnerContact } : {}),
+        ...(dto.partnerEmail ? { partnerEmail: dto.partnerEmail } : {}),
+        ...(dto.partnerRole ? { partnerRole: dto.partnerRole } : {}),
       },
     });
   }

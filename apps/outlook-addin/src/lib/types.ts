@@ -30,9 +30,21 @@ export interface ExtractedClient {
   website: string | null;
 }
 
+/** An external intermediary (channel partner / distributor) that forwarded
+ *  the RFP on behalf of the end client. Null for direct deals. */
+export interface ExtractedPartner {
+  company: string | null;
+  contactName: string | null;
+  email: string | null;
+}
+
+/** Partner role on the deal — matches the engagements partner_role CHECK. */
+export type PartnerRole = 'partner' | 'distributor';
+
 /** Server preview response — POST /opportunities/preview-from-email. */
 export interface PreviewResponse {
   client: ExtractedClient;
+  partner: ExtractedPartner | null;
   isForwarded: boolean;
   /** The internal forwarder's address, when the real client was traced
    *  through a forward. Surfaced as a "forwarded by …" note. */
