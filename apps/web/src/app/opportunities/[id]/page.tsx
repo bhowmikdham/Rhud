@@ -11,6 +11,7 @@ import {
   predictions,
   proposalDraft,
   quotes,
+  rateCards,
   siteEnumeration,
   type ApprovalChoice,
   type BasePriceLine,
@@ -25,6 +26,7 @@ import {
   type ParsedDocument,
   type Prediction,
   type PredictionDriver,
+  type RateCardSummary,
   type Regime,
   type DiscoveredPageRow,
   type SiteEnumerationCategorySummary,
@@ -489,6 +491,25 @@ export default function OpportunityDetailPage() {
               {eng.submittedAt && <Row k="Submitted" v={new Date(eng.submittedAt).toLocaleString()} />}
               <Row k="Opportunity id" v={<span className="mono">{eng.id}</span>} />
             </div>
+
+            {/* Direct-ingest opportunity (no template) with no rate card
+                yet → offer to attach one so it can be priced straight from
+                the extracted scope, without issuing a client scoping link. */}
+            {!eng.templateId && !eng.rateCardId && (
+              <AttachRateCardCard
+                engagementId={eng.id}
+                onAttached={async () => {
+                  const [refreshed, q, p] = await Promise.all([
+                    opportunities.get(id),
+                    quotes.forEngagement(id).catch(() => null),
+                    predictions.latest(id).catch(() => null),
+                  ]);
+                  setEng(refreshed);
+                  setQuote(q);
+                  setPrediction(p);
+                }}
+              />
+            )}
 
             <ScopingQuestionsCard
               engagementId={eng.id}
@@ -1473,6 +1494,119 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
     <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--divider)' }}>
       <div style={{ color: 'var(--fg-muted)', fontSize: 12.5 }}>{k}</div>
       <div style={{ fontSize: 13, fontWeight: 500 }}>{v}</div>
+    </div>
+  );
+}
+
+/**
+ * Attach-a-rate-card card. Shown on a direct-ingest opportunity (no
+ * template) that has no rate card yet — the case where extraction ran
+ * but matching / inference / pricing are all gated off. Lets the rep
+ * attach a published rate card straight to the opportunity and reprice
+ * from the extracted scope, without first issuing a client scoping link.
+ */
+function AttachRateCardCard({
+  engagementId,
+  onAttached,
+}: {
+  engagementId: string;
+  onAttached: () => void | Promise<void>;
+}) {
+  const [cards, setCards] = useState<RateCardSummary[] | null>(null);
+  const [selected, setSelected] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    rateCards
+      .list()
+      .then((all) => {
+        if (!alive) return;
+        const published = all.filter((c) => c.status === 'published');
+        setCards(published);
+        if (published[0]) setSelected(published[0].id);
+      })
+      .catch((e) => {
+        if (alive) setErr(describeError(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function attach() {
+    if (!selected) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await opportunities.attachRateCard(engagementId, selected);
+      await onAttached();
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ padding: 22, marginTop: 16 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+        <Icon.Sparkle size={12} /> Price this opportunity from the email
+      </div>
+      <p style={{ margin: '0 0 12px', color: 'var(--fg-muted)', fontSize: 12.5, lineHeight: 1.5 }}>
+        Extraction pulled the data points out of the message, but matching, inference and
+        pricing need a rate card to score against. Attach one to price straight from the
+        extracted scope — no client scoping link required. You can still send scoping
+        questions later; the client&rsquo;s answers will take precedence.
+      </p>
+      {cards === null ? (
+        <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+          <span className="spin" /> Loading rate cards…
+        </div>
+      ) : cards.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: 'var(--fg-muted)' }}>
+          No published rate cards yet —{' '}
+          <Link href="/rate-cards" className="link">create one</Link> first.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+            disabled={busy}
+            style={{
+              minWidth: 220,
+              padding: '6px 10px',
+              borderRadius: 7,
+              border: '1px solid var(--border)',
+              background: 'var(--bg-elev)',
+              color: 'var(--fg)',
+              fontSize: 12.5,
+            }}
+          >
+            {cards.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} · v{c.version} · {c.currency}
+              </option>
+            ))}
+          </select>
+          <button className="btn sm" disabled={busy || !selected} onClick={() => void attach()}>
+            {busy ? (
+              <>
+                <span className="spin" /> Pricing…
+              </>
+            ) : (
+              <>
+                <Icon.Sparkle size={11} /> Attach &amp; price
+              </>
+            )}
+          </button>
+        </div>
+      )}
+      {err && (
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>{err}</div>
+      )}
     </div>
   );
 }

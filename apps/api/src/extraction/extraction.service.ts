@@ -374,7 +374,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       // matching, or rate-card pricing.
       const eng = await db.engagement.findUnique({
         where: { id: engagementId },
-        select: { templateId: true },
+        select: { templateId: true, rateCardId: true },
       });
       const answeredQuestions = await db.engagementAnswer.count({
         where: { engagementId },
@@ -411,7 +411,9 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
             select: { rateCardId: true },
           })
         : null;
-      const rateCardBound = !!tpl?.rateCardId;
+      // Effective rate card: direct attachment on the opportunity wins,
+      // else the template's binding. Drives the "rate card ✓/✗" chip.
+      const rateCardBound = !!(eng?.rateCardId ?? tpl?.rateCardId);
 
       return rows.map((r) => {
         const points = Array.isArray(r.extractedPoints)
@@ -1150,7 +1152,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       category: categorisePoint(p),
     }));
     let engagementId: string | null = null;
-    let templateRateCardId: string | null = null;
+    let effectiveRateCardId: string | null = null;
     let capturedFilename: string | null = null;
 
     // Step A — persist the extracted points + text but KEEP the
@@ -1163,7 +1165,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         where: { id: fileId },
         select: {
           engagementId: true, filename: true,
-          engagement: { select: { template: { select: { rateCardId: true } } } },
+          engagement: { select: { rateCardId: true, template: { select: { rateCardId: true } } } },
         },
       });
       await db.engagementFile.update({
@@ -1188,7 +1190,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       });
       if (file) {
         engagementId = file.engagementId;
-        templateRateCardId = file.engagement?.template?.rateCardId ?? null;
+        effectiveRateCardId = file.engagement?.rateCardId ?? file.engagement?.template?.rateCardId ?? null;
         capturedFilename = file.filename;
       }
     });
@@ -1199,8 +1201,8 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       // time) and cache the result on the file row. QuoteService reads
       // from this cache on every Re-predict so the LLM only fires once
       // per file, ever.
-      if (templateRateCardId) {
-        await this.runAndCacheInference(tenantId, fileId, templateRateCardId, points, capturedFilename);
+      if (effectiveRateCardId) {
+        await this.runAndCacheInference(tenantId, fileId, effectiveRateCardId, points, capturedFilename);
         // After Layer-3 inference settles, promote inferred entities into
         // engagement_answers for matching template body nodes. This is
         // what makes the "client uploads xlsx → form is pre-walked"
@@ -1794,7 +1796,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         select: {
           id: true, filename: true, extractionStatus: true,
           extractedPoints: true,
-          engagement: { select: { id: true, template: { select: { rateCardId: true } } } },
+          engagement: { select: { id: true, rateCardId: true, template: { select: { rateCardId: true } } } },
         },
       }),
     );
@@ -1806,7 +1808,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
     const points = Array.isArray(file.extractedPoints)
       ? (file.extractedPoints as unknown as ExtractedPoint[])
       : [];
-    const rateCardId = file.engagement?.template?.rateCardId;
+    const rateCardId = file.engagement?.rateCardId ?? file.engagement?.template?.rateCardId;
     const engagementId = file.engagement?.id;
     if (points.length === 0 || !rateCardId || !engagementId) {
       await this.kickoff(tenantId, fileId);
@@ -1828,6 +1830,90 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       );
     }
     return { rerun: 'mapper_only' };
+  }
+
+  /**
+   * Engagement-wide re-inference. Runs the rate-card field mapper over
+   * every ready file's already-extracted points using the engagement's
+   * EFFECTIVE rate card (direct attachment ?? template binding) and
+   * caches the result on each file. Used after a rep attaches a rate
+   * card to a template-less (direct-ingest) opportunity: extraction ran
+   * with no card bound, so `inferred_entities` is empty and the quote
+   * comes back light until we re-map against the freshly-attached card.
+   *
+   * No-op (returns zero) when there's still no effective rate card or no
+   * ready files with points. Best-effort per file — one failure is
+   * logged and the rest continue.
+   */
+  async rerunInferenceForEngagement(
+    tenantId: string,
+    engagementId: string,
+  ): Promise<{ files: number; entities: number }> {
+    const ctx = await this.tenantDb.run(tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { rateCardId: true, template: { select: { rateCardId: true } } },
+      });
+      const rateCardId = eng?.rateCardId ?? eng?.template?.rateCardId ?? null;
+      const files = await db.engagementFile.findMany({
+        where: { engagementId, extractionStatus: 'ready' },
+        select: { id: true, filename: true, extractedPoints: true },
+      });
+      return { rateCardId, files };
+    });
+
+    if (!ctx.rateCardId) {
+      this.logger.debug(
+        `rerunInferenceForEngagement: engagement ${engagementId} has no effective rate card; skipping`,
+      );
+      return { files: 0, entities: 0 };
+    }
+
+    let filesProcessed = 0;
+    for (const f of ctx.files) {
+      const points = Array.isArray(f.extractedPoints)
+        ? (f.extractedPoints as unknown as ExtractedPoint[])
+        : [];
+      if (points.length === 0) continue;
+      try {
+        await this.runAndCacheInference(tenantId, f.id, ctx.rateCardId, points, f.filename);
+        filesProcessed += 1;
+      } catch (e) {
+        this.logger.warn(
+          `rerunInferenceForEngagement: inference failed file=${f.id}: ${(e as Error).message}`,
+        );
+      }
+    }
+
+    // Promote inferred entities → answers for any template body nodes.
+    // No-op for template-less opportunities (no nodes to bind to); the
+    // quote path reads inferred_entities directly regardless.
+    try {
+      await this.promoteInferredToAnswers(tenantId, engagementId);
+    } catch (e) {
+      this.logger.warn(
+        `rerunInferenceForEngagement: answer promotion failed engagement=${engagementId}: ${(e as Error).message}`,
+      );
+    }
+
+    // Count high-confidence entities now cached, for the return summary.
+    const entities = await this.tenantDb.run(tenantId, async (db) => {
+      const rows = await db.engagementFile.findMany({
+        where: { engagementId, extractionStatus: 'ready' },
+        select: { inferredEntities: true },
+      });
+      return rows.reduce((sum, r) => {
+        if (!Array.isArray(r.inferredEntities)) return sum;
+        const arr = r.inferredEntities as unknown as Array<{ confidence?: number }>;
+        return sum + arr.filter((e) => (e.confidence ?? 0) >= 0.6).length;
+      }, 0);
+    });
+
+    this.logger.log(
+      `rerunInferenceForEngagement engagement=${engagementId} ` +
+        `files=${filesProcessed} high-confidence-entities=${entities}`,
+    );
+    return { files: filesProcessed, entities };
   }
 
   /**

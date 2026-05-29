@@ -354,6 +354,11 @@ export interface EngagementSummary {
   templateId: string | null;
   /** NULL on direct-ingest opportunities (no template, no template name). */
   templateName: string | null;
+  /** Rate card attached DIRECTLY to this opportunity (independent of any
+   *  template). NULL when none is directly attached — the signal the UI
+   *  uses to offer "attach a rate card" on a template-less opportunity. */
+  rateCardId: string | null;
+  rateCardName: string | null;
   /** How this opportunity entered Rhud. One of EngagementSource —
    *  manual_form / direct_upload / paste_text / voice_note /
    *  email_import / whatsapp_import / rfp_import / sow_import /
@@ -493,6 +498,16 @@ export const opportunities = {
       method: 'PATCH',
       body: JSON.stringify(input),
     }),
+
+  /** Attach a rate card directly to an opportunity (the template-less
+   *  pricing path), then reprice. The server re-runs Layer-3 inference
+   *  over the already-extracted points, recomputes the deterministic
+   *  quote, and predicts — so the caller just needs to refetch. */
+  attachRateCard: (id: string, rateCardId: string) =>
+    request<{ id: string; rateCardId: string; rateCardName: string }>(
+      `/opportunities/${id}/rate-card`,
+      { method: 'PATCH', body: JSON.stringify({ rateCardId }) },
+    ),
 
   // ── Direct-ingest pipeline — see docs/direct-ingest.md ────────────
   /** Promote already-ingested artifact(s) into a fresh opportunity.

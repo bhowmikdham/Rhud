@@ -20,6 +20,12 @@ export interface EngagementSummary {
   /** NULL on direct-ingest opportunities (no template → no template name).
    *  UI falls back to the engagement `name` for display. */
   templateName: string | null;
+  /** Rate card attached DIRECTLY to this opportunity (independent of any
+   *  template). NULL when none is directly attached — the signal the UI
+   *  uses to offer "attach a rate card" on a template-less opportunity.
+   *  The EFFECTIVE pricing card is rateCardId ?? the template's binding. */
+  rateCardId: string | null;
+  rateCardName: string | null;
   /** How this engagement entered Rhud. See @rhud/shared EngagementSource. */
   source: string;
   /** User-facing label ("Acme Q3 Security Assessment"). Null on legacy rows. */
@@ -421,6 +427,7 @@ export class EngagementsService {
         orderBy: { createdAt: 'desc' },
         include: {
           template: { select: { name: true } },
+          rateCard: { select: { name: true } },
           // Pull just the currency from the engagement quote so the
           // list endpoint can surface the right currency symbol on
           // each row without exposing the whole quote payload.
@@ -453,6 +460,7 @@ export class EngagementsService {
         where: { id },
         include: {
           template: { select: { name: true } },
+          rateCard: { select: { name: true } },
           quote: { select: { currency: true } },
         },
       });
@@ -563,6 +571,49 @@ export class EngagementsService {
         data,
         select: { id: true, clientName: true, clientAddress: true, contactName: true, contactPhone: true },
       });
+    });
+  }
+
+  /**
+   * Attach a rate card DIRECTLY to this opportunity, independent of any
+   * template. This is the template-less pricing path: a direct-ingest
+   * opportunity (email / paste / voice) has no template and therefore no
+   * rate card, so every stage after extraction is gated off. Attaching a
+   * card here lets the opportunity be priced from its extracted +
+   * inferred entities without first issuing a client scoping link.
+   *
+   * The card must be published and belong to this tenant (RLS enforces
+   * the latter — a row from another tenant simply isn't found). Setting
+   * the card does NOT itself reprice; the caller re-runs inference +
+   * predict (see EngagementsController.attachRateCard).
+   */
+  async attachRateCard(
+    tenantId: string,
+    engagementId: string,
+    rateCardId: string,
+  ): Promise<{ id: string; rateCardId: string; rateCardName: string }> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true },
+      });
+      if (!eng) throw new NotFoundException('engagement_not_found');
+
+      const card = await db.rateCard.findUnique({
+        where: { id: rateCardId },
+        select: { id: true, name: true, status: true },
+      });
+      if (!card) throw new NotFoundException('rate_card_not_found');
+      if (card.status !== 'published') {
+        throw new BadRequestException('rate_card_not_published');
+      }
+
+      const updated = await db.engagement.update({
+        where: { id: engagementId },
+        data: { rateCardId: card.id },
+        select: { id: true, rateCardId: true },
+      });
+      return { id: updated.id, rateCardId: updated.rateCardId ?? card.id, rateCardName: card.name };
     });
   }
 
@@ -687,6 +738,8 @@ function rowToSummary(r: {
   // attached) per docs/direct-ingest.md §3.2.
   templateId: string | null;
   template: { name: string } | null;
+  rateCardId: string | null;
+  rateCard: { name: string } | null;
   source: string;
   name: string | null;
   clientEmail: string;
@@ -720,6 +773,8 @@ function rowToSummary(r: {
     id: r.id,
     templateId: r.templateId,
     templateName: r.template?.name ?? null,
+    rateCardId: r.rateCardId,
+    rateCardName: r.rateCard?.name ?? null,
     source: r.source,
     name: r.name,
     clientEmail: r.clientEmail,

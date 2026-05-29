@@ -11,11 +11,14 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
 import { EngagementsService } from './engagements.service.js';
+import { ExtractionService } from '../extraction/extraction.service.js';
+import { QuoteService } from '../pricing/quote.service.js';
+import { PredictionService } from '../pricing/prediction.service.js';
 import {
   CreateEngagementDto,
   CreateOpportunityFromEmailIngestDto,
@@ -34,6 +37,12 @@ class UpdateScopeDto {
   @IsOptional() @IsString() @MaxLength(2000) deliveryTimelineOverride?: string | null;
 }
 
+/** PATCH body for attaching a rate card directly to an opportunity
+ *  (the template-less pricing path). The card must be published. */
+class AttachRateCardDto {
+  @IsUUID() rateCardId!: string;
+}
+
 // Mounted at both routes so the rebrand is purely cosmetic for clients:
 // new code calls /opportunities, in-flight integrations + older tests still
 // work against /engagements. Internal terminology stays "engagement"
@@ -44,6 +53,9 @@ export class EngagementsController {
   constructor(
     private readonly svc: EngagementsService,
     private readonly ingestion: IngestionService,
+    private readonly extraction: ExtractionService,
+    private readonly quotes: QuoteService,
+    private readonly predictions: PredictionService,
   ) {}
 
   @Post()
@@ -249,5 +261,34 @@ export class EngagementsController {
     @Body() dto: UpdateClientInfoDto,
   ) {
     return this.svc.updateClient(req.tenantId, id, dto);
+  }
+
+  /**
+   * Attach a rate card directly to an opportunity, then reprice. For a
+   * direct-ingest opportunity (created from an email / paste / voice with
+   * no template) this is what unblocks the pipeline: extraction already
+   * pulled structured points, but matching / inference / pricing were all
+   * gated on a rate card. We bind the card, re-run Layer-3 inference over
+   * the already-extracted points, recompute the deterministic quote, then
+   * run the prediction. Quote + predict are best-effort so a flaky
+   * predict can't hide a successfully computed base.
+   */
+  @Patch(':id/rate-card')
+  @Roles('admin', 'sales_manager', 'sales_employee')
+  @HttpCode(200)
+  async attachRateCard(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: AttachRateCardDto,
+  ) {
+    const attached = await this.svc.attachRateCard(req.tenantId, id, dto.rateCardId);
+    const inference = await this.extraction.rerunInferenceForEngagement(req.tenantId, id);
+    const quote = await this.quotes
+      .computeAndPersistForEngagement(req.tenantId, id)
+      .catch(() => null);
+    const prediction = await this.predictions
+      .predictForEngagement(req.tenantId, id)
+      .catch(() => null);
+    return { ...attached, inference, quote, prediction };
   }
 }
