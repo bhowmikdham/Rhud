@@ -301,9 +301,12 @@ export class UnscopedDb {
    * Returns the number of rows deleted (for logging).
    */
   async purgeStaleEmailExtractions(days = 30): Promise<number> {
+    // `${days}::int`: Prisma binds the JS number as bigint, but Postgres
+    // make_interval(days => …) only accepts int4 — without the cast it
+    // raises 42883 ("function does not exist") and the purge silently fails.
     const deleted = await this.prisma.$executeRaw`
       DELETE FROM email_extraction_cache
-       WHERE created_at < now() - make_interval(days => ${days})`;
+       WHERE created_at < now() - make_interval(days => ${days}::int)`;
     return deleted;
   }
 
