@@ -15,7 +15,7 @@
  * → Help text. Users can always override.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ImportNodeInput, NodeOption, NodeType } from '@/lib/api';
 import { Icon } from '@/components/icon';
 
@@ -88,6 +88,7 @@ export function SheetImportModal({ onCancel, onImport, busy }: SheetImportModalP
   const [loadingFile, setLoadingFile] = useState(false);
   const [replace, setReplace] = useState(false);
   const [parseErr, setParseErr] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   // The grid's source of truth: either the active workbook sheet, or the
   // textarea contents parsed as TSV/CSV. We don't try to round-trip a
@@ -115,6 +116,24 @@ export function SheetImportModal({ onCancel, onImport, busy }: SheetImportModalP
 
   const previewNodes = useMemo(() => buildNodes(sheet, roles, rowConfig), [sheet, roles, rowConfig]);
   const hasQuestionCol = roles.includes('question');
+
+  // Move focus into the dialog on open so keyboard + screen-reader users
+  // land inside it.
+  useEffect(() => {
+    const focusTarget =
+      dialogRef.current?.querySelector<HTMLElement>('textarea, input, button') ?? dialogRef.current;
+    focusTarget?.focus();
+  }, []);
+
+  // Escape cancels, unless an import is in flight (mirrors the disabled
+  // Cancel button).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !busy) { e.stopPropagation(); onCancel(); }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [busy, onCancel]);
 
   function setRole(col: number, r: ColumnRole) {
     setRoles((curr) => {
@@ -241,7 +260,12 @@ export function SheetImportModal({ onCancel, onImport, busy }: SheetImportModalP
       }}
     >
       <div
+        ref={dialogRef}
         className="card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import questionnaire from a sheet"
+        tabIndex={-1}
         style={{
           width: '100%',
           maxWidth: 1080,

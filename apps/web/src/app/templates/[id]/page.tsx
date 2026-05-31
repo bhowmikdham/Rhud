@@ -16,7 +16,7 @@ import {
   type TemplateNode,
   type TemplateWithNodes,
 } from '@/lib/api';
-import { describeError } from '@/lib/api';
+import { ApiError, describeError } from '@/lib/api';
 import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
@@ -79,17 +79,22 @@ export default function TemplateEditorPage() {
   const [cards, setCards] = useState<RateCardSummary[]>([]);
   const [activeCard, setActiveCard] = useState<RateCardFull | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [issues, setIssues] = useState<Issue[]>([]);
+  const [validating, setValidating] = useState(false);
+  const [validClean, setValidClean] = useState(false);
   const [busy, setBusy] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
   const reload = useCallback(async () => {
     setErr(null);
+    setNotFound(false);
     try {
       const t = await templates.get(id);
       setTmpl(t);
     } catch (e) {
-      setErr(String(e));
+      if (e instanceof ApiError && e.status === 404) setNotFound(true);
+      setErr(describeError(e));
     }
   }, [id]);
 
@@ -119,9 +124,19 @@ export default function TemplateEditorPage() {
   if (!user) return null;
   if (err && !tmpl) {
     return (
-      <AppShell crumbs={[{ label: 'Templates', href: '/templates' }, { label: 'Not found' }]}>
+      <AppShell crumbs={[{ label: 'Templates', href: '/templates' }, { label: notFound ? 'Not found' : 'Templates' }]}>
         <div className="page-inner">
-          <div className="card" style={{ padding: 22, color: 'var(--danger)' }}>{err}</div>
+          <div className="card" style={{ padding: 22 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>
+              {notFound ? 'Template not found' : "Couldn't load template"}
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--fg-muted)' }}>{err}</div>
+            {!notFound && (
+              <button onClick={() => void reload()} className="btn sm" style={{ marginTop: 14 }}>
+                Retry
+              </button>
+            )}
+          </div>
         </div>
       </AppShell>
     );
@@ -146,6 +161,7 @@ export default function TemplateEditorPage() {
 
   async function addNode() {
     setBusy(true);
+    setValidClean(false);
     try {
       await templates.addNode(id, {
         question: 'New question',
@@ -158,6 +174,7 @@ export default function TemplateEditorPage() {
 
   async function importPastedNodes(dto: { replace: boolean; nodes: ImportNodeInput[] }) {
     setBusy(true);
+    setValidClean(false);
     try {
       await templates.importNodes(id, dto);
       setImportOpen(false);
@@ -171,6 +188,7 @@ export default function TemplateEditorPage() {
 
   async function patchNode(nodeId: string, dto: Parameters<typeof templates.updateNode>[2]) {
     setBusy(true);
+    setValidClean(false);
     try {
       await templates.updateNode(id, nodeId, dto);
       await reload();
@@ -186,6 +204,7 @@ export default function TemplateEditorPage() {
     });
     if (!ok) return;
     setBusy(true);
+    setValidClean(false);
     try {
       await templates.removeNode(id, nodeId);
       await reload();
@@ -193,10 +212,12 @@ export default function TemplateEditorPage() {
   }
 
   async function validate() {
+    setValidating(true);
     try {
       const r = await templates.validate(id);
       setIssues(r.issues);
-    } catch (e) { setErr(describeError(e)); }
+      setValidClean(r.issues.length === 0);
+    } catch (e) { setErr(describeError(e)); } finally { setValidating(false); }
   }
 
   async function publish() {
@@ -204,6 +225,7 @@ export default function TemplateEditorPage() {
       await templates.update(id, { status: 'published' });
       await reload();
       setIssues([]);
+      setValidClean(false);
     } catch (e) {
       const apiErr = e as { body?: { issues?: Issue[]; message?: { issues?: Issue[] } } };
       const fromBody = apiErr.body?.issues ?? apiErr.body?.message?.issues;
@@ -222,8 +244,41 @@ export default function TemplateEditorPage() {
           onValidate={validate}
           onPublish={publish}
           busy={busy}
+          validating={validating}
           previewHref={`/templates/${id}/preview`}
         />
+
+        {err && (
+          <div
+            className="card"
+            style={{
+              marginTop: 16, padding: '12px 14px', fontSize: 12.5,
+              display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10,
+              color: 'var(--danger)', background: 'var(--danger-tint)',
+              border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
+            }}
+          >
+            <span>{err}</span>
+            <button onClick={() => setErr(null)} className="btn sm ghost"><Icon.X size={11} /></button>
+          </div>
+        )}
+
+        {validClean && issues.length === 0 && (
+          <div
+            style={{
+              marginTop: 16, padding: '12px 14px', fontSize: 12.5,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+              borderRadius: 'var(--radius-lg)',
+              color: 'var(--ok)', background: 'var(--ok-tint)',
+              border: '1px solid color-mix(in oklch, var(--ok) 22%, transparent)',
+            }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Icon.Check size={12} /> Template is valid — ready to publish
+            </span>
+            <button onClick={() => setValidClean(false)} className="btn sm ghost"><Icon.X size={11} /></button>
+          </div>
+        )}
 
         {issues.length > 0 && <IssueList issues={issues} onClose={() => setIssues([])} />}
 
@@ -290,6 +345,7 @@ function Header({
   onValidate,
   onPublish,
   busy,
+  validating,
   previewHref,
 }: {
   tmpl: Template;
@@ -298,6 +354,7 @@ function Header({
   onValidate: () => Promise<void>;
   onPublish: () => Promise<void>;
   busy: boolean;
+  validating: boolean;
   previewHref: string;
 }) {
   const [name, setName] = useState(tmpl.name);
@@ -344,6 +401,15 @@ function Header({
               </option>
             ))}
           </select>
+          {tmpl.status === 'published' && !tmpl.rateCardId && (
+            <span
+              className="chip warn"
+              style={{ padding: '0 6px' }}
+              title="Opportunities issued from this template won't produce a price prediction until a rate card is bound."
+            >
+              <Icon.Sparkle size={9} /> No rate card — opportunities won&apos;t be priced
+            </span>
+          )}
           <input
             className="input"
             value={gammaId}
@@ -373,8 +439,8 @@ function Header({
           <Icon.Eye size={12} />
           Preview
         </Link>
-        <button onClick={() => void onValidate()} disabled={busy} className="btn">
-          <Icon.CheckCircle size={12} /> Validate
+        <button onClick={() => void onValidate()} disabled={busy || validating} className="btn">
+          {validating ? <span className="spin" /> : <Icon.CheckCircle size={12} />} Validate
         </button>
         {tmpl.status !== 'published' && (
           <button onClick={() => void onPublish()} disabled={busy} className="btn accent">
@@ -434,9 +500,20 @@ function NodeCard({
   const [question, setQuestion] = useState(node.question);
   const [helpText, setHelpText] = useState(node.helpText ?? '');
   const [placeholder, setPlaceholder] = useState(node.placeholder ?? '');
+  const [savedAt, setSavedAt] = useState<number | null>(null);
   useEffect(() => setQuestion(node.question), [node.question]);
   useEffect(() => setHelpText(node.helpText ?? ''), [node.helpText]);
   useEffect(() => setPlaceholder(node.placeholder ?? ''), [node.placeholder]);
+
+  // Flash a per-card "Saved" tick after a successful field patch. Mirrors
+  // the ProposalScaffoldEditor savedAt pattern — onPatch already surfaces
+  // failures via the editor's shared error banner, so we only show the
+  // tick on resolve.
+  async function patch(dto: Parameters<typeof onPatch>[0]) {
+    await onPatch(dto);
+    setSavedAt(Date.now());
+    setTimeout(() => setSavedAt(null), 1500);
+  }
   const isSection = node.nodeType === 'section';
   const isLoop = node.nodeType === 'loop';
   const isLoopBody = !!node.parentNodeId;
@@ -461,7 +538,7 @@ function NodeCard({
         <input
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          onBlur={() => question !== node.question && void onPatch({ question })}
+          onBlur={() => question !== node.question && void patch({ question })}
           style={{
             flex: 1,
             background: 'transparent',
@@ -474,6 +551,11 @@ function NodeCard({
         />
         <span className="chip mono" style={{ padding: '0 6px' }}>{node.nodeType}</span>
         {!isSection && !required && <span className="chip" style={{ padding: '0 6px' }}>optional</span>}
+        {savedAt && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--ok)' }}>
+            <Icon.Check size={10} /> Saved
+          </span>
+        )}
         <button onClick={() => setOpen((v) => !v)} className="btn sm ghost">
           {open ? 'Collapse' : 'Edit'}
         </button>
@@ -482,7 +564,7 @@ function NodeCard({
       {open && (
         <div style={{ borderTop: '1px solid var(--divider)', background: 'var(--bg-sunk)', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <Row label="Type">
-            <select className="input" style={{ width: 'auto', height: 28 }} value={node.nodeType} onChange={(e) => void onPatch({ nodeType: e.target.value as NodeType })}>
+            <select className="input" style={{ width: 'auto', height: 28 }} value={node.nodeType} onChange={(e) => void patch({ nodeType: e.target.value as NodeType })}>
               {NODE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </Row>
@@ -498,7 +580,7 @@ function NodeCard({
                     const next = e.target.value.trim();
                     const cur = node.loopConfig?.label ?? '';
                     if (next === cur) return;
-                    void onPatch({
+                    void patch({
                       loopConfig: {
                         mode: 'open_ended',
                         ...(next ? { label: next } : {}),
@@ -518,7 +600,7 @@ function NodeCard({
                     value={node.loopConfig?.serviceLineSlug ?? ''}
                     onChange={(e) => {
                       const slug = e.target.value || undefined;
-                      void onPatch({
+                      void patch({
                         loopConfig: {
                           mode: 'open_ended',
                           ...(node.loopConfig?.label ? { label: node.loopConfig.label } : {}),
@@ -552,10 +634,10 @@ function NodeCard({
                 onChange={(e) => {
                   const v = e.target.value;
                   if (!v) {
-                    void onPatch({ binding: null });
+                    void patch({ binding: null });
                     return;
                   }
-                  void onPatch({ binding: { field: v as 'scope_value' | 'methodology' | 'customer_type' } });
+                  void patch({ binding: { field: v as 'scope_value' | 'methodology' | 'customer_type' } });
                 }}
               >
                 <option value="">— informational only —</option>
@@ -572,7 +654,7 @@ function NodeCard({
               rows={isSection ? 3 : 2}
               value={helpText}
               onChange={(e) => setHelpText(e.target.value)}
-              onBlur={() => (helpText || '') !== (node.helpText ?? '') && void onPatch({ helpText: helpText || null })}
+              onBlur={() => (helpText || '') !== (node.helpText ?? '') && void patch({ helpText: helpText || null })}
               placeholder={isSection ? 'Describe this section…' : 'Guidance shown beneath the field'}
             />
           </Row>
@@ -583,7 +665,7 @@ function NodeCard({
                 className="input"
                 value={placeholder}
                 onChange={(e) => setPlaceholder(e.target.value)}
-                onBlur={() => (placeholder || '') !== (node.placeholder ?? '') && void onPatch({ placeholder: placeholder || null })}
+                onBlur={() => (placeholder || '') !== (node.placeholder ?? '') && void patch({ placeholder: placeholder || null })}
                 placeholder="e.g. Enter approximate value"
               />
             </Row>
@@ -595,7 +677,7 @@ function NodeCard({
                 <input
                   type="checkbox"
                   checked={required}
-                  onChange={(e) => void onPatch({ required: e.target.checked })}
+                  onChange={(e) => void patch({ required: e.target.checked })}
                 />
                 Responder must answer this question
               </label>
@@ -604,13 +686,13 @@ function NodeCard({
 
           {needsOptions && (
             <Row label="Options">
-              <OptionsEditor value={node.options ?? []} onChange={(opts) => void onPatch({ options: opts })} />
+              <OptionsEditor value={node.options ?? []} onChange={(opts) => void patch({ options: opts })} />
             </Row>
           )}
 
           {!isSection && (
             <Row label="Allow files">
-              <input type="checkbox" checked={node.allowFiles} onChange={(e) => void onPatch({ allowFiles: e.target.checked })} />
+              <input type="checkbox" checked={node.allowFiles} onChange={(e) => void patch({ allowFiles: e.target.checked })} />
             </Row>
           )}
 
@@ -618,7 +700,7 @@ function NodeCard({
             <RulesEditor
               value={node.nextRules}
               nodeOptions={nodeOptions.filter((o) => o.id !== node.id)}
-              onChange={(rules) => void onPatch({ nextRules: rules })}
+              onChange={(rules) => void patch({ nextRules: rules })}
             />
           </Row>
 

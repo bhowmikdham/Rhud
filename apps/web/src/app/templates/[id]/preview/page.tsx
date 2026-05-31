@@ -7,8 +7,8 @@
  */
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
-import { templates, type TemplateNode, type TemplateWithNodes, type NodeOption } from '@/lib/api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { describeError, templates, type TemplateNode, type TemplateWithNodes, type NodeOption } from '@/lib/api';
 import {
   resolveNext,
   validateAnswerShape,
@@ -29,19 +29,27 @@ export default function TemplatePreviewPage() {
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState<AnswerMap>({});
   const [done, setDone] = useState(false);
+  // Inline validation message for the current question card — replaces the
+  // raw alert()s on answer-shape / tree-resolution failures.
+  const [stepErr, setStepErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!user) return;
+  const load = useCallback(() => {
+    setErr(null);
     templates.get(id).then((t) => {
       setTmpl(t);
       if (t.rootNodeId) setPath([t.rootNodeId]);
-    }).catch((e) => setErr(String(e)));
-  }, [id, user]);
+    }).catch((e) => setErr(describeError(e)));
+  }, [id]);
+
+  useEffect(() => {
+    if (!user) return;
+    load();
+  }, [load, user]);
 
   const byId = useMemo(() => new Map(tmpl?.nodes.map((n) => [n.id, n]) ?? []), [tmpl]);
 
   if (!user) return null;
-  if (err) return <BareErr msg={err} backHref={`/templates/${id}`} />;
+  if (err) return <BareErr msg={err} backHref={`/templates/${id}`} onRetry={load} />;
   if (!tmpl) return <BareLoading />;
   if (!tmpl.rootNodeId) {
     return (
@@ -68,6 +76,7 @@ export default function TemplatePreviewPage() {
   const isOptional = node.required === false;
 
   function setAnswer(a: Answer) {
+    setStepErr(null);
     setAnswers((m) => ({ ...m, [node!.id]: a }));
   }
 
@@ -75,14 +84,15 @@ export default function TemplatePreviewPage() {
     const a = answers[node!.id] ?? null;
     const shape = validateAnswerShape(node!.nodeType, a);
     if (!shape.ok) {
-      alert(`answer shape: ${shape.reason}`);
+      setStepErr(`Check this answer: ${shape.reason}`);
       return;
     }
     const r = resolveNext(node!, a);
     if (r.kind === 'invalid') {
-      alert(`tree error: ${r.reason}`);
+      setStepErr(`Tree error: ${r.reason}`);
       return;
     }
+    setStepErr(null);
     if (r.kind === 'end') {
       setDone(true);
       return;
@@ -93,7 +103,10 @@ export default function TemplatePreviewPage() {
   }
 
   function back() {
-    if (idx > 0) setIdx(idx - 1);
+    if (idx > 0) {
+      setStepErr(null);
+      setIdx(idx - 1);
+    }
   }
 
   function restart() {
@@ -101,7 +114,14 @@ export default function TemplatePreviewPage() {
     setPath([tmpl!.rootNodeId!]);
     setIdx(0);
     setDone(false);
+    setStepErr(null);
   }
+
+  // The wizard length / progress should reflect only the steps on the
+  // CURRENTLY active route. After a Back, `path` still holds the old
+  // forward tail (so Continue can keep it when the answer is unchanged),
+  // so the count must read the active prefix, not the full path.
+  const activePath = path.slice(0, idx + 1);
 
   const canAdvance = (() => {
     if (isSection) return true;
@@ -131,14 +151,14 @@ export default function TemplatePreviewPage() {
 
       <div className="client-card">
         <div className="client-progress">
-          {path.map((nid, i) => (
+          {activePath.map((nid, i) => (
             <div key={nid} className={'seg ' + (i < idx ? 'done' : i === idx ? 'active' : '')} />
           ))}
         </div>
 
         <div className="client-body">
           <div className="client-q">
-            {isSection ? 'Section' : `Question ${idx + 1} of ${path.length}`}
+            {isSection ? 'Section' : `Question ${idx + 1} of ${activePath.length}`}
             {isOptional && !isSection && <span style={{ marginLeft: 8, color: 'var(--fg-subtle)' }}>· optional</span>}
           </div>
           <div className="client-title">{node.question}</div>
@@ -150,6 +170,12 @@ export default function TemplatePreviewPage() {
           )}
 
           {!isSection && <NodeInput node={node} value={answer} onChange={setAnswer} />}
+
+          {stepErr && (
+            <p style={{ marginTop: 16, fontSize: 12.5, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Icon.X size={12} /> {stepErr}
+            </p>
+          )}
         </div>
 
         <div className="client-foot">
@@ -293,12 +319,17 @@ function PreviewDone({ answers, tmpl, onRestart, editorHref }: { answers: Answer
 function BareLoading() {
   return <div className="client-shell"><span className="spin" /></div>;
 }
-function BareErr({ msg, backHref }: { msg: string; backHref: string }) {
+function BareErr({ msg, backHref, onRetry }: { msg: string; backHref: string; onRetry?: () => void }) {
   return (
     <div className="client-shell">
       <div className="client-card" style={{ padding: 32, textAlign: 'center', maxWidth: 480 }}>
         <p style={{ fontSize: 13, color: 'var(--danger)' }}>{msg}</p>
-        <Link href={backHref} className="btn" style={{ marginTop: 14 }}>← back</Link>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 14 }}>
+          <Link href={backHref} className="btn">← back</Link>
+          {onRetry && (
+            <button onClick={onRetry} className="btn accent">Retry</button>
+          )}
+        </div>
       </div>
     </div>
   );
