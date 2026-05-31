@@ -31,6 +31,8 @@ interface UploadedArtifact {
   sizeBytes: number;
   status: 'uploading' | 'ready' | 'failed';
   error?: string;
+  /** The original File, kept so a failed upload can be retried in place. */
+  file?: File;
 }
 
 export function DirectIngestForm() {
@@ -82,6 +84,7 @@ export function DirectIngestForm() {
         filename: file.name,
         sizeBytes: file.size,
         status: 'uploading',
+        file,
       };
       setArtifacts((prev) => [...prev, placeholder]);
 
@@ -116,6 +119,18 @@ export function DirectIngestForm() {
         );
       }
     }
+  }
+
+  /** Drop a row (a failed upload, or one the rep changed their mind on). */
+  function removeArtifact(artifactId: string) {
+    setArtifacts((prev) => prev.filter((a) => a.artifactId !== artifactId));
+  }
+
+  /** Re-upload a failed file in place — we kept the original File object. */
+  function retryArtifact(artifact: UploadedArtifact) {
+    if (!artifact.file) return;
+    removeArtifact(artifact.artifactId);
+    void handleFiles([artifact.file]);
   }
 
   async function submit() {
@@ -334,6 +349,37 @@ export function DirectIngestForm() {
                     <span className="chip danger">
                       <Icon.X size={9} /> Failed
                     </span>
+                  )}
+                  {a.status === 'failed' && a.file && (
+                    <button
+                      type="button"
+                      className="btn sm ghost"
+                      onClick={() => retryArtifact(a)}
+                    >
+                      Retry
+                    </button>
+                  )}
+                  {a.status !== 'uploading' && (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${a.filename}`}
+                      title="Remove"
+                      onClick={() => removeArtifact(a.artifactId)}
+                      style={{
+                        appearance: 'none',
+                        border: 0,
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        color: 'var(--fg-subtle)',
+                        display: 'grid',
+                        placeItems: 'center',
+                        padding: 4,
+                        borderRadius: 6,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Icon.X size={12} />
+                    </button>
                   )}
                 </div>
               ))}

@@ -60,10 +60,18 @@ function LoginInner() {
   const [magicNote, setMagicNote] = useState<string | null>(null);
 
   useEffect(() => {
-    // Don't auto-redirect to /dashboard for the addin flow — if the user
-    // happens to already be signed in, we still want to bounce them
-    // through the callback so the addin gets the token.
-    if (!loading && user && !isAddinFlow) router.replace('/dashboard');
+    if (loading || !user) return;
+    if (isAddinFlow) {
+      // Already signed in to rhud.net — hand the existing session token
+      // straight back to the add-in instead of forcing a needless re-login.
+      const stored =
+        typeof window !== 'undefined' ? window.localStorage.getItem('rhud.token') : null;
+      if (stored) redirectToAddinCallback(stored, user);
+      return;
+    }
+    router.replace('/dashboard');
+    // redirectToAddinCallback closes over no reactive state — safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, user, router, isAddinFlow]);
 
   /**
