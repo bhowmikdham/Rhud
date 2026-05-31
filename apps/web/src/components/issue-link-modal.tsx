@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { opportunities, templates, type IssuedLink, type Template } from '@/lib/api';
+import { describeError, opportunities, templates, type IssuedLink, type Template } from '@/lib/api';
 import { Icon } from './icon';
 
 const TTL_OPTIONS: Array<{ key: string; label: string; days: number; hint?: string }> = [
@@ -67,7 +67,7 @@ export function IssueLinkModal({
           else if (published[0]) setTemplateId(published[0].id);
         }
       })
-      .catch((e) => setErr(String(e)));
+      .catch((e) => setErr(describeError(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -93,7 +93,7 @@ export function IssueLinkModal({
       });
       onIssued(link);
     } catch (e) {
-      setErr(String(e));
+      setErr(describeError(e));
     } finally {
       setBusy(false);
     }
@@ -112,7 +112,7 @@ export function IssueLinkModal({
         zIndex: 50,
         padding: 16,
       }}
-      onClick={onClose}
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
     >
       <div
         className="card"

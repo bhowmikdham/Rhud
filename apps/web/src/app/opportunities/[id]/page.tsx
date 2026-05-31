@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ApiError,
   describeError,
   extraction,
   justification,
@@ -106,6 +107,33 @@ type EngagementWithThread = EngagementSummary & {
   gatheringLink: GatheringLinkInfo | null;
 };
 
+// Statuses where a reviewer can still act on the opportunity, and the
+// hold statuses a reviewer action parks it in. The ReviewerHoldActions
+// component self-disables the wrong buttons; the parent gate uses both
+// lists so the reviewer surface stays mounted while a hold is in effect.
+const REVIEWABLE_STATUSES = ['submitted', 'pending_approval', 'predicted'];
+const HOLD_STATUSES = ['returned_to_sales', 'awaiting_clarification', 'escalated'];
+
+// Maps a hold status to the thread event recording WHY it was held, plus
+// the copy that explains what clears it.
+const HOLD_BANNER: Record<string, { eventType: string; title: string; clears: string }> = {
+  returned_to_sales: {
+    eventType: 'scope_returned_to_sales',
+    title: 'Returned to sales',
+    clears: 'Edit the scope and resubmit to send this back into review.',
+  },
+  awaiting_clarification: {
+    eventType: 'clarification_requested',
+    title: 'Awaiting clarification',
+    clears: 'Answer the question, then resubmit to lift this hold.',
+  },
+  escalated: {
+    eventType: 'scope_escalated',
+    title: 'Escalated',
+    clears: 'A sales manager or admin must weigh in before this can proceed.',
+  },
+};
+
 export default function OpportunityDetailPage() {
   const user = useRequireAuth();
   const router = useRouter();
@@ -115,7 +143,14 @@ export default function OpportunityDetailPage() {
   const [eng, setEng] = useState<EngagementWithThread | null>(null);
   const [quote, setQuote] = useState<EngagementQuote | null>(null);
   const [prediction, setPrediction] = useState<Prediction | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  // Fatal load error — the initial opportunities.get() failed, so there's
+  // nothing to render. We keep the raw error so the guard can tell a real
+  // 404 apart from a transient failure (and offer a Retry).
+  const [loadErr, setLoadErr] = useState<unknown>(null);
+  // Non-fatal action error — a lifecycle action (predict/approve/etc.)
+  // failed. Shown as a dismissible banner near the actions; never
+  // discards the loaded opportunity.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [predicting, setPredicting] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   // Drives the "Send scoping questions" / "Re-issue link" modal. The
@@ -129,15 +164,23 @@ export default function OpportunityDetailPage() {
 
   const canDelete = user?.role === 'admin' || user?.role === 'sales_manager';
 
-  useEffect(() => {
-    if (!user) return;
-    opportunities.get(id).then(setEng).catch((e) => setErr(String(e)));
+  // Initial load — split from the action handlers so a fatal fetch error
+  // (the opportunity itself couldn't be read) is distinct from a transient
+  // action failure. Exposed as a callback so the Retry button can re-run it.
+  const load = useCallback(() => {
+    setLoadErr(null);
+    opportunities.get(id).then(setEng).catch((e) => setLoadErr(e));
     quotes.forEngagement(id).then(setQuote).catch(() => setQuote(null));
     predictions.latest(id).then(setPrediction).catch(() => setPrediction(null));
-  }, [id, user]);
+  }, [id]);
+
+  useEffect(() => {
+    if (!user) return;
+    load();
+  }, [user, load]);
 
   async function runPredict() {
-    setErr(null);
+    setActionErr(null);
     setPredicting(true);
     try {
       const fresh = await predictions.predict(id);
@@ -147,7 +190,7 @@ export default function OpportunityDetailPage() {
       const q = await quotes.forEngagement(id).catch(() => null);
       setQuote(q);
     } catch (e) {
-      setErr(describeError(e));
+      setActionErr(describeError(e));
     } finally {
       setPredicting(false);
     }
@@ -195,10 +238,14 @@ export default function OpportunityDetailPage() {
       // to ferry — the proposal workspace (/opportunities/[id]/proposal)
       // reads its own state and will surface whichever path the response
       // calls for. We intentionally don't await this so the approve UI
-      // stays snappy.
-      void proposalDraft.generate(id).catch(() => undefined);
+      // stays snappy. The approval itself succeeded; if the draft kickoff
+      // fails we don't roll it back, but we surface a non-fatal notice so
+      // the deal doesn't silently strand at 'approved'.
+      void proposalDraft.generate(id).catch(() =>
+        setActionErr("Approved — but couldn't start drafting; open the proposal workspace to retry."),
+      );
     } catch (e) {
-      setErr(describeError(e));
+      setActionErr(describeError(e));
     }
   }
 
@@ -212,7 +259,7 @@ export default function OpportunityDetailPage() {
       });
       await refreshAfterDecision();
     } catch (e) {
-      setErr(describeError(e));
+      setActionErr(describeError(e));
       throw e;
     }
   }
@@ -225,7 +272,7 @@ export default function OpportunityDetailPage() {
       });
       await refreshAfterDecision();
     } catch (e) {
-      setErr(describeError(e));
+      setActionErr(describeError(e));
       throw e; // let the modal know to stay open
     }
   }
@@ -235,7 +282,7 @@ export default function OpportunityDetailPage() {
       await predictions.revertApproval(id);
       await refreshAfterDecision();
     } catch (e) {
-      setErr(describeError(e));
+      setActionErr(describeError(e));
     }
   }
 
@@ -250,11 +297,34 @@ export default function OpportunityDetailPage() {
     setQuote(q);
   }
 
-  if (err) {
+  // Reserve "Not found" for an actual 404 — any other failure (network,
+  // 500, auth) gets a friendly message plus a Retry so a transient hiccup
+  // isn't a permanent dead-end.
+  if (loadErr) {
+    const isNotFound = loadErr instanceof ApiError && loadErr.status === 404;
     return (
-      <AppShell crumbs={[{ label: 'Opportunities', href: '/opportunities' }, { label: 'Not found' }]}>
+      <AppShell crumbs={[{ label: 'Opportunities', href: '/opportunities' }, { label: isNotFound ? 'Not found' : 'Error' }]}>
         <div className="page-inner">
-          <div className="card" style={{ padding: 22, color: 'var(--danger)' }}>{err}</div>
+          <div className="card" style={{ padding: 22 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>
+              {isNotFound ? 'Opportunity not found' : "Couldn't load this opportunity"}
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginBottom: 16 }}>
+              {isNotFound
+                ? 'This opportunity could not be loaded — it may have been deleted.'
+                : describeError(loadErr)}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {!isNotFound && (
+                <button className="btn accent" onClick={load}>
+                  <Icon.Refresh size={12} /> Retry
+                </button>
+              )}
+              <Link href="/opportunities" className="btn">
+                <Icon.ArrowLeft size={13} /> Back to opportunities
+              </Link>
+            </div>
+          </div>
         </div>
       </AppShell>
     );
@@ -291,18 +361,21 @@ export default function OpportunityDetailPage() {
                   </>)}
                 </div>
               </div>
-              <RowActions
-                items={[
-                  {
-                    label: 'Delete opportunity',
-                    icon: 'X',
-                    danger: true,
-                    disabled: !canDelete,
-                    title: canDelete ? undefined : 'Manager or admin only',
-                    onClick: () => setShowDelete(true),
-                  },
-                ]}
-              />
+              {/* Single destructive action — so when the user can't delete,
+                  the menu would be a lone disabled item. Drop it entirely in
+                  that case rather than show a dead one-item menu. */}
+              {canDelete && (
+                <RowActions
+                  items={[
+                    {
+                      label: 'Delete opportunity',
+                      icon: 'X',
+                      danger: true,
+                      onClick: () => setShowDelete(true),
+                    },
+                  ]}
+                />
+              )}
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
               <StageChip stage={eng.status} />
@@ -368,6 +441,30 @@ export default function OpportunityDetailPage() {
               </div>
             )}
             <div ref={predictionSectionRef} style={{ scrollMarginTop: 80 }}>
+            {/* Action error — a lifecycle action failed. Dismissible, and
+                never discards the loaded opportunity (unlike the fatal load
+                guard above). */}
+            {actionErr && (
+              <div style={{
+                marginBottom: 16,
+                padding: '12px 14px',
+                borderRadius: 8,
+                background: 'var(--danger-tint)',
+                border: '1px solid color-mix(in oklch, var(--danger) 22%, transparent)',
+                display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+                gap: 12,
+              }}>
+                <span style={{ fontSize: 12.5, color: 'var(--danger)', minWidth: 0 }}>{actionErr}</span>
+                <button
+                  className="btn ghost sm"
+                  aria-label="Dismiss"
+                  onClick={() => setActionErr(null)}
+                  style={{ flexShrink: 0 }}
+                >
+                  <Icon.X size={12} />
+                </button>
+              </div>
+            )}
             {user && (eng.status === 'pending_vp_approval' || eng.status === 'pending_ceo_approval') && (
               <FinalApprovalCard
                 engagementId={eng.id}
@@ -402,7 +499,39 @@ export default function OpportunityDetailPage() {
               />
             )}
 
-            {user && (eng.status === 'submitted' || eng.status === 'pending_approval' || eng.status === 'predicted') && (
+            {/* Hold banner — explains why the opportunity is parked and what
+                lifts the hold. Without this the page renders nothing for the
+                hold statuses. */}
+            {HOLD_BANNER[eng.status] && (
+              <div style={{
+                margin: '12px 0',
+                padding: '12px 14px',
+                background: 'var(--warn-tint)',
+                border: '1px solid color-mix(in oklch, var(--warn) 22%, transparent)',
+                borderRadius: 8,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <Icon.Clock size={13} style={{ color: 'var(--warn)' }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>
+                    On hold · {HOLD_BANNER[eng.status]!.title}
+                  </span>
+                </div>
+                {lastHoldReason(eng.status, eng.thread) && (
+                  <div style={{ fontSize: 12.5, color: 'var(--fg)', marginBottom: 4 }}>
+                    {lastHoldReason(eng.status, eng.thread)}
+                  </div>
+                )}
+                <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                  {HOLD_BANNER[eng.status]!.clears}
+                </div>
+              </div>
+            )}
+
+            {/* Reviewer hold actions — mounted for the reviewable statuses
+                AND the hold statuses, so a reviewer can still clear a hold.
+                The ReviewerHoldActions component decides which buttons to
+                enable. */}
+            {user && [...REVIEWABLE_STATUSES, ...HOLD_STATUSES].includes(eng.status) && (
               <div style={{
                 margin: '12px 0',
                 padding: '10px 14px',
@@ -1062,6 +1191,25 @@ function lastRejectionReason(thread: ThreadEventRow[] | undefined): string | nul
     if (e.eventType === 'approval_rejected') {
       const p = e.payload as { comment?: unknown } | null;
       if (p && typeof p.comment === 'string' && p.comment.trim()) return p.comment.trim();
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Why the opportunity is on hold — read off the latest thread event that
+ *  matches the current hold status. Same reversed-scan pattern as
+ *  lastRejectionReason; clarification holds carry the text under `question`
+ *  rather than `reason`. */
+function lastHoldReason(status: string, thread: ThreadEventRow[] | undefined): string | null {
+  const cfg = HOLD_BANNER[status];
+  if (!cfg || !thread) return null;
+  for (let i = thread.length - 1; i >= 0; i--) {
+    const e = thread[i]!;
+    if (e.eventType === cfg.eventType) {
+      const p = e.payload as { reason?: unknown; question?: unknown } | null;
+      if (p && typeof p.reason === 'string' && p.reason.trim()) return p.reason.trim();
+      if (p && typeof p.question === 'string' && p.question.trim()) return p.question.trim();
       return null;
     }
   }
@@ -1848,6 +1996,18 @@ function nextStepHint(status: string): string {
       return 'Proposal delivered to the client. They\'ll reply directly — when they do, mark the opportunity as won or closed below.';
     case 'closed':
       return 'Opportunity closed. Audit chain sealed.';
+    case 'pending_vp_approval':
+      return 'Above the VP threshold. Awaiting VP Sales sign-off before this can go to the client.';
+    case 'pending_ceo_approval':
+      return 'Above the CEO threshold. Awaiting CEO sign-off before this can go to the client.';
+    case 'awaiting_clarification':
+      return 'On hold for a clarification. Answer the question, then resubmit to continue.';
+    case 'returned_to_sales':
+      return 'Sent back by the reviewer. Revise the scope and resubmit for review.';
+    case 'escalated':
+      return 'Escalated to a manager. Awaiting a higher-level decision before it proceeds.';
+    case 'expired':
+      return 'The gathering link expired before the client finished. Re-issue a scoping link to continue.';
     default:
       return 'Awaiting the next signal.';
   }

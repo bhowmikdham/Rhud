@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
-import { opportunities, type EngagementSummary } from '@/lib/api';
+import { opportunities, describeError, type EngagementSummary } from '@/lib/api';
 import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
@@ -85,7 +86,8 @@ export default function OpportunitiesListPage() {
   const canDelete = user?.role === 'admin' || user?.role === 'sales_manager';
 
   function refresh() {
-    opportunities.list().then(setItems).catch((e) => setErr(String(e)));
+    setErr(null);
+    opportunities.list().then(setItems).catch((e) => setErr(describeError(e)));
   }
 
   useEffect(() => {
@@ -357,6 +359,8 @@ function ListRow({
   onDelete(): void;
 }) {
   const e = engagement;
+  const router = useRouter();
+  const href = `/opportunities/${e.id}`;
   const hasProposal = ['approved', 'drafting', 'draft_ready', 'sent', 'closed'].includes(e.status);
   const [emailCopied, setEmailCopied] = useState(false);
   function copyEmail() {
@@ -365,11 +369,26 @@ function ListRow({
     setTimeout(() => setEmailCopied(false), 1500);
   }
   return (
-    <tr onClick={() => location.assign(`/opportunities/${e.id}`)}>
+    // The title link carries the real semantics + keyboard nav; the row
+    // onClick is a click-anywhere affordance, made keyboard-reachable
+    // with role/tabIndex/onKeyDown so it isn't a mouse-only trap.
+    <tr
+      role="link"
+      tabIndex={0}
+      onClick={() => router.push(href)}
+      onKeyDown={(ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          router.push(href);
+        }
+      }}
+    >
       <td><span className="cell-mono">{e.id.slice(0, 8)}</span></td>
       <td>
         <div className="cell-strong" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {e.name ?? e.clientEmail}
+          <Link href={href} onClick={(ev) => ev.stopPropagation()}>
+            {e.name ?? e.clientEmail}
+          </Link>
           <SourceChip source={e.source} />
         </div>
         <div className="cell-muted" style={{ fontSize: 12 }}>
@@ -391,13 +410,13 @@ function ListRow({
             {
               label: 'Open opportunity',
               icon: 'ArrowUpRight',
-              onClick: () => location.assign(`/opportunities/${e.id}`),
+              onClick: () => router.push(href),
             },
             ...(hasProposal
               ? [{
                   label: 'View proposal',
                   icon: 'FileText' as const,
-                  onClick: () => location.assign(`/opportunities/${e.id}/proposal`),
+                  onClick: () => router.push(`/opportunities/${e.id}/proposal`),
                 }]
               : []),
             { divider: true },
@@ -592,6 +611,8 @@ function KanbanCard({
   onDelete(): void;
 }) {
   const e = engagement;
+  const router = useRouter();
+  const href = `/opportunities/${e.id}`;
   const title = e.name ?? e.clientEmail;
   // Direct-ingest opportunities have no template; fall back to the
   // client email so the kanban card subtitle isn't blank.
@@ -613,8 +634,19 @@ function KanbanCard({
   }
 
   return (
+    // The title link carries the real semantics + keyboard nav; the card
+    // onClick is a click-anywhere affordance, made keyboard-reachable
+    // with role/tabIndex/onKeyDown so it isn't a mouse-only trap.
     <div
-      onClick={() => location.assign(`/opportunities/${e.id}`)}
+      role="link"
+      tabIndex={0}
+      onClick={() => router.push(href)}
+      onKeyDown={(ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          router.push(href);
+        }
+      }}
       style={{
         background: 'var(--bg)',
         border: '1px solid var(--border)',
@@ -641,7 +673,13 @@ function KanbanCard({
             fontSize: 13, fontWeight: 600, color: 'var(--fg)',
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>
-            {title}
+            <Link
+              href={href}
+              onClick={(ev) => ev.stopPropagation()}
+              style={{ color: 'inherit', textDecoration: 'none' }}
+            >
+              {title}
+            </Link>
           </div>
           <div style={{
             fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 2,
@@ -658,13 +696,13 @@ function KanbanCard({
               {
                 label: 'Open opportunity',
                 icon: 'ArrowUpRight',
-                onClick: () => location.assign(`/opportunities/${e.id}`),
+                onClick: () => router.push(href),
               },
               ...(hasProposal
                 ? [{
                     label: 'View proposal',
                     icon: 'FileText' as const,
-                    onClick: () => location.assign(`/opportunities/${e.id}/proposal`),
+                    onClick: () => router.push(`/opportunities/${e.id}/proposal`),
                   }]
                 : []),
               { divider: true },
