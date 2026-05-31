@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { I } from '../lib/icons';
 import { RHUD_WEB } from '../lib/api';
 
@@ -15,6 +16,26 @@ interface Props {
 export function StepSent({ created, clientEmail, subject, fieldCount, askedCount }: Props) {
   const oppUrl = `${RHUD_WEB}/opportunities/${created.engagementId}`;
   const hasLink = !!created.linkUrl;
+  const [copied, setCopied] = useState(false);
+
+  const [copyFailed, setCopyFailed] = useState(false);
+
+  const copyLink = async () => {
+    if (!created.linkUrl || !navigator.clipboard?.writeText) {
+      setCopyFailed(true);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(created.linkUrl);
+      setCopyFailed(false);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Insecure context / denied permission — don't leave the rep thinking
+      // it worked. The opportunity URL is still openable above.
+      setCopyFailed(true);
+    }
+  };
 
   return (
     <div className="v3-page" style={{ padding: '44px 22px', textAlign: 'center' }}>
@@ -42,11 +63,16 @@ export function StepSent({ created, clientEmail, subject, fieldCount, askedCount
           Open opportunity <I.arrowRight size={14} />
         </a>
         {hasLink && (
-          <a href={created.linkUrl} target="_blank" rel="noopener" className="btn btn-secondary" style={{ textDecoration: 'none' }}>
-            <I.link size={13} /> Copy link
-          </a>
+          <button type="button" onClick={copyLink} className="btn btn-secondary">
+            <I.link size={13} /> {copied ? 'Copied' : 'Copy link'}
+          </button>
         )}
       </div>
+      {copyFailed && (
+        <p className="sub" role="alert" style={{ marginTop: 8, fontSize: 12 }}>
+          Couldn't copy automatically — open the opportunity and copy the link there.
+        </p>
+      )}
     </div>
   );
 }

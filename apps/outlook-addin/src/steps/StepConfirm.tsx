@@ -9,6 +9,8 @@ interface Props {
   action: CreateAction;
   setAction: (a: CreateAction) => void;
   templates: TemplateOption[];
+  templateState: 'idle' | 'loading' | 'loaded' | 'error';
+  retryTemplates: () => void;
   templateId: string;
   setTemplateId: (id: string) => void;
 }
@@ -19,7 +21,15 @@ interface Props {
  *  what's about to be created, and the real two-path action picker —
  *  create only, or create + send the client a scoping link. */
 export function StepConfirm(props: Props) {
-  const { msg, clientEmail, fieldCount, askedCount, action, setAction, templates, templateId, setTemplateId } = props;
+  const { msg, clientEmail, fieldCount, askedCount, action, setAction, templates, templateState, retryTemplates, templateId, setTemplateId } = props;
+
+  // Placeholder reflects the load lifecycle so the dropdown never reads
+  // "Loading…" forever when the request never resolves.
+  const placeholder =
+    templateState === 'loading' ? 'Loading…'
+    : templateState === 'error' ? 'Couldn’t load — retry'
+    : templates.length === 0 ? 'No published templates'
+    : 'Choose a template…';
 
   return (
     <div className="v3-page">
@@ -74,14 +84,20 @@ export function StepConfirm(props: Props) {
 
         {action === 'with-link' && (
           <div className="v3-link-pick">
-            <span className="v3-ident-label">Template for the scoping link</span>
-            <select className="v3-select" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
-              <option value="">{templates.length === 0 ? 'Loading templates…' : 'Choose a template…'}</option>
+            <label className="v3-ident-label" htmlFor="v3-template-select">Template for the scoping link</label>
+            <select id="v3-template-select" className="v3-select" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+              <option value="">{placeholder}</option>
               {templates.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
             </select>
-            {templates.length === 0 && (
+            {templateState === 'error' && (
+              <p className="v3-link-note">
+                Couldn't load templates.{' '}
+                <button type="button" className="v3-partner-clear" onClick={retryTemplates}>Retry</button>
+              </p>
+            )}
+            {templateState === 'loaded' && templates.length === 0 && (
               <p className="v3-link-note">
                 No published templates? You can still create the opportunity without a link.
               </p>
