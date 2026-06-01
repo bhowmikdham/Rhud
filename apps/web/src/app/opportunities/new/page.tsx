@@ -1182,15 +1182,28 @@ function SharePanel({
   copied: boolean;
   onCopied(): void;
 }) {
+  const [copyErr, setCopyErr] = useState<string | null>(null);
+  // The token URL is shown only once, so a silently-failed copy (non-HTTPS
+  // host, restricted browser, Clipboard API unavailable) would lose the
+  // link. Only mark "Copied" on success; otherwise tell the rep to copy
+  // the (now user-selectable) URL manually.
+  async function writeClipboard(text: string) {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+      setCopyErr(null);
+      onCopied();
+    } catch {
+      setCopyErr('Copy failed — select the link above and copy it manually.');
+    }
+  }
   function copy() {
-    navigator.clipboard.writeText(issued.url);
-    onCopied();
+    void writeClipboard(issued.url);
   }
   function copyMessage() {
     const subject = title || `your ${companyHint || 'opportunity'}`;
     const msg = `Hi — here's a secure scoping link for ${subject}: ${issued.url}\n\nIt's tokenised and expires soon. Open it in any browser; no account needed.`;
-    navigator.clipboard.writeText(msg);
-    onCopied();
+    void writeClipboard(msg);
   }
   const subject = encodeURIComponent(`Scoping link${title ? ` — ${title}` : ''}`);
   const body = encodeURIComponent(
@@ -1227,6 +1240,7 @@ function SharePanel({
           <span className="mono" style={{
             flex: 1, color: 'var(--fg)', fontSize: 12.5,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            userSelect: 'all', cursor: 'text',
           }}>
             {issued.url}
           </span>
@@ -1234,6 +1248,12 @@ function SharePanel({
             {copied ? <><Icon.Check size={11} /> Copied</> : <><Icon.Copy size={11} /> Copy</>}
           </button>
         </div>
+
+        {copyErr && (
+          <div role="alert" style={{ marginTop: 8, fontSize: 11.5, color: 'var(--danger)' }}>
+            {copyErr}
+          </div>
+        )}
 
         <div style={{
           marginTop: 12, padding: '10px 12px',

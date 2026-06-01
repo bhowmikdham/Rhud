@@ -6,6 +6,7 @@ interface Props {
   fields: ReviewField[];
   askClient: Set<number>;
   source: 'llm' | 'heuristic' | null;
+  previewFailed: boolean;
   clientEmail: string;
   contactName: string;
   clientName: string;
@@ -77,20 +78,20 @@ export function StepReview(props: Props) {
       {/* Client identity — seeded by the LLM (real external client, traced
           through forwards), every field editable before create. */}
       <div className="v3-ident">
-        <IdentityRow label="Client email" hint={props.forwardedFrom ? `forwarded by ${props.forwardedFrom}` : undefined}>
-          <input className="v3-ident-input" type="email" value={props.clientEmail} onChange={(e) => props.setClientEmail(e.target.value)} />
+        <IdentityRow label="Client email" htmlFor="v3-id-email" hint={props.forwardedFrom ? `forwarded by ${props.forwardedFrom}` : undefined}>
+          <input id="v3-id-email" className="v3-ident-input" type="email" value={props.clientEmail} onChange={(e) => props.setClientEmail(e.target.value)} />
         </IdentityRow>
-        <IdentityRow label="Company">
-          <input className="v3-ident-input" type="text" placeholder="Client organisation" value={props.clientName} onChange={(e) => props.setClientName(e.target.value)} />
+        <IdentityRow label="Company" htmlFor="v3-id-company">
+          <input id="v3-id-company" className="v3-ident-input" type="text" placeholder="Client organisation" value={props.clientName} onChange={(e) => props.setClientName(e.target.value)} />
         </IdentityRow>
-        <IdentityRow label="Contact name">
-          <input className="v3-ident-input" type="text" value={props.contactName} onChange={(e) => props.setContactName(e.target.value)} />
+        <IdentityRow label="Contact name" htmlFor="v3-id-contact">
+          <input id="v3-id-contact" className="v3-ident-input" type="text" value={props.contactName} onChange={(e) => props.setContactName(e.target.value)} />
         </IdentityRow>
-        <IdentityRow label="Phone">
-          <input className="v3-ident-input" type="tel" placeholder="Not in the email" value={props.contactPhone} onChange={(e) => props.setContactPhone(e.target.value)} />
+        <IdentityRow label="Phone" htmlFor="v3-id-phone">
+          <input id="v3-id-phone" className="v3-ident-input" type="tel" placeholder="Not in the email" value={props.contactPhone} onChange={(e) => props.setContactPhone(e.target.value)} />
         </IdentityRow>
-        <IdentityRow label="Address">
-          <input className="v3-ident-input" type="text" placeholder="Not in the email" value={props.clientAddress} onChange={(e) => props.setClientAddress(e.target.value)} />
+        <IdentityRow label="Address" htmlFor="v3-id-address">
+          <input id="v3-id-address" className="v3-ident-input" type="text" placeholder="Not in the email" value={props.clientAddress} onChange={(e) => props.setClientAddress(e.target.value)} />
         </IdentityRow>
       </div>
 
@@ -113,20 +114,27 @@ export function StepReview(props: Props) {
           An external reseller or distributor brokering this deal for the client. Leave blank for direct deals.
         </p>
         <div className="v3-partner-roles" role="radiogroup" aria-label="Partner role">
-          <button type="button" className={'v3-role ' + (props.partnerRole === 'partner' ? 'sel' : '')} onClick={() => props.setPartnerRole('partner')}>Partner</button>
-          <button type="button" className={'v3-role ' + (props.partnerRole === 'distributor' ? 'sel' : '')} onClick={() => props.setPartnerRole('distributor')}>Distributor</button>
+          <button type="button" role="radio" aria-checked={props.partnerRole === 'partner'} className={'v3-role ' + (props.partnerRole === 'partner' ? 'sel' : '')} onClick={() => props.setPartnerRole('partner')}>Partner</button>
+          <button type="button" role="radio" aria-checked={props.partnerRole === 'distributor'} className={'v3-role ' + (props.partnerRole === 'distributor' ? 'sel' : '')} onClick={() => props.setPartnerRole('distributor')}>Distributor</button>
         </div>
         <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-          <input className="v3-ident-input" type="text" placeholder="Company (e.g. Techspire Services)" value={props.partnerCompany} onChange={(e) => props.setPartnerCompany(e.target.value)} />
-          <input className="v3-ident-input" type="text" placeholder="Contact name" value={props.partnerContact} onChange={(e) => props.setPartnerContact(e.target.value)} />
-          <input className="v3-ident-input" type="email" placeholder="Contact email" value={props.partnerEmail} onChange={(e) => props.setPartnerEmail(e.target.value)} />
+          <input className="v3-ident-input" type="text" aria-label="Partner company" placeholder="Company (e.g. Techspire Services)" value={props.partnerCompany} onChange={(e) => props.setPartnerCompany(e.target.value)} />
+          <input className="v3-ident-input" type="text" aria-label="Partner contact name" placeholder="Contact name" value={props.partnerContact} onChange={(e) => props.setPartnerContact(e.target.value)} />
+          <input className="v3-ident-input" type="email" aria-label="Partner contact email" placeholder="Contact email" value={props.partnerEmail} onChange={(e) => props.setPartnerEmail(e.target.value)} />
         </div>
       </div>
 
       {fields.length === 0 ? (
-        <p className="sub" style={{ fontSize: 13 }}>
-          No structured scope table in this email — that's fine. Continue to create the opportunity from the body, and Rhud will extract what it can.
-        </p>
+        props.previewFailed ? (
+          <div className="v3-ai-note">
+            <I.alert size={12} />
+            <span>Couldn't read the scope from this email — you can still capture it manually or continue to create the opportunity from the body.</span>
+          </div>
+        ) : (
+          <p className="sub" style={{ fontSize: 13 }}>
+            No structured scope table in this email — that's fine. Continue to create the opportunity from the body, and Rhud will extract what it can.
+          </p>
+        )
       ) : (
         <>
           {/* Bulk action */}
@@ -183,13 +191,13 @@ export function StepReview(props: Props) {
   );
 }
 
-function IdentityRow({ label, hint, children }: { label: string; hint?: string | undefined; children: React.ReactNode }) {
+function IdentityRow({ label, htmlFor, hint, children }: { label: string; htmlFor: string; hint?: string | undefined; children: React.ReactNode }) {
   return (
     <div className="v3-ident-row">
-      <span className="v3-ident-label">
+      <label className="v3-ident-label" htmlFor={htmlFor}>
         {label}
         {hint && <span className="field-hint hint-accent">{hint}</span>}
-      </span>
+      </label>
       {children}
     </div>
   );
@@ -282,7 +290,13 @@ function ReviewRow({
         ) : (
           <div
             className={'v3-row-value' + (isMissing && !isAsking ? ' v3-row-empty' : '')}
+            role="button"
+            tabIndex={isAsking ? -1 : 0}
             onClick={() => !isAsking && setEditing(true)}
+            onKeyDown={(e) => {
+              if (isAsking) return;
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditing(true); }
+            }}
           >
             {field.value || (isAsking ? '— (asking client)' : 'Not in the email')}
           </div>

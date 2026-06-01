@@ -21,7 +21,7 @@ import { StepReview } from './steps/StepReview';
 import { StepConfirm } from './steps/StepConfirm';
 import { StepSent } from './steps/StepSent';
 
-type Boot = 'loading' | 'no-message' | 'signin' | 'ready';
+type Boot = 'loading' | 'init-error' | 'no-message' | 'signin' | 'ready';
 
 /** Derive review fields from the server's flat extraction. Empty / "-"
  *  value cells become "missing"; everything else is "detected". */
@@ -66,8 +66,13 @@ export function App() {
   // we fell back to regex extraction — the Review step nudges toward AI.
   const [extractionSource, setExtractionSource] = useState<'llm' | 'heuristic' | null>(null);
 
+  // True when the LLM preview errored (not a clean "no scope table" result) —
+  // lets the Review step distinguish a failed extraction from an empty one.
+  const [previewFailed, setPreviewFailed] = useState(false);
+
   const [action, setAction] = useState<CreateAction>('opportunity-only');
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
+  const [templateState, setTemplateState] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
   const [templateId, setTemplateId] = useState('');
 
   const [busy, setBusy] = useState(false);
@@ -79,6 +84,7 @@ export function App() {
     // Seed identity from the raw message first, so the form is never empty.
     setClientEmail(m.fromEmail);
     setContactName(m.fromName);
+    setPreviewFailed(false);
     try {
       const p = await fetchPreview(a.token, m);
       setFields(deriveFields(p.structuredFields));
@@ -108,16 +114,17 @@ export function App() {
         return;
       }
       // Preview is enrichment, not load-blocking — leave fields empty,
-      // the rep can still create from the basic identity.
+      // the rep can still create from the basic identity. Flag it so the
+      // Review step can say "extraction failed" rather than "no scope found".
       setFields([]);
+      setPreviewFailed(true);
     }
   }, []);
 
   // Boot: wait for Office + an open message, read it, then preview if signed in.
-  useEffect(() => {
-    if (booted.current) return;
-    booted.current = true;
-    (async () => {
+  const runBoot = useCallback(async () => {
+    setBoot('loading');
+    try {
       const item = await awaitMessageItem();
       if (!item) {
         setBoot('no-message');
@@ -133,8 +140,18 @@ export function App() {
       } else {
         setBoot('signin');
       }
-    })();
+    } catch {
+      // Office never initialised (or the message couldn't be read) — surface
+      // a recoverable error instead of hanging on "Reading this email…".
+      setBoot('init-error');
+    }
   }, [runPreview]);
+
+  useEffect(() => {
+    if (booted.current) return;
+    booted.current = true;
+    void runBoot();
+  }, [runBoot]);
 
   const handleSignIn = useCallback(async () => {
     setError(null);
@@ -145,7 +162,10 @@ export function App() {
       if (msg) await runPreview(a, msg);
       setBoot('ready');
     } catch (e) {
-      setError((e as Error).message);
+      // A user-cancelled dialog isn't an error — just leave them on sign-in.
+      if ((e as Error).message === 'Sign-in cancelled') return;
+      console.error('Sign-in failed', e);
+      setError('Couldn’t sign in — please try again.');
     }
   }, [msg, runPreview]);
 
@@ -182,16 +202,26 @@ export function App() {
   const templatesReq = useRef<Promise<void> | null>(null);
   const ensureTemplates = useCallback(() => {
     if (templatesReq.current || !auth) return;
+    setTemplateState('loading');
     templatesReq.current = loadTemplates(auth.token)
-      .then(setTemplates)
+      .then((t) => {
+        setTemplates(t);
+        setTemplateState('loaded');
+      })
       .catch((e: unknown) => {
+        // Reset the in-flight ref so a failed load can be retried, and reflect
+        // the failure in the dropdown placeholder instead of a stuck spinner.
         templatesReq.current = null;
-        setError(`Couldn't load templates: ${(e as Error).message}`);
+        setTemplateState('error');
+        console.error('Failed to load templates', e);
       });
   }, [auth]);
 
   const handleCreate = useCallback(async () => {
     if (!auth || !msg) return;
+    // Once we have an engagementId in-session, don't fire a second create —
+    // even after a transient error the opportunity already exists server-side.
+    if (created) return;
     setBusy(true);
     setError(null);
     try {
@@ -234,7 +264,7 @@ export function App() {
       setBusy(false);
     }
   }, [
-    auth, msg, clientEmail, contactName, clientName, contactPhone, clientAddress,
+    auth, msg, created, clientEmail, contactName, clientName, contactPhone, clientAddress,
     partnerCompany, partnerContact, partnerEmail, partnerRole, action, templateId,
   ]);
 
@@ -261,8 +291,28 @@ export function App() {
 
       <div className="v3-body">
         {boot === 'loading' && <Centered>Reading this email…</Centered>}
+        {boot === 'init-error' && (
+          <div className="v3-page" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 200, textAlign: 'center' }}>
+            <p className="sub">Couldn't connect to Outlook. Close and reopen the pane, or reload.</p>
+            <button className="btn btn-secondary" style={{ marginTop: 16 }} onClick={() => location.reload()}>
+              <I.refresh size={13} /> Reload
+            </button>
+          </div>
+        )}
         {boot === 'no-message' && (
-          <Centered>Open an email message to create an opportunity.</Centered>
+          <div className="v3-page" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 200, textAlign: 'center' }}>
+            <p className="sub">Open an email message to create an opportunity.</p>
+            <button
+              className="btn btn-secondary"
+              style={{ marginTop: 16 }}
+              onClick={() => {
+                booted.current = false;
+                void runBoot();
+              }}
+            >
+              <I.refresh size={13} /> Retry
+            </button>
+          </div>
         )}
         {boot === 'signin' && (
           <div className="v3-page">
@@ -299,6 +349,7 @@ export function App() {
                 fields={fields}
                 askClient={askClient}
                 source={extractionSource}
+                previewFailed={previewFailed}
                 clientEmail={clientEmail}
                 contactName={contactName}
                 clientName={clientName}
@@ -335,6 +386,8 @@ export function App() {
                   if (a === 'with-link') ensureTemplates();
                 }}
                 templates={templates}
+                templateState={templateState}
+                retryTemplates={ensureTemplates}
                 templateId={templateId}
                 setTemplateId={setTemplateId}
               />
@@ -391,9 +444,9 @@ export function App() {
               className="btn btn-primary"
               style={{ flex: 1 }}
               onClick={handleCreate}
-              disabled={busy || (action === 'with-link' && !templateId)}
+              disabled={busy || !!created || (action === 'with-link' && !templateId)}
             >
-              {busy ? 'Creating…' : action === 'with-link' ? (
+              {busy ? 'Creating…' : created ? 'Already created' : action === 'with-link' ? (
                 <>Create &amp; send link <I.arrowRight size={14} /></>
               ) : (
                 <>Create opportunity <I.arrowRight size={14} /></>

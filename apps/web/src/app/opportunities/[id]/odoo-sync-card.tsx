@@ -187,7 +187,7 @@ export function OdooSyncCard({ engagementId, status }: Props) {
               <button className="btn sm ghost" disabled={busy} onClick={pull}>
                 <Icon.ArrowUpRight size={11} /> Pull
               </button>
-              <button className="btn sm ghost" disabled={busy || status === 'closed' || status === 'won'} onClick={() => setOutcome('won')}>
+              <button className="btn sm ghost" disabled={busy || status === 'closed'} onClick={() => setOutcome('won')}>
                 <Icon.Check size={11} /> Mark Won
               </button>
               <button className="btn sm danger ghost" disabled={busy} onClick={() => setOutcome('lost')}>
@@ -214,16 +214,88 @@ export function OdooSyncCard({ engagementId, status }: Props) {
             <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginBottom: 4 }}>
               Latest from Odoo
             </div>
-            <pre style={{
-              fontFamily: 'var(--font-mono)', fontSize: 11, padding: 10,
-              background: 'var(--bg-sunk)', borderRadius: 6, overflow: 'auto',
-              maxHeight: 240, margin: 0,
-            }}>
-              {JSON.stringify(pulledRecords, null, 2)}
-            </pre>
+            {pulledRecords.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: 'var(--fg-muted)' }}>No changes.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {pulledRecords.map((rec, i) => {
+                  const summary = summarizeOdooRecord(rec);
+                  return (
+                    <div
+                      key={rec.id ?? i}
+                      style={{
+                        fontSize: 12, padding: '8px 10px', borderRadius: 6,
+                        background: 'var(--bg-sunk)',
+                        display: 'grid', gap: 2,
+                      }}
+                    >
+                      {rec.id != null && (
+                        <div style={{ color: 'var(--fg-subtle)', fontSize: 11 }}>
+                          <code>{link?.odooModel ?? 'crm.lead'}#{rec.id}</code>
+                        </div>
+                      )}
+                      {summary.length === 0 ? (
+                        <div style={{ color: 'var(--fg-muted)' }}>No notable fields.</div>
+                      ) : (
+                        summary.map((row) => (
+                          <div key={row.label} style={{ display: 'flex', gap: 6 }}>
+                            <span style={{ color: 'var(--fg-muted)' }}>{row.label}:</span>
+                            <span style={{ fontWeight: 500 }}>{row.value}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ fontSize: 11, color: 'var(--fg-muted)', cursor: 'pointer' }}>
+                Raw JSON
+              </summary>
+              <pre style={{
+                fontFamily: 'var(--font-mono)', fontSize: 11, padding: 10, marginTop: 6,
+                background: 'var(--bg-sunk)', borderRadius: 6, overflow: 'auto',
+                maxHeight: 240,
+              }}>
+                {JSON.stringify(pulledRecords, null, 2)}
+              </pre>
+            </details>
           </div>
         )}
       </div>
     </div>
   );
+}
+
+/**
+ * Pull out the handful of CRM-lead fields worth showing at a glance —
+ * stage, expected revenue, win probability — from a raw Odoo record.
+ * Many2one fields (like stage_id) arrive as an `[id, name]` tuple; we
+ * surface the human-readable name. Fields that aren't present are
+ * skipped, so the caller can render "No notable fields." when empty.
+ */
+function summarizeOdooRecord(
+  fields: OdooRecord,
+): Array<{ label: string; value: string }> {
+  const rows: Array<{ label: string; value: string }> = [];
+
+  const stage = fields['stage_id'];
+  if (Array.isArray(stage) && typeof stage[1] === 'string') {
+    rows.push({ label: 'Stage', value: stage[1] });
+  } else if (typeof stage === 'string' && stage) {
+    rows.push({ label: 'Stage', value: stage });
+  }
+
+  const revenue = fields['expected_revenue'];
+  if (typeof revenue === 'number') {
+    rows.push({ label: 'Expected revenue', value: revenue.toLocaleString() });
+  }
+
+  const probability = fields['probability'];
+  if (typeof probability === 'number') {
+    rows.push({ label: 'Probability', value: `${Math.round(probability)}%` });
+  }
+
+  return rows;
 }

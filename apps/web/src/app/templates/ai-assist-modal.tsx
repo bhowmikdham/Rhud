@@ -13,7 +13,7 @@
  * — this component just produces a clean nodes[] payload via `onCreate`.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   templateGen,
   describeError,
@@ -21,6 +21,7 @@ import {
 } from '@/lib/api';
 import { Icon } from '@/components/icon';
 import { Portal } from '@/components/portal';
+import { useConfirm } from '@/components/confirm';
 
 interface Props {
   onClose(): void;
@@ -38,6 +39,54 @@ export function AiAssistModal({ onClose, onCreate }: Props) {
   const [serviceLine, setServiceLine] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const confirm = useConfirm();
+  // Re-entrancy guard: while a close (and its discard confirm) is in flight,
+  // ignore further close requests. Without this, pressing Escape to cancel
+  // the discard confirm also re-fires the modal's own document-level Escape
+  // listener, popping a second confirm.
+  const closing = useRef(false);
+
+  // Closing from the preview stage throws away the generated nodes, so
+  // confirm first. The describe/manual stages have nothing worth saving.
+  async function discardPreview(): Promise<boolean> {
+    if (stage.kind !== 'preview') return true;
+    return confirm({
+      title: 'Discard generated questions?',
+      body: 'These haven\'t been saved as a template yet — they\'ll be lost.',
+      confirmLabel: 'Discard',
+      tone: 'danger',
+    });
+  }
+
+  async function requestClose() {
+    if (busy || closing.current) return;
+    closing.current = true;
+    try {
+      if (await discardPreview()) onClose();
+    } finally {
+      closing.current = false;
+    }
+  }
+
+  // Move focus into the dialog when it opens (and re-focus the first field
+  // of each new stage) so keyboard + screen-reader users land inside it.
+  useEffect(() => {
+    const focusTarget =
+      dialogRef.current?.querySelector<HTMLElement>('textarea, input, button') ?? dialogRef.current;
+    focusTarget?.focus();
+  }, [stage.kind]);
+
+  // Escape closes, respecting the busy guard and the preview discard confirm
+  // (so unsaved generated nodes aren't dropped without warning).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') { e.stopPropagation(); void requestClose(); }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, busy]);
 
   async function generate() {
     if (!description.trim()) return;
@@ -66,10 +115,15 @@ export function AiAssistModal({ onClose, onCreate }: Props) {
         background: 'color-mix(in oklch, black 40%, transparent)',
         display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
       }}
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget) void requestClose(); }}
     >
       <div
+        ref={dialogRef}
         className="card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Generate template with AI"
+        tabIndex={-1}
         style={{
           width: '100%', maxWidth: 720, maxHeight: '92vh',
           display: 'flex', flexDirection: 'column', background: 'var(--bg)',
@@ -84,7 +138,7 @@ export function AiAssistModal({ onClose, onCreate }: Props) {
               Describe what you sell — we&apos;ll draft a starter scope-gathering questionnaire.
             </div>
           </div>
-          <button onClick={onClose} disabled={busy} className="btn sm ghost"><Icon.X size={11} /></button>
+          <button onClick={() => void requestClose()} disabled={busy} className="btn sm ghost"><Icon.X size={11} /></button>
         </header>
 
         <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
@@ -109,7 +163,7 @@ export function AiAssistModal({ onClose, onCreate }: Props) {
               defaultName={defaultNameFromDescription(description)}
               defaultServiceLine={serviceLine || serviceLineFromDescription(description)}
               onCreate={onCreate}
-              onBack={() => setStage({ kind: 'describe' })}
+              onBack={() => { void discardPreview().then((ok) => { if (ok) setStage({ kind: 'describe' }); }); }}
               setBusy={setBusy}
               setErr={setErr}
             />
@@ -127,7 +181,7 @@ export function AiAssistModal({ onClose, onCreate }: Props) {
 
         {stage.kind === 'describe' && (
           <footer style={{ padding: '12px 18px', borderTop: '1px solid var(--divider)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button onClick={onClose} disabled={busy} className="btn sm ghost">Cancel</button>
+            <button onClick={() => void requestClose()} disabled={busy} className="btn sm ghost">Cancel</button>
             <button onClick={generate} disabled={busy || description.trim().length < 8} className="btn sm accent">
               {busy ? <span className="spin" /> : <><Icon.Sparkles size={11} /> Generate</>}
             </button>

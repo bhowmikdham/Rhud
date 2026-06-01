@@ -4,9 +4,13 @@ import type { CachedAuth, MessageContext } from './types';
 
 const ADDIN_ORIGIN = import.meta.env.VITE_ADDIN_ORIGIN ?? 'https://addin.rhud.net';
 
-/** Resolve once Office host is ready and we have a Message in read mode. */
+/**
+ * Resolve once Office host is ready and we have a Message in read mode.
+ * Rejects if Office never initialises (e.g. the host script failed to load)
+ * so the pane can show a recoverable error instead of hanging forever.
+ */
 export function awaitMessageItem(): Promise<Office.MessageRead | null> {
-  return new Promise((resolve) => {
+  const ready = new Promise<Office.MessageRead | null>((resolve) => {
     Office.onReady((info) => {
       if (info.host !== Office.HostType.Outlook) return resolve(null);
       const item = Office.context.mailbox.item;
@@ -16,6 +20,13 @@ export function awaitMessageItem(): Promise<Office.MessageRead | null> {
       resolve(item as Office.MessageRead);
     });
   });
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Office failed to initialise')), 10_000);
+  });
+  // Clear the timer once either branch settles so a stray 10s timer doesn't
+  // linger (and reject into the void) on the success path.
+  return Promise.race([ready, timeout]).finally(() => clearTimeout(timer));
 }
 
 function readBody(item: Office.MessageRead, type: Office.CoercionType): Promise<string> {
