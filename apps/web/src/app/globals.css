@@ -1631,3 +1631,49 @@ button:focus-visible, a:focus-visible, .input:focus-visible {
   .priority-cta { width: 100%; justify-content: center; }
   .pipeline-row { grid-template-columns: 110px 1fr 30px; }
 }
+
+/* ─── Accessibility foundation (Phase B) ──────────────────────────────────
+   Semantic-HTML + a11y groundwork for the opportunity-page redesign.
+   Purely additive — no visual change to existing screens. */
+
+/* 1. Visible keyboard focus. Inputs keep their own ring (.input:focus);
+   everything else (buttons, links, role=button, accordion toggles) gets a
+   consistent focus-visible outline. Mouse clicks don't trigger it. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.input:focus-visible { outline: none; }
+
+/* 2. Heading utility classes carry their own type scale, so neutralise UA
+   heading margins + line-height. Lets a <div className="x"> become an
+   <h1..h3 className="x"> with zero visual change. */
+.thread-title, .artifact-title, .section-label, .page-title { margin: 0; line-height: inherit; }
+
+/* 3. Respect reduced-motion — neutralise the route/hero/chip animations and
+   smooth scroll for users who ask for it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+
+/* 4. Accordion primitive — consumed by the stage-driven sections in a later
+   phase and the /opportunities/preview prototype. */
+.accordion { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-elev); overflow: hidden; }
+.accordion + .accordion { margin-top: 8px; }
+.accordion-summary {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 12px 14px;
+  background: transparent; border: 0; cursor: pointer;
+  text-align: left; font: inherit; color: var(--fg);
+  transition: background .15s;
+}
+.accordion-summary:hover { background: var(--bg-hover); }
+.accordion-panel { padding: 2px 14px 14px; border-top: 1px solid var(--divider); }

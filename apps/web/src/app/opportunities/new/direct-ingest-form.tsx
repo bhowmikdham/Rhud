@@ -211,7 +211,7 @@ export function DirectIngestForm() {
             Paste the requirements
           </div>
           <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 12 }}>
-            Email body, WhatsApp thread, call notes — anything the client sent you. We'll
+            Email body, WhatsApp thread, call notes — anything the client sent you. We&apos;ll
             extract structured points after you create the opportunity.
           </div>
           <textarea

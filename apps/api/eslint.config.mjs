@@ -69,9 +69,9 @@ export default [
     rules: { 'no-restricted-imports': 'off' },
   },
 
-  // Seed script legitimately bootstraps the DB before any tenant exists.
+  // Seed scripts legitimately bootstrap the DB before any tenant exists.
   {
-    files: ['prisma/seed.ts'],
+    files: ['prisma/seed*.ts'],
     rules: { 'no-restricted-imports': 'off' },
   },
 

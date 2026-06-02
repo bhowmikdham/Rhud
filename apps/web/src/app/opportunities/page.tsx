@@ -72,7 +72,7 @@ const KANBAN_COLUMNS: Array<{
   },
 ];
 
-const ARCHIVED_STATUSES = new Set(['rejected', 'expired']);
+const ARCHIVED_STATUSES = new Set(['rejected', 'expired', 'lost']);
 
 export default function OpportunitiesListPage() {
   const user = useRequireAuth();
@@ -114,7 +114,7 @@ export default function OpportunitiesListPage() {
     const all = items ?? [];
     return [
       { id: 'all', label: 'All', count: all.length },
-      { id: 'open', label: 'Open', count: all.filter((e) => !['sent', 'closed', 'rejected', 'expired'].includes(e.status)).length },
+      { id: 'open', label: 'Open', count: all.filter((e) => !['sent', 'closed', 'rejected', 'expired', 'lost'].includes(e.status)).length },
       { id: 'pending_approval', label: 'Awaiting approval', count: all.filter((e) => e.status === 'pending_approval').length },
       { id: 'drafting', label: 'Drafting', count: all.filter((e) => e.status === 'drafting' || e.status === 'draft_ready').length },
       { id: 'sent', label: 'Delivered', count: all.filter((e) => ['sent', 'closed'].includes(e.status)).length },
@@ -124,7 +124,7 @@ export default function OpportunitiesListPage() {
   const filtered = useMemo(() => {
     const all = items ?? [];
     return all.filter((e) => {
-      if (filter === 'open' && ['sent', 'closed', 'rejected', 'expired'].includes(e.status)) return false;
+      if (filter === 'open' && ['sent', 'closed', 'rejected', 'expired', 'lost'].includes(e.status)) return false;
       if (filter === 'pending_approval' && e.status !== 'pending_approval') return false;
       if (filter === 'drafting' && !['drafting', 'draft_ready'].includes(e.status)) return false;
       if (filter === 'sent' && !['sent', 'closed'].includes(e.status)) return false;

@@ -15,7 +15,8 @@ const TONE: Record<string, { chip: string; label: string; icon: keyof typeof Ico
   drafting:         { chip: '',       label: 'Drafting',         icon: 'Sparkles' },
   draft_ready:      { chip: 'accent', label: 'Draft ready',      icon: 'FileText' },
   sent:             { chip: 'ok',     label: 'Delivered',        icon: 'Send' },
-  closed:           { chip: '',       label: 'Closed',           icon: 'CheckCircle' },
+  closed:           { chip: 'ok',     label: 'Won',              icon: 'CheckCircle' },
+  lost:             { chip: 'danger', label: 'Lost',             icon: 'X' },
   rejected:         { chip: 'danger', label: 'Rejected',         icon: 'X' },
   expired:          { chip: '',       label: 'Expired',          icon: 'Clock' },
 };

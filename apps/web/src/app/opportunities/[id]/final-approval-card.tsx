@@ -114,7 +114,7 @@ export function FinalApprovalCard({
       {!canAct ? (
         <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
           Only {gateLabel} (or an admin) can act on this. The decision will appear in the
-          timeline once it's made.
+          timeline once it&apos;s made.
         </div>
       ) : !rejecting ? (
         <>
