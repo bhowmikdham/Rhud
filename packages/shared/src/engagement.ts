@@ -18,6 +18,9 @@ export const ENGAGEMENT_STATUSES = [
   'draft_ready',
   'sent',
   'closed',
+  /// Deal marked lost at the 'sent' stage (the client declined the proposal).
+  /// Terminal, like 'closed' (won) and 'rejected' (a price rejection upstream).
+  'lost',
   'rejected',
   'expired',
   // Phase A — reviewer-driven holds (PM workflow stage 4).

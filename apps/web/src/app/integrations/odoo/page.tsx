@@ -475,7 +475,6 @@ function PromoteModal({
   useEffect(() => {
     // Pull published templates + tenant users for the dropdowns.
     Promise.all([
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).fetch
         ? fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'}/api/v1/templates`, {
             headers: { authorization: `Bearer ${window.localStorage.getItem('rhud.token') ?? ''}` },

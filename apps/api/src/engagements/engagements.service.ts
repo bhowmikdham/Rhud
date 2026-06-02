@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { TenantDb, type PrismaTx } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { hashToken, mintToken } from '../gathering/token.util.js';
@@ -678,6 +678,54 @@ export class EngagementsService {
 
       return updated;
     });
+  }
+
+  /**
+   * Phase F — mark a delivered ('sent') opportunity won or lost. Won →
+   * 'closed', lost → 'lost'; both terminal. Records an engagement_closed
+   * thread event carrying the outcome so the audit trail distinguishes them.
+   */
+  async markOutcome(
+    tenantId: string,
+    engagementId: string,
+    actorUserId: string,
+    outcome: 'won' | 'lost',
+  ): Promise<{ id: string; status: string }> {
+    const result = await this.tenantDb.run(tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true, status: true },
+      });
+      if (!eng) throw new NotFoundException('engagement_not_found');
+      // Only a delivered proposal can be won/lost. Idempotent guard against
+      // double-clicks; final states stay final.
+      if (eng.status !== 'sent') {
+        throw new ConflictException(`cannot_mark_outcome_from_status:${eng.status}`);
+      }
+      const nextStatus = outcome === 'won' ? 'closed' : 'lost';
+      const next = await db.engagement.update({
+        where: { id: engagementId },
+        data: { status: nextStatus, closedAt: new Date() },
+        select: { id: true, status: true },
+      });
+      await this.thread.emitWithin(db, tenantId, {
+        engagementId,
+        eventType: 'engagement_closed',
+        actorType: 'user',
+        actorId: actorUserId,
+        payload: { outcome },
+      });
+      return next;
+    });
+
+    void this.thread.dispatchAfterCommit(tenantId, {
+      engagementId,
+      eventType: 'engagement_closed',
+      actorType: 'user',
+      actorId: actorUserId,
+      payload: { outcome },
+    });
+    return result;
   }
 }
 

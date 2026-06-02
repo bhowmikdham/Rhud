@@ -436,6 +436,13 @@ export const opportunities = {
   remove: (id: string) =>
     request<void>(`/opportunities/${id}`, { method: 'DELETE' }),
 
+  /** Phase F — mark a delivered opportunity won (→ closed) or lost (→ lost). */
+  markOutcome: (id: string, outcome: 'won' | 'lost') =>
+    request<{ id: string; status: string }>(`/opportunities/${id}/outcome`, {
+      method: 'POST',
+      body: JSON.stringify({ outcome }),
+    }),
+
   // ── Phase A: reviewer-fillable scope fields ─────────────────────
   updateScope: (
     id: string,

@@ -835,7 +835,7 @@ function ProposalFlowHint({
     copy = (
       <>
         <b>Gamma mode:</b> each proposal will be Gamma adapting the linked
-        template with the client's data. Sales reps just click <i>Generate</i>.
+        template with the client&apos;s data. Sales reps just click <i>Generate</i>.
       </>
     );
   } else {

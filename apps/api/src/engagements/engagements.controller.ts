@@ -11,7 +11,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
@@ -32,6 +32,11 @@ class UpdateScopeDto {
   @IsOptional() @IsString() @MaxLength(8000) assumptions?: string | null;
   @IsOptional() @IsString() @MaxLength(8000) exclusions?: string | null;
   @IsOptional() @IsString() @MaxLength(2000) deliveryTimelineOverride?: string | null;
+}
+
+/** POST body for marking a delivered opportunity won or lost (Phase F). */
+class MarkOutcomeDto {
+  @IsIn(['won', 'lost']) outcome!: 'won' | 'lost';
 }
 
 // Mounted at both routes so the rebrand is purely cosmetic for clients:
@@ -249,5 +254,17 @@ export class EngagementsController {
     @Body() dto: UpdateClientInfoDto,
   ) {
     return this.svc.updateClient(req.tenantId, id, dto);
+  }
+
+  /** Phase F — mark a delivered opportunity won (→ closed) or lost (→ lost). */
+  @Post(':id/outcome')
+  @HttpCode(200)
+  @Roles('admin', 'sales_manager', 'sales_employee')
+  markOutcome(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: MarkOutcomeDto,
+  ) {
+    return this.svc.markOutcome(req.tenantId, id, req.user.sub, dto.outcome);
   }
 }

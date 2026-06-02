@@ -178,7 +178,7 @@ function CategoryPicker({
           <header style={{ padding: '14px 18px', borderBottom: '1px solid var(--divider)' }}>
             <div style={{ fontSize: 14, fontWeight: 600 }}>Classify opportunity</div>
             <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 2 }}>
-              Pick a category. The matching reviewer is auto-assigned based on the tenant's routing rules.
+              Pick a category. The matching reviewer is auto-assigned based on the tenant&apos;s routing rules.
             </div>
           </header>
 
