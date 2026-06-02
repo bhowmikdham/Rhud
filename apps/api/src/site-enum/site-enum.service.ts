@@ -542,8 +542,9 @@ export class SiteEnumService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  /** Load the rate card bound to the engagement's template, if any.
-   *  Returns null when the template has no rate card. */
+  /** Load the engagement's EFFECTIVE rate card: a card attached directly
+   *  to the opportunity wins, otherwise the template's binding. Returns
+   *  null when neither is set. */
   private async loadEngagementRateCard(
     tenantId: string,
     engagementId: string,
@@ -551,9 +552,9 @@ export class SiteEnumService implements OnModuleInit, OnModuleDestroy {
     const rateCardId = await this.tenantDb.run(tenantId, async (db) => {
       const eng = await db.engagement.findUnique({
         where: { id: engagementId },
-        select: { template: { select: { rateCardId: true } } },
+        select: { rateCardId: true, template: { select: { rateCardId: true } } },
       });
-      return eng?.template?.rateCardId ?? null;
+      return eng?.rateCardId ?? eng?.template?.rateCardId ?? null;
     });
     if (!rateCardId) return null;
     return this.pricing.getById(tenantId, rateCardId).catch(() => null);

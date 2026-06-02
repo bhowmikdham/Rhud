@@ -45,6 +45,7 @@ import { StageHeader } from './stage-header';
 import { REVIEWABLE_STATUSES, HOLD_STATUSES, HOLD_BANNER, REVIEWER_HOLD_ROLES, stageOf } from './stage';
 import { Section } from './section';
 import { DealOutcomeCard } from './deal-outcome-card';
+import { AttachRateCardCard } from './attach-rate-card-card';
 
 const EVENT_LABELS: Record<string, string> = {
   link_issued: 'Link issued to client',
@@ -596,6 +597,25 @@ export default function OpportunityDetailPage() {
                 <Row k="Opportunity id" v={<span className="mono">{eng.id}</span>} />
               </div>
             </Section>
+
+            {/* Direct-ingest opportunity (no template) with no rate card
+                yet → offer to attach one so it can be priced straight from
+                the extracted scope, without issuing a client scoping link. */}
+            {!eng.templateId && !eng.rateCardId && (
+              <AttachRateCardCard
+                engagementId={eng.id}
+                onAttached={async () => {
+                  const [refreshed, q, p] = await Promise.all([
+                    opportunities.get(id),
+                    quotes.forEngagement(id).catch(() => null),
+                    predictions.latest(id).catch(() => null),
+                  ]);
+                  setEng(refreshed);
+                  setQuote(q);
+                  setPrediction(p);
+                }}
+              />
+            )}
 
             <ScopingQuestionsCard
               engagementId={eng.id}

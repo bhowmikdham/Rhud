@@ -169,6 +169,14 @@ model Engagement {
   // Snapshot of the template version this engagement was issued against, so
   // editing the template later doesn't change in-flight engagements.
   templateVersion               Int?      @map("template_version")
+  // Rate card attached DIRECTLY to this opportunity, independent of any
+  // template. Lets a direct-ingest opportunity (email / paste / voice)
+  // be priced from extracted + inferred entities WITHOUT first issuing a
+  // client scoping link (the only way to attach a template today). The
+  // effective rate card used by pricing + inference is
+  //   engagement.rateCardId ?? engagement.template.rateCardId
+  // SET NULL on rate-card delete — mirrors templates.rate_card_id.
+  rateCardId                    String?   @map("rate_card_id") @db.Uuid
   // How this engagement entered Rhud. `manual_form` is the existing
   // link-share wizard (default; backfilled for pre-migration rows);
   // every other value is a direct-ingest variant. See
@@ -297,6 +305,8 @@ model Engagement {
 
   tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   template        Template?           @relation(fields: [templateId], references: [id])
+  // Directly-attached rate card (template-independent pricing path).
+  rateCard        RateCard?           @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
   // The artifact that originated this engagement (direct-ingest only).
   // Named relation because IngestionArtifact also has a back-pointer
   // collection (`artifacts`) — Prisma requires names to disambiguate.
@@ -326,6 +336,7 @@ model Engagement {
   @@index([tenantId, status])
   @@index([tenantId, source])
   @@index([salesEmployeeId])
+  @@index([rateCardId])
   @@map("engagements")
 }
 
@@ -716,6 +727,8 @@ model RateCard {
   openPricedServices RateCardOpenPricedService[]
   templates          Template[]
   engagementQuotes   EngagementQuote[]
+  // Opportunities with this card attached directly (not via a template).
+  engagements        Engagement[]
 
   @@unique([tenantId, name, version], map: "rate_cards_tenant_name_version_uniq")
   @@index([tenantId])

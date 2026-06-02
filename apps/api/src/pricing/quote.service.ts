@@ -96,58 +96,71 @@ export class QuoteService {
       // via Layer-3 (extracted-points → modifier ML); the quote row
       // stays null until a template is attached via "Send scoping
       // questions" or until the rep manually authors line items.
-      if (!eng.template) {
-        this.logger.debug(`engagement ${engagementId} has no template (direct-ingest); skipping base quote`);
-        return null;
-      }
-      if (!eng.template.rateCardId) {
-        this.logger.debug(`engagement ${engagementId} template has no rate card; skipping quote`);
+      // Effective rate card: a rep can attach a card DIRECTLY to a
+      // direct-ingest opportunity (no template) via
+      // PATCH /opportunities/:id/rate-card; otherwise it comes from the
+      // template the opportunity was issued against. Direct attachment
+      // wins so it can override a stale template binding. With no card on
+      // either, there's genuinely nothing to price — return null and let
+      // the caller skip. (docs/direct-ingest.md §3.2 + engagements.rate_card_id)
+      const effectiveRateCardId = eng.rateCardId ?? eng.template?.rateCardId ?? null;
+      if (!effectiveRateCardId) {
+        this.logger.debug(
+          `engagement ${engagementId} has no rate card (direct nor template); skipping quote`,
+        );
         return null;
       }
 
       // Pull the rate card out of the regular service so we use the same
       // canonical shape as the manual /quote endpoint. RLS keeps it
       // bounded to this tenant.
-      const card = await this.pricing.getById(tenantId, eng.template.rateCardId);
+      const card = await this.pricing.getById(tenantId, effectiveRateCardId);
 
-      const tmpl: TemplateWithNodes = {
-        id: eng.template.id,
-        tenantId: eng.template.tenantId,
-        serviceLine: eng.template.serviceLine,
-        name: eng.template.name,
-        version: eng.template.version,
-        status: eng.template.status as TemplateWithNodes['status'],
-        rootNodeId: eng.template.rootNodeId,
-        createdAt: eng.template.createdAt.toISOString(),
-        updatedAt: eng.template.updatedAt.toISOString(),
-        nodes: eng.template.nodes.map((n) => ({
-          id: n.id,
-          templateId: n.templateId,
-          tenantId: n.tenantId,
-          question: n.question,
-          helpText: n.helpText,
-          placeholder: n.placeholder,
-          required: n.required,
-          nodeType: n.nodeType as TemplateWithNodes['nodes'][number]['nodeType'],
-          options: (n.options as unknown as TemplateWithNodes['nodes'][number]['options']) ?? null,
-          allowFiles: n.allowFiles,
-          nextRules: (n.nextRules as unknown as TemplateWithNodes['nodes'][number]['nextRules']) ?? [],
-          position: n.position,
-          parentNodeId: n.parentNodeId ?? null,
-          loopConfig: (n.loopConfig as unknown as TemplateWithNodes['nodes'][number]['loopConfig']) ?? null,
-          binding: (n.binding as unknown as TemplateWithNodes['nodes'][number]['binding']) ?? null,
-        })),
-      };
+      // Template answers are ONE source of scoped entities. A template-less
+      // opportunity simply has none here, and pricing falls back entirely
+      // to the extraction-inferred + site-enum entities gathered below.
+      // Build the answer-derived scope only when a template is attached.
+      let scopeFromAnswers: ScopedEntity[] = [];
+      if (eng.template) {
+        const tmpl: TemplateWithNodes = {
+          id: eng.template.id,
+          tenantId: eng.template.tenantId,
+          serviceLine: eng.template.serviceLine,
+          name: eng.template.name,
+          version: eng.template.version,
+          status: eng.template.status as TemplateWithNodes['status'],
+          rootNodeId: eng.template.rootNodeId,
+          createdAt: eng.template.createdAt.toISOString(),
+          updatedAt: eng.template.updatedAt.toISOString(),
+          nodes: eng.template.nodes.map((n) => ({
+            id: n.id,
+            templateId: n.templateId,
+            tenantId: n.tenantId,
+            question: n.question,
+            helpText: n.helpText,
+            placeholder: n.placeholder,
+            required: n.required,
+            nodeType: n.nodeType as TemplateWithNodes['nodes'][number]['nodeType'],
+            options: (n.options as unknown as TemplateWithNodes['nodes'][number]['options']) ?? null,
+            allowFiles: n.allowFiles,
+            nextRules: (n.nextRules as unknown as TemplateWithNodes['nodes'][number]['nextRules']) ?? [],
+            position: n.position,
+            parentNodeId: n.parentNodeId ?? null,
+            loopConfig: (n.loopConfig as unknown as TemplateWithNodes['nodes'][number]['loopConfig']) ?? null,
+            binding: (n.binding as unknown as TemplateWithNodes['nodes'][number]['binding']) ?? null,
+          })),
+        };
 
-      // Build the (nodeId → iter → answer) map the normaliser expects.
-      const answersByIter: AnswersByIter = new Map();
-      for (const a of eng.answers) {
-        const inner = answersByIter.get(a.nodeId) ?? new Map<number, Answer>();
-        inner.set(a.iterationIndex, a.answer as Answer);
-        answersByIter.set(a.nodeId, inner);
+        // Build the (nodeId → iter → answer) map the normaliser expects.
+        const answersByIter: AnswersByIter = new Map();
+        for (const a of eng.answers) {
+          const inner = answersByIter.get(a.nodeId) ?? new Map<number, Answer>();
+          inner.set(a.iterationIndex, a.answer as Answer);
+          answersByIter.set(a.nodeId, inner);
+        }
+
+        scopeFromAnswers = normaliseScope(tmpl, card, answersByIter);
       }
-
-      const scopeFromAnswers = normaliseScope(tmpl, card, answersByIter);
 
       // Supplementary input: cached Layer-3 inference from extracted
       // documents. The mapper ran once at extraction time and stored
