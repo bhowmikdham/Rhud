@@ -44,6 +44,9 @@ import { ProposalSummaryCard } from './proposal-summary-card';
 import { StageRail } from './stage-rail';
 import { FocusJump } from './focus-jump';
 import { InspectorDrawer } from './inspector-drawer';
+import { ScopePricingTable } from './scope-pricing-table';
+import { ComparableDeals } from './comparable-deals';
+import { CrawlNudge } from './crawl-nudge';
 import { REVIEWABLE_STATUSES, HOLD_STATUSES, HOLD_BANNER, REVIEWER_HOLD_ROLES, stageOf } from './stage';
 import { DealOutcomeCard } from './deal-outcome-card';
 import { AttachRateCardCard } from './attach-rate-card-card';
@@ -583,6 +586,26 @@ export default function OpportunityDetailPage() {
                 thread={eng.thread}
               />
             )}
+
+            {/* ── Phase 2 · Scope & Pricing editor ──────────────────────
+                The reviewer adjusts the priced scope lines in place (qty /
+                methodology → reprice via the rate card), sees comparable past
+                quotes for the whole deal, and is nudged when a site crawl
+                found endpoints not yet reflected in the priced scope. The
+                table self-gates on a quote; the strip + nudge render null
+                when there's nothing to show. */}
+            {quote && quote.baseBreakdown.length > 0 && user && (
+              <ScopePricingTable
+                engagementId={eng.id}
+                baseBreakdown={quote.baseBreakdown}
+                currency={quote.currency}
+                canEdit={['admin', 'sales_manager', 'tech_team'].includes(user.role)}
+                onRepriced={refreshAfterDecision}
+              />
+            )}
+            <ComparableDeals thread={eng.thread} currency={quote?.currency ?? 'INR'} />
+            <CrawlNudge engagementId={eng.id} onReviewInScope={() => setFocus('scope')} />
+
                 {['sent', 'closed', 'lost'].includes(eng.status) && user && (
                   <DealOutcomeCard
                     engagementId={eng.id}
