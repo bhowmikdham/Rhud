@@ -172,6 +172,8 @@ export interface BasePriceLine {
   scopeUnit: ScopeUnit;
   scopeValue: number;
   methodology: Methodology;
+  /** Distinct non-null methodology strings this service line's rate-card tiers offer, for an editable picker. Empty ⇒ wildcard/no choice. */
+  allowedMethodologies?: string[];
   customerType: CustomerType;
   tierId: string | null;
   tierLabel: string | null;
