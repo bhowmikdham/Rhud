@@ -360,7 +360,56 @@ export class QuoteService {
     return this.tenantDb.run(tenantId, async (db) => {
       const row = await db.engagementQuote.findUnique({ where: { engagementId } });
       if (!row) return null;
-      return rowToDomain(row);
+      const quote = rowToDomain(row);
+
+      // Metadata-only enrichment: surface, per base-scope line, the
+      // methodology options the bound rate card actually offers — so the
+      // UI can render a domain-agnostic methodology <select> (no hardcoded
+      // cyber values). Does NOT touch pricing math; just annotates each
+      // already-persisted breakdown line with the distinct methodologies
+      // its service line's tiers expose. Resolve the bound card the same
+      // way computeAndPersistForEngagement does: direct attachment wins
+      // over the template binding.
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { rateCardId: true, template: { select: { rateCardId: true } } },
+      });
+      const effectiveRateCardId = eng?.rateCardId ?? eng?.template?.rateCardId ?? null;
+      if (effectiveRateCardId) {
+        try {
+          // Reuse the same canonical loader computeBasePrice uses.
+          const card = await this.pricing.getById(tenantId, effectiveRateCardId);
+          const methodsBySlug = new Map<string, string[]>();
+          for (const sl of card.serviceLines) {
+            const distinct = [
+              ...new Set(
+                sl.tiers
+                  .map((t) => t.methodology)
+                  .filter((m): m is string => m !== null && m !== undefined),
+              ),
+            ].sort();
+            methodsBySlug.set(sl.slug, distinct);
+          }
+          quote.baseBreakdown = quote.baseBreakdown.map((line) => ({
+            ...line,
+            allowedMethodologies: methodsBySlug.get(line.serviceLineSlug) ?? [],
+          }));
+        } catch {
+          // A missing/archived card shouldn't break the approval read —
+          // fall back to empty pickers (wildcard / no choice) per line.
+          quote.baseBreakdown = quote.baseBreakdown.map((line) => ({
+            ...line,
+            allowedMethodologies: [],
+          }));
+        }
+      } else {
+        quote.baseBreakdown = quote.baseBreakdown.map((line) => ({
+          ...line,
+          allowedMethodologies: [],
+        }));
+      }
+
+      return quote;
     });
   }
 

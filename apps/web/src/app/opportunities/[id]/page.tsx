@@ -47,6 +47,7 @@ import { InspectorDrawer } from './inspector-drawer';
 import { ScopePricingTable } from './scope-pricing-table';
 import { ComparableDeals } from './comparable-deals';
 import { CrawlNudge } from './crawl-nudge';
+import { RepredictBanner } from './repredict-banner';
 import { REVIEWABLE_STATUSES, HOLD_STATUSES, HOLD_BANNER, REVIEWER_HOLD_ROLES, stageOf } from './stage';
 import { DealOutcomeCard } from './deal-outcome-card';
 import { AttachRateCardCard } from './attach-rate-card-card';
@@ -152,6 +153,9 @@ export default function OpportunityDetailPage() {
   // the stage default (focusFor); a value = the user picked one explicitly.
   const [focus, setFocus] = useState<FocusId | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  // Set when a scope/methodology edit re-prices the base quote — the ML
+  // prediction (the hero number) is then stale until the user re-predicts.
+  const [scopeStale, setScopeStale] = useState(false);
   // Drives the "Send scoping questions" / "Re-issue link" modal. The
   // modal calls opportunities.issueLink; on success we reload the
   // engagement so the gathering-link card picks up the new token.
@@ -188,6 +192,8 @@ export default function OpportunityDetailPage() {
       setEng(refreshed);
       const q = await quotes.forEngagement(id).catch(() => null);
       setQuote(q);
+      // Fresh prediction now reflects the current scope — clear the stale flag.
+      setScopeStale(false);
     } catch (e) {
       setActionErr(describeError(e));
     } finally {
@@ -594,15 +600,35 @@ export default function OpportunityDetailPage() {
                 found endpoints not yet reflected in the priced scope. The
                 table self-gates on a quote; the strip + nudge render null
                 when there's nothing to show. */}
+            {/* ── Scope & pricing ─────────────────────────────────────────
+                The base scope lines (inline-editable qty + rate-card-driven
+                methodology) and the pricing extras now sit together as one
+                unit: the scope table dropped its partial 'Base total' footer,
+                and the extras card directly below carries the single running
+                Base / + Extras / = Grand total. */}
             {quote && quote.baseBreakdown.length > 0 && user && (
               <ScopePricingTable
                 engagementId={eng.id}
                 baseBreakdown={quote.baseBreakdown}
                 currency={quote.currency}
                 canEdit={['admin', 'sales_manager', 'tech_team'].includes(user.role)}
-                onRepriced={refreshAfterDecision}
+                onRepriced={async () => { await refreshAfterDecision(); setScopeStale(true); }}
               />
             )}
+            {quote && user && (
+              <QuoteLineItemsCard
+                engagementId={eng.id}
+                userRole={user.role}
+                currency={quote.currency}
+              />
+            )}
+
+            {/* Scope/methodology edits re-price the base but NOT the ML
+                prediction (the hero number) — prompt an explicit re-predict. */}
+            {scopeStale && prediction && user && (
+              <RepredictBanner onRepredict={runPredict} repredicting={predicting} />
+            )}
+
             <ComparableDeals thread={eng.thread} currency={quote?.currency ?? 'INR'} />
             <CrawlNudge engagementId={eng.id} onReviewInScope={() => setFocus('scope')} />
 
@@ -630,16 +656,6 @@ export default function OpportunityDetailPage() {
                       setQuote(q);
                       setPrediction(p);
                     }}
-                  />
-                )}
-
-                {/* Pricing extras — promoted out of a dead-last section into
-                    the Price focus, beside the number it adjusts. */}
-                {quote && user && (
-                  <QuoteLineItemsCard
-                    engagementId={eng.id}
-                    userRole={user.role}
-                    currency={quote.currency}
                   />
                 )}
             </div>

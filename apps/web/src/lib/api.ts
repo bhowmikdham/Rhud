@@ -762,6 +762,9 @@ export interface BasePriceLine {
   tierId: string | null;
   tierLabel: string | null;
   priceCents: number;
+  /** Distinct non-null methodology strings this service line's rate-card
+   *  tiers offer, for an editable picker. Empty ⇒ wildcard/no choice. */
+  allowedMethodologies?: string[];
   /** 'per_unit' | 'tier_lookup' | 'flat' | 'hourly' — included when
    *  the line is priced (not unmatched). Lets the UI render the math. */
   pricingModel?: 'per_unit' | 'tier_lookup' | 'flat' | 'hourly';

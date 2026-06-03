@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   describeError,
   extraction,
@@ -35,6 +35,12 @@ import { formatMoney } from './format';
 /** Resolves a base line's slug to the file + slug needed to override it. */
 type OverrideTarget = { fileId: string; slug: string };
 
+// A base line plus the optional rate-card-offered methodologies for its slug.
+// `allowedMethodologies` is the set of methodology strings the rate card offers
+// for this line (may be empty/absent). When present and the line is editable,
+// the Method cell renders an editable <select> instead of the read-only chip.
+type ScopeLine = BasePriceLine & { allowedMethodologies?: string[] };
+
 export function ScopePricingTable({
   engagementId,
   baseBreakdown,
@@ -43,7 +49,7 @@ export function ScopePricingTable({
   onRepriced,
 }: {
   engagementId: string;
-  baseBreakdown: BasePriceLine[];
+  baseBreakdown: ScopeLine[];
   currency: string;
   canEdit: boolean;
   onRepriced: () => void | Promise<void>;
@@ -140,9 +146,33 @@ export function ScopePricingTable({
     [engagementId, onRepriced, flashSaved],
   );
 
-  const baseTotalCents = useMemo(
-    () => baseBreakdown.reduce((sum, l) => sum + l.priceCents, 0),
-    [baseBreakdown],
+  // Save one line's methodology. Mirrors `saveScope`'s row lifecycle: clear any
+  // prior error, show the per-row saving spinner, call the override + reprice,
+  // flash the saved tick on success, surface a per-row message on failure. A
+  // <select> reflects its value immediately, so no optimistic shadow is needed;
+  // on error the reprice never lands and the next render reverts to the truth.
+  const saveMethodology = useCallback(
+    async (line: BasePriceLine, nextValue: string | null, target: OverrideTarget) => {
+      setErrorByRow((prev) => {
+        if (!(line.entityId in prev)) return prev;
+        const next = { ...prev };
+        delete next[line.entityId];
+        return next;
+      });
+      setSavingId(line.entityId);
+      try {
+        await extraction.overrideEntity(engagementId, target.fileId, target.slug, {
+          methodology: nextValue,
+        });
+        await onRepriced();
+        flashSaved(line.entityId);
+      } catch (caught) {
+        setErrorByRow((prev) => ({ ...prev, [line.entityId]: describeError(caught) }));
+      } finally {
+        setSavingId((cur) => (cur === line.entityId ? null : cur));
+      }
+    },
+    [engagementId, onRepriced, flashSaved],
   );
 
   if (baseBreakdown.length === 0) {
@@ -203,20 +233,12 @@ export function ScopePricingTable({
                   saved={savedId === line.entityId}
                   error={errorByRow[line.entityId] ?? null}
                   onSave={saveScope}
+                  onSaveMethodology={saveMethodology}
                 />
               );
             })}
           </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={4} style={{ padding: '12px 10px', textAlign: 'right', fontWeight: 600, color: 'var(--fg-muted)', borderTop: '1px solid var(--border)' }}>
-                Base total
-              </td>
-              <td style={{ padding: '12px 10px', textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums', borderTop: '1px solid var(--border)' }}>
-                {formatMoney(baseTotalCents, currency)}
-              </td>
-            </tr>
-          </tfoot>
+          {/* Total moved to the unified pricing footer below (base + extras + grand). */}
         </table>
       </div>
 
@@ -293,8 +315,9 @@ function ScopeRow({
   saved,
   error,
   onSave,
+  onSaveMethodology,
 }: {
-  line: BasePriceLine;
+  line: ScopeLine;
   currency: string;
   editable: boolean;
   target: OverrideTarget | null;
@@ -303,6 +326,7 @@ function ScopeRow({
   saved: boolean;
   error: string | null;
   onSave: (line: BasePriceLine, nextValue: number, target: OverrideTarget) => void | Promise<void>;
+  onSaveMethodology: (line: BasePriceLine, nextValue: string | null, target: OverrideTarget) => void | Promise<void>;
 }) {
   // The number the reviewer sees: optimistic shadow if present, else the
   // authoritative server value. The text input is controlled from this.
@@ -335,6 +359,12 @@ function ScopeRow({
 
   const provenance: 'doc' | 'derived' = editable ? 'doc' : 'derived';
   const scopeInputId = `scope-${line.entityId}`;
+
+  // The Method cell becomes an editable rate-card-driven <select> only when the
+  // line is editable AND the rate card offers methodologies for its slug.
+  // Otherwise it stays a read-only chip (or em-dash).
+  const allowedMethodologies = line.allowedMethodologies ?? [];
+  const methodEditable = editable && allowedMethodologies.length > 0;
 
   return (
     <tr style={{ borderTop: '1px solid var(--divider)', transition: 'background 180ms ease' }}>
@@ -426,9 +456,35 @@ function ScopeRow({
         )}
       </td>
 
-      {/* Method: read-only chip of methodology */}
-      <td data-label="Method" style={cellStyle}>
-        {line.methodology ? (
+      {/* Method: editable rate-card <select> when the card offers
+          methodologies for this editable line, else a read-only chip. */}
+      <td data-label="Method" style={{ ...cellStyle, paddingTop: 8, paddingBottom: 8 }}>
+        {methodEditable ? (
+          <select
+            className="input"
+            value={line.methodology ?? ''}
+            aria-label={`Methodology for ${line.serviceLineName}`}
+            disabled={saving}
+            onChange={(e) => {
+              if (!target) return;
+              void onSaveMethodology(line, e.target.value || null, target);
+            }}
+            style={{
+              // ~28px control styled like the scope input; the cell's 8px top+
+              // bottom padding lifts the surrounding tap region to ≥44px.
+              height: 28,
+              fontSize: 13,
+              padding: '0 8px',
+              maxWidth: 180,
+              transition: 'border-color 180ms ease, box-shadow 180ms ease',
+            }}
+          >
+            <option value="">— any</option>
+            {allowedMethodologies.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        ) : line.methodology ? (
           <span className="chip outline" style={{ fontSize: 10.5 }}>{line.methodology}</span>
         ) : (
           <span style={{ color: 'var(--fg-subtle)' }}>—</span>
