@@ -605,7 +605,14 @@ model IngestionArtifact {
   // name). NULL for non-message artifacts.
   emailSubject  String?  @map("email_subject")
   emailFrom     String?  @map("email_from")
-  emailTo       String[] @map("email_to")
+  // Empty-array default is REQUIRED: the column is NOT NULL, but the
+  // presign + paste-text create paths never set emailTo (only the
+  // email-import path does). Without @default([]) here, Prisma treats
+  // the migration's `DEFAULT '{}'` as undeclared drift and a
+  // `migrate dev` / `db push` DROPS it — after which every file/text
+  // ingest 500s on a null-constraint violation. See migration
+  // 20260807000000_ingestion_email_to_default.
+  emailTo       String[] @default([]) @map("email_to")
   emailDate     DateTime? @map("email_date") @db.Timestamptz
   emailHeaders  Json?    @map("email_headers")
   /// Provider-side message identifier — RFC 5322 Message-ID for email,

@@ -1,0 +1,13 @@
+-- Re-assert the empty-array default on ingestion_artifacts.email_to.
+--
+-- The column was created NOT NULL DEFAULT '{}' in
+-- 20260802000000_direct_ingest_pipeline, but the Prisma model declared
+-- `emailTo String[]` WITHOUT `@default([])`. Prisma therefore treated the
+-- DB-level default as undeclared drift, and a local `migrate dev` / `db push`
+-- dropped it. With no default, the presign + paste-text ingest create paths
+-- (which never set emailTo — only the email-import path does) hit a
+-- null-constraint violation, 500-ing every file/text upload.
+--
+-- The model now declares `@default([])`; this migration brings any drifted
+-- database back in line. Idempotent: a no-op where the default already exists.
+ALTER TABLE "ingestion_artifacts" ALTER COLUMN "email_to" SET DEFAULT '{}';
