@@ -23,8 +23,41 @@ AWS_REGION="${AWS_REGION:-ap-south-1}"
 COMMAND="${1:-up}"
 export WEB_PUBLIC_URL="${WEB_PUBLIC_URL:-https://rhud.net}"
 
+# S3 bucket that receives browser-direct presigned uploads. Must match
+# S3_BUCKET in docker-compose.yml. The browser PUTs an xlsx/pdf with a
+# non-simple Content-Type → CORS preflight OPTIONS → the bucket MUST
+# advertise CORS for the web origins or the upload fails with
+# "TypeError: Failed to fetch". Config lives in ./s3-cors.json.
+S3_UPLOAD_BUCKET="${S3_UPLOAD_BUCKET:-rhud-uploads-prod-bhowmik}"
+
 log() { printf "\033[1;34m→\033[0m %s\n" "$*"; }
+warn() { printf "\033[1;33m! %s\033[0m\n" "$*" >&2; }
 die() { printf "\033[1;31m✗ %s\033[0m\n" "$*" >&2; exit 1; }
+
+# ── Apply the S3 bucket CORS config (idempotent) ─────────────────────
+# put-bucket-cors is a full replace, so re-running it just re-asserts
+# the desired state from ./s3-cors.json — safe on every deploy. This is
+# what lets the browser PUT presigned uploads directly to S3 (the API
+# never proxies bytes). Never fail the whole deploy if this errors
+# (e.g. the instance role lacks s3:PutBucketCors); log a warning and
+# continue so the rest of the stack still comes up.
+apply_s3_cors() {
+  local cors_file="./s3-cors.json"
+  if [[ ! -f "$cors_file" ]]; then
+    warn "s3 CORS: $cors_file not found, skipping"
+    return 0
+  fi
+  log "applying S3 CORS to bucket $S3_UPLOAD_BUCKET from $cors_file"
+  if aws s3api put-bucket-cors \
+       --bucket "$S3_UPLOAD_BUCKET" \
+       --cors-configuration "file://$cors_file" \
+       --region "$AWS_REGION" 2>/tmp/s3-cors.err; then
+    log "S3 CORS applied"
+  else
+    warn "S3 CORS apply failed (continuing deploy): $(cat /tmp/s3-cors.err 2>/dev/null)"
+    warn "browser-direct uploads may break until CORS is set. Needs s3:PutBucketCors on bucket $S3_UPLOAD_BUCKET."
+  fi
+}
 
 # ── fetch a single SSM parameter, fail loudly if missing ─────────────
 get_param() {
@@ -64,6 +97,10 @@ export LLM_KEY_ENCRYPTION_KEY="$(get_param /rhud/llm/encryption-key)"
 
 # Sanity: JWT_SECRET must be ≥32 chars (env.ts validates this too)
 [[ "${#JWT_SECRET}" -ge 32 ]] || die "JWT_SECRET is shorter than 32 chars"
+
+# Re-assert bucket CORS on every up/restart. Cheap, idempotent, and
+# guards against the bucket being re-created without CORS.
+apply_s3_cors
 
 if [[ "$COMMAND" == "restart" ]]; then
   log "restarting all services"
