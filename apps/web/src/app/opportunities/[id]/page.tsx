@@ -41,9 +41,10 @@ import { SiteScopeCard } from './site-scope-card';
 import { ExtractedPointsCard } from './extracted-points-card';
 import { JustificationCard } from './justification-card';
 import { ProposalSummaryCard } from './proposal-summary-card';
-import { StageHeader } from './stage-header';
+import { StageRail } from './stage-rail';
+import { FocusJump } from './focus-jump';
+import { InspectorDrawer } from './inspector-drawer';
 import { REVIEWABLE_STATUSES, HOLD_STATUSES, HOLD_BANNER, REVIEWER_HOLD_ROLES, stageOf } from './stage';
-import { Section } from './section';
 import { DealOutcomeCard } from './deal-outcome-card';
 import { AttachRateCardCard } from './attach-rate-card-card';
 
@@ -105,6 +106,26 @@ type EngagementWithThread = EngagementSummary & {
 // REVIEWABLE_STATUSES, HOLD_STATUSES, HOLD_BANNER, nextStepHint now live in
 // ./stage (Phase D — shared stage model).
 
+/** Focus-Pane (v2 Phase 1): the right pane shows ONE focus body at a time
+ *  instead of a long stack. `focusFor` is the per-stage default; the user
+ *  switches via the FocusJump. Reference material lives in the Inspector. */
+type FocusId = 'price' | 'scope' | 'documents' | 'proposal';
+
+function focusFor(stage: string): FocusId {
+  switch (stage) {
+    case 'discovery': return 'scope';
+    case 'proposal': return 'proposal';
+    default: return 'price'; // pricing / approval / delivered
+  }
+}
+
+const FOCUS_ITEMS: Array<{ id: FocusId; label: string; icon: keyof typeof Icon }> = [
+  { id: 'price', label: 'Price', icon: 'Sparkle' },
+  { id: 'scope', label: 'Scope', icon: 'Globe' },
+  { id: 'documents', label: 'Documents', icon: 'FileText' },
+  { id: 'proposal', label: 'Proposal', icon: 'Send' },
+];
+
 export default function OpportunityDetailPage() {
   const user = useRequireAuth();
   const router = useRouter();
@@ -124,6 +145,10 @@ export default function OpportunityDetailPage() {
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [predicting, setPredicting] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  // Focus-Pane state: which single body the right pane shows. null = follow
+  // the stage default (focusFor); a value = the user picked one explicitly.
+  const [focus, setFocus] = useState<FocusId | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   // Drives the "Send scoping questions" / "Re-issue link" modal. The
   // modal calls opportunities.issueLink; on success we reload the
   // engagement so the gathering-link card picks up the new token.
@@ -181,8 +206,9 @@ export default function OpportunityDetailPage() {
    *  jarring to discover. */
   async function runPredictFromSiteScope() {
     await runPredict();
-    // Defer the scroll one tick so React has flushed the render that
-    // mounts the QuoteCard / ApprovalCard.
+    // Computing a quote from Site Scope lives in the Scope focus — flip to
+    // the Price focus so the rep sees the result land, then scroll it in.
+    setFocus('price');
     requestAnimationFrame(() => {
       predictionSectionRef.current?.scrollIntoView({
         behavior: 'smooth',
@@ -310,6 +336,7 @@ export default function OpportunityDetailPage() {
 
   const headerTitle = eng.name ?? eng.clientEmail;
   const { stage: pipelineStage } = stageOf(eng.status);
+  const activeFocus: FocusId = focus ?? focusFor(pipelineStage);
 
   return (
     <AppShell crumbs={[{ label: 'Opportunities', href: '/opportunities' }, { label: headerTitle }]}>
@@ -383,36 +410,19 @@ export default function OpportunityDetailPage() {
 
         <div className="artifact-pane">
           {user && (
-            <StageHeader
+            <StageRail
               status={eng.status}
               userRole={user.role}
-              onJumpToAction={() =>
-                predictionSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-              }
+              onJump={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+              onInspector={() => setInspectorOpen(true)}
             />
           )}
-          {user && (
-            <LeadHud
-              engagementId={eng.id}
-              status={eng.status}
-              userRole={user.role}
-              classification={{
-                categorySlug: eng.categorySlug ?? null,
-                subCategorySlug: eng.subCategorySlug ?? null,
-                classifiedBy: eng.classifiedBy ?? null,
-                classifiedAt: eng.classifiedAt ?? null,
-              }}
-              assignedReviewerId={eng.assignedReviewerId ?? null}
-              onClassificationChange={() => { void refreshAfterDecision(); }}
-            />
-          )}
+          <div style={{ padding: '10px 28px 0' }}>
+            <FocusJump current={activeFocus} items={FOCUS_ITEMS} onSelect={(f) => setFocus(f as FocusId)} />
+          </div>
           <div className="artifact-body">
-            {user && (
-              <div style={{ marginBottom: 16 }}>
-                <LeadSummaryInline engagementId={eng.id} />
-              </div>
-            )}
-            <div ref={predictionSectionRef} style={{ scrollMarginTop: 80 }}>
+            {activeFocus === 'price' && (
+            <div ref={predictionSectionRef} style={{ scrollMarginTop: 80, display: 'flex', flexDirection: 'column', gap: 16 }}>
             {/* Action error — a lifecycle action failed. Dismissible, and
                 never discards the loaded opportunity (unlike the fatal load
                 guard above). */}
@@ -573,85 +583,105 @@ export default function OpportunityDetailPage() {
                 thread={eng.thread}
               />
             )}
+                {['sent', 'closed', 'lost'].includes(eng.status) && user && (
+                  <DealOutcomeCard
+                    engagementId={eng.id}
+                    status={eng.status}
+                    userRole={user.role}
+                    onChanged={() => { void refreshAfterDecision(); }}
+                  />
+                )}
+
+                {/* Direct-ingest opportunity (no template, no rate card) →
+                    attach one to price from the extracted scope. */}
+                {!eng.templateId && !eng.rateCardId && (
+                  <AttachRateCardCard
+                    engagementId={eng.id}
+                    onAttached={async () => {
+                      const [refreshed, q, p] = await Promise.all([
+                        opportunities.get(id),
+                        quotes.forEngagement(id).catch(() => null),
+                        predictions.latest(id).catch(() => null),
+                      ]);
+                      setEng(refreshed);
+                      setQuote(q);
+                      setPrediction(p);
+                    }}
+                  />
+                )}
+
+                {/* Pricing extras — promoted out of a dead-last section into
+                    the Price focus, beside the number it adjusts. */}
+                {quote && user && (
+                  <QuoteLineItemsCard
+                    engagementId={eng.id}
+                    userRole={user.role}
+                    currency={quote.currency}
+                  />
+                )}
             </div>
-
-            {['sent', 'closed', 'lost'].includes(eng.status) && user && (
-              <DealOutcomeCard
-                engagementId={eng.id}
-                status={eng.status}
-                userRole={user.role}
-                onChanged={() => { void refreshAfterDecision(); }}
-              />
             )}
 
-            <Section title="Opportunity details">
-              <div className="card" style={{ padding: 22 }}>
-                {eng.name && <Row k="Name" v={eng.name} />}
-                <Row k="Client email" v={eng.clientEmail} />
-                {/* Template row hidden for direct-ingest opportunities — they
-                    have no template attached until the rep issues a scoping
-                    link from the "Send scoping questions" card. */}
-                {eng.templateName && <Row k="Template" v={eng.templateName} />}
-                <Row k="Created" v={new Date(eng.createdAt).toLocaleString()} />
-                {eng.submittedAt && <Row k="Submitted" v={new Date(eng.submittedAt).toLocaleString()} />}
-                <Row k="Opportunity id" v={<span className="mono">{eng.id}</span>} />
+            {activeFocus === 'scope' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <ScopingQuestionsCard
+                  engagementId={eng.id}
+                  currentTemplateId={eng.templateId}
+                  link={eng.gatheringLink}
+                  onOpenModal={() => setShowIssueLink(true)}
+                />
+                <SiteScopeCard
+                  engagementId={eng.id}
+                  defaultOpen
+                  onAfterCompute={runPredictFromSiteScope}
+                  parentBusy={predicting}
+                />
               </div>
-            </Section>
-
-            {/* Direct-ingest opportunity (no template) with no rate card
-                yet → offer to attach one so it can be priced straight from
-                the extracted scope, without issuing a client scoping link. */}
-            {!eng.templateId && !eng.rateCardId && (
-              <AttachRateCardCard
-                engagementId={eng.id}
-                onAttached={async () => {
-                  const [refreshed, q, p] = await Promise.all([
-                    opportunities.get(id),
-                    quotes.forEngagement(id).catch(() => null),
-                    predictions.latest(id).catch(() => null),
-                  ]);
-                  setEng(refreshed);
-                  setQuote(q);
-                  setPrediction(p);
-                }}
-              />
             )}
 
-            <ScopingQuestionsCard
-              engagementId={eng.id}
-              currentTemplateId={eng.templateId}
-              link={eng.gatheringLink}
-              onOpenModal={() => setShowIssueLink(true)}
-            />
-            {showIssueLink && (
-              <IssueLinkModal
-                engagementId={eng.id}
-                currentTemplateId={eng.templateId}
-                // Re-issue mode when there's any prior token at all
-                // (live, expired, or revoked). On the first link for
-                // a direct-ingest opportunity, gatheringLink is null
-                // — that's the link_issued path.
-                isReissue={!!eng.gatheringLink}
-                onIssued={async () => {
-                  setShowIssueLink(false);
-                  const refreshed = await opportunities.get(id);
-                  setEng(refreshed);
-                }}
-                onClose={() => setShowIssueLink(false)}
-              />
+            {activeFocus === 'documents' && (
+              <ExtractedPointsCard engagementId={eng.id} />
             )}
 
-            <SiteScopeCard
-              engagementId={eng.id}
-              defaultOpen={pipelineStage === 'pricing'}
-              onAfterCompute={runPredictFromSiteScope}
-              parentBusy={predicting}
-            />
+            {activeFocus === 'proposal' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {quote && <JustificationCard engagementId={eng.id} clientEmail={eng.clientEmail} />}
+                {['approved', 'drafting', 'draft_ready', 'sent'].includes(eng.status) && (
+                  <ProposalSummaryCard
+                    engagementId={eng.id}
+                    status={eng.status}
+                  />
+                )}
+              </div>
+            )}
+          </div>
 
-            <ExtractedPointsCard engagementId={eng.id} />
-
-            {user && (
-              <Section title="Reviewer notes" keepMounted>
+          {user && (
+            <InspectorDrawer open={inspectorOpen} onClose={() => setInspectorOpen(false)} title="Details">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <LeadSummaryInline engagementId={eng.id} />
+                <LeadHud
+                  engagementId={eng.id}
+                  status={eng.status}
+                  userRole={user.role}
+                  classification={{
+                    categorySlug: eng.categorySlug ?? null,
+                    subCategorySlug: eng.subCategorySlug ?? null,
+                    classifiedBy: eng.classifiedBy ?? null,
+                    classifiedAt: eng.classifiedAt ?? null,
+                  }}
+                  assignedReviewerId={eng.assignedReviewerId ?? null}
+                  onClassificationChange={() => { void refreshAfterDecision(); }}
+                />
+                <div className="card" style={{ padding: 22 }}>
+                  <h3 className="section-label" style={{ marginBottom: 10 }}>Opportunity details</h3>
+                  {eng.name && <Row k="Name" v={eng.name} />}
+                  <Row k="Client email" v={eng.clientEmail} />
+                  {eng.templateName && <Row k="Template" v={eng.templateName} />}
+                  <Row k="Created" v={new Date(eng.createdAt).toLocaleString()} />
+                  {eng.submittedAt && <Row k="Submitted" v={new Date(eng.submittedAt).toLocaleString()} />}
+                  <Row k="Opportunity id" v={<span className="mono">{eng.id}</span>} />
+                </div>
                 <AssumptionsExclusionsCard
                   engagementId={eng.id}
                   userRole={user.role}
@@ -662,33 +692,23 @@ export default function OpportunityDetailPage() {
                   }}
                   onSaved={() => { void refreshAfterDecision(); }}
                 />
-              </Section>
-            )}
+              </div>
+            </InspectorDrawer>
+          )}
 
-            {quote && user && (
-              <Section title="Pricing extras" keepMounted>
-                <QuoteLineItemsCard
-                  engagementId={eng.id}
-                  userRole={user.role}
-                  currency={quote.currency}
-                />
-              </Section>
-            )}
-
-            {quote && (
-              <Section title="Justification & rationale" defaultOpen={pipelineStage === 'proposal'}>
-                <JustificationCard engagementId={eng.id} clientEmail={eng.clientEmail} />
-              </Section>
-            )}
-
-            {['approved', 'drafting', 'draft_ready', 'sent'].includes(eng.status) && (
-              <ProposalSummaryCard
-                engagementId={eng.id}
-                status={eng.status}
-              />
-            )}
-
-          </div>
+          {showIssueLink && (
+            <IssueLinkModal
+              engagementId={eng.id}
+              currentTemplateId={eng.templateId}
+              isReissue={!!eng.gatheringLink}
+              onIssued={async () => {
+                setShowIssueLink(false);
+                const refreshed = await opportunities.get(id);
+                setEng(refreshed);
+              }}
+              onClose={() => setShowIssueLink(false)}
+            />
+          )}
         </div>
       </div>
 
