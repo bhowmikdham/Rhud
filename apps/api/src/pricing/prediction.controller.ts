@@ -581,10 +581,18 @@ export class PredictionController {
 
   /**
    * Reset an approval/rejection — used when a manager clicked the wrong
-   * button. Admin-only, deliberately friction-y: clears the approved
-   * price and pushes status back to 'pending_approval' if the engagement
-   * has a prediction, or 'submitted' otherwise. Drafting work hasn't
-   * started yet (status would be 'drafting'/later) so this is safe.
+   * button, OR when the requirements need to change after a proposal draft
+   * has already been generated. Admin-only, deliberately friction-y: clears
+   * the approved price and pushes status back to 'pending_approval' if the
+   * engagement has a prediction, or 'submitted' otherwise.
+   *
+   * Revertable from 'approved'/'rejected' AND from the post-approval drafting
+   * states ('drafting'/'draft_ready'). In the latter the generated draft is
+   * now stale — scope/price may change before re-approval — so we clear it
+   * the same way ProposalDraftService.clear does and let re-approval
+   * regenerate it from the (possibly edited) scope. 'sent' is intentionally
+   * NOT revertable here: once the client holds the proposal, reopening is a
+   * separate, deliberate flow.
    */
   @Post('revert-approval')
   @Roles('admin')
@@ -599,7 +607,7 @@ export class PredictionController {
         select: { id: true, status: true },
       });
       if (!eng) throw new BadRequestException('engagement_not_found');
-      if (!['approved', 'rejected'].includes(eng.status)) {
+      if (!['approved', 'rejected', 'drafting', 'draft_ready'].includes(eng.status)) {
         throw new ConflictException(`cannot_revert_from_status:${eng.status}`);
       }
 
@@ -613,9 +621,29 @@ export class PredictionController {
       });
       const targetStatus = latestPrediction ? 'pending_approval' : 'submitted';
 
+      // Reverting from a post-approval drafting state? The generated proposal
+      // draft is now stale (scope/price may change before re-approval), so we
+      // wipe the draft fields — mirrors ProposalDraftService.clear — and let
+      // re-approval regenerate it from scratch.
+      const wasDrafted = ['drafting', 'draft_ready'].includes(eng.status);
+
       const updated = await db.engagement.update({
         where: { id: engagementId },
-        data: { status: targetStatus, approvedPriceCents: null },
+        data: {
+          status: targetStatus,
+          approvedPriceCents: null,
+          ...(wasDrafted
+            ? {
+                proposalDraft: null,
+                proposalDraftedAt: null,
+                proposalDraftSource: null,
+                gammaDeckUrl: null,
+                gammaDeckId: null,
+                gammaGenerationId: null,
+                gammaGenerationStartedAt: null,
+              }
+            : {}),
+        },
         select: { id: true, status: true },
       });
       await db.engagementQuote.updateMany({
@@ -627,7 +655,7 @@ export class PredictionController {
         eventType: 'approval_reverted',
         actorType: 'user',
         actorId: req.user.sub,
-        payload: { fromStatus: eng.status, toStatus: targetStatus },
+        payload: { fromStatus: eng.status, toStatus: targetStatus, clearedDraft: wasDrafted },
       });
       return { engagementId: updated.id, status: updated.status };
     });

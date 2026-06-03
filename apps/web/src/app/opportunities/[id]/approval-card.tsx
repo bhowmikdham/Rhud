@@ -454,7 +454,7 @@ export function ApprovalActions({
               onClick={async () => {
                 const ok = await confirm({
                   title: `Revert ${approved ? 'approval' : 'rejection'}?`,
-                  body: `The opportunity goes back to "awaiting approval".`,
+                  body: `The opportunity goes back to "awaiting approval", where you can adjust scope or price before re-approving. Any proposal draft already generated is cleared and rebuilt on re-approval.`,
                   tone: 'warn',
                   confirmLabel: `Revert ${approved ? 'approval' : 'rejection'}`,
                 });
