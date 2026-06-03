@@ -16,7 +16,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
-  IsUUID,
+  Matches,
   MaxLength,
   Min,
   ValidateIf,
@@ -30,11 +30,21 @@ import { PredictionService } from './prediction.service.js';
 import { QuoteService } from './quote.service.js';
 import { OdooService } from '../integrations/odoo/odoo.service.js';
 
+// UUID-shape match. `@IsUUID()` requires version 1-5, but our seed
+// fixtures use version-0 ("nil-ish") UUIDs for stable references
+// (e.g. predictions 30000000-0000-0000-0000-…), which @IsUUID() rejects
+// with "predictionId must be a UUID" — breaking approve/tech-adjust/reject
+// on seeded demo opportunities. Mirror engagements/dto.ts + gathering/dto.ts:
+// accept any well-formed UUID. Real gen_random_uuid() IDs are v4 and pass
+// either way, so prod behaviour is unchanged.
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 const APPROVAL_CHOICES = ['base', 'recommended', 'aggressive', 'tech_adjusted', 'custom'] as const;
 type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
 
 class ApproveDto {
-  @IsUUID() predictionId!: string;
+  @Matches(UUID_RE, { message: 'predictionId must be UUID-formatted' })
+  predictionId!: string;
 
   @IsIn(APPROVAL_CHOICES as unknown as string[])
   choice!: ApprovalChoice;
@@ -78,7 +88,7 @@ class RejectDto {
    *  a manager may reject before any prediction even exists (e.g. scope
    *  is incomplete and they want it sent back to the client). */
   @IsOptional()
-  @IsUUID()
+  @Matches(UUID_RE, { message: 'predictionId must be UUID-formatted' })
   predictionId?: string;
 
   /** Why — required so the audit log + email body have substance. */
@@ -94,7 +104,8 @@ class RejectDto {
  * subsequent re-predict invalidates it.
  */
 class TechAdjustDto {
-  @IsUUID() predictionId!: string;
+  @Matches(UUID_RE, { message: 'predictionId must be UUID-formatted' })
+  predictionId!: string;
 
   @IsInt()
   @Min(0)
