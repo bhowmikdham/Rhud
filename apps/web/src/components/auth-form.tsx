@@ -46,19 +46,20 @@ export function AuthShell({ children }: { children: ReactNode }) {
         minHeight: '100vh',
         display: 'grid',
         placeItems: 'center',
-        background: '#f5f5f5',
+        background: 'var(--bg)',
         fontFamily:
           '-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif',
-        color: '#111',
+        color: 'var(--fg)',
         padding: '32px 16px',
       }}
     >
       <div
         style={{
-          background: '#fff',
+          background: 'var(--bg-elev)',
           padding: '32px 40px',
           borderRadius: 12,
-          boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+          border: '1px solid var(--border)',
+          boxShadow: 'var(--shadow-sm)',
           minWidth: 360,
           maxWidth: 460,
           width: '100%',
@@ -81,7 +82,7 @@ export function AuthField(props: {
 }) {
   return (
     <label style={{ display: 'block', marginBottom: 12 }}>
-      <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#444', marginBottom: 6 }}>
+      <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--fg-muted)', marginBottom: 6 }}>
         {props.label}
       </span>
       <input
@@ -101,9 +102,11 @@ export function AuthField(props: {
         style={{
           width: '100%',
           padding: '10px 12px',
-          border: '1px solid #ddd',
+          border: '1px solid var(--border)',
           borderRadius: 8,
           fontSize: 14,
+          background: 'var(--bg-elev)',
+          color: 'var(--fg)',
           boxSizing: 'border-box',
         }}
       />
@@ -128,8 +131,8 @@ export function AuthSubmit({
       style={{
         width: '100%',
         padding: '12px 16px',
-        background: submitting ? '#666' : '#111',
-        color: '#fff',
+        background: submitting ? 'var(--fg-muted)' : 'var(--fg)',
+        color: 'var(--bg)',
         border: 'none',
         borderRadius: 8,
         fontWeight: 600,
@@ -146,15 +149,15 @@ export function AuthSubmit({
 export const authStyles: Record<string, CSSProperties> = {
   brand: { fontWeight: 700, fontSize: 18, marginBottom: 24 },
   h1: { fontSize: 22, fontWeight: 600, margin: '0 0 8px' },
-  p: { color: '#444', margin: '0 0 24px', lineHeight: 1.5, fontSize: 14 },
-  link: { color: '#111', fontWeight: 600, textDecoration: 'underline' },
+  p: { color: 'var(--fg-muted)', margin: '0 0 24px', lineHeight: 1.5, fontSize: 14 },
+  link: { color: 'var(--fg)', fontWeight: 600, textDecoration: 'underline' },
   err: {
-    background: '#fef2f2',
-    color: '#b00020',
+    background: 'var(--danger-tint)',
+    color: 'var(--danger)',
     padding: '8px 12px',
     borderRadius: 8,
     fontSize: 13,
     margin: '8px 0 16px',
   },
-  dev: { fontSize: 12, color: '#666', margin: '16px 0 0' },
+  dev: { fontSize: 12, color: 'var(--fg-muted)', margin: '16px 0 0' },
 };

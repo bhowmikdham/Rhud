@@ -109,7 +109,7 @@ export function IssueLinkModal({
         background: 'rgba(0,0,0,.4)',
         display: 'grid',
         placeItems: 'center',
-        zIndex: 50,
+        zIndex: 'var(--z-modal)',
         padding: 16,
       }}
       onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}

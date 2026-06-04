@@ -179,4 +179,44 @@ export class S3Service {
     const safe = args.filename.replace(/[^\w.-]/g, '_').slice(0, 200);
     return `engagements/${args.tenantId}/${args.engagementId}/${args.fileId}/${safe}`;
   }
+
+  /**
+   * Canonical S3 key for a user's profile photo. The `uploadId` (a fresh
+   * uuid per upload) busts any CDN/browser cache when the avatar is
+   * replaced. Tenant + user prefix keeps isolation consistent with the
+   * other key builders and lets `updateMyProfile` verify a submitted key
+   * actually belongs to the caller before persisting it.
+   */
+  static keyForUserAvatar(args: {
+    tenantId: string;
+    userId: string;
+    uploadId: string;
+    filename: string;
+  }): string {
+    const safe = args.filename.replace(/[^\w.-]/g, '_').slice(0, 200);
+    return `avatars/${args.tenantId}/${args.userId}/${args.uploadId}/${safe}`;
+  }
+
+  /** Prefix every avatar key for a given user shares — used to validate
+   *  a client-submitted key belongs to that user before we persist it. */
+  static avatarPrefixForUser(args: { tenantId: string; userId: string }): string {
+    return `avatars/${args.tenantId}/${args.userId}/`;
+  }
+
+  /** Canonical S3 key for a workspace logo. Tenant-prefixed; `uploadId`
+   *  busts cache on replace. */
+  static keyForTenantLogo(args: {
+    tenantId: string;
+    uploadId: string;
+    filename: string;
+  }): string {
+    const safe = args.filename.replace(/[^\w.-]/g, '_').slice(0, 200);
+    return `branding/${args.tenantId}/${args.uploadId}/${safe}`;
+  }
+
+  /** Prefix every logo key for a tenant shares — used to validate a
+   *  client-submitted key belongs to that tenant before persisting. */
+  static logoPrefixForTenant(args: { tenantId: string }): string {
+    return `branding/${args.tenantId}/`;
+  }
 }

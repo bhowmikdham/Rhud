@@ -13,7 +13,7 @@ export function Toggle({ value, onChange }: { value: boolean; onChange: (v: bool
     >
       <span style={{
         position: 'absolute', top: 2, left: value ? 16 : 2, width: 14, height: 14, borderRadius: 999,
-        background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,.25)', transition: 'left .15s',
+        background: '#fff', boxShadow: 'var(--shadow-sm)', transition: 'left .15s',
       }} />
     </button>
   );

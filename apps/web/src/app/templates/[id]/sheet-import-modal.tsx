@@ -252,7 +252,7 @@ export function SheetImportModal({ onCancel, onImport, busy }: SheetImportModalP
         background: 'color-mix(in oklch, black 40%, transparent)',
         display: 'grid',
         placeItems: 'center',
-        zIndex: 60,
+        zIndex: 'var(--z-modal)',
         padding: 16,
       }}
       onClick={(e) => {
@@ -440,7 +440,7 @@ function SheetGrid({
           {Array.from({ length: sheet.cols }).map((_, i) => <col key={i} />)}
         </colgroup>
         <thead>
-          <tr style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--bg)' }}>
+          <tr style={{ position: 'sticky', top: 0, zIndex: 'var(--z-sticky)', background: 'var(--bg)' }}>
             <th style={cellHead(true)}>row</th>
             {Array.from({ length: sheet.cols }).map((_, c) => (
               <th key={c} style={cellHead(false)}>

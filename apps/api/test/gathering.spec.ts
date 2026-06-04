@@ -495,14 +495,9 @@ describe('Gathering / engagement flow (sprint 3)', () => {
     expect(first!.priceCents).toBe(25_000_00);
     expect(second!.scopeValue).toBe(22);
     expect(second!.priceCents).toBe(7_000_00);
-
-    // Manager approves a final price; mirrored onto the engagement.
-    const approved = await quoteSvc.approve(TENANT_A, issued.engagementId, {
-      approvedPriceCents: 30_000_00,
-      approvedBy: USER_A,
-    });
-    expect(approved.approvedPriceCents).toBe(30_000_00);
-    expect(approved.approvedBy).toBe(USER_A);
+    // (Quote-level approve was removed — see authz-boundary-2. Final price
+    // approval now flows through the gated PredictionController.approve path,
+    // covered by the pricing/prediction tests.)
   });
 
   it('list is tenant-scoped', async () => {

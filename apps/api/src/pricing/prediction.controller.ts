@@ -5,6 +5,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  NotFoundException,
   Param,
   ParseUUIDPipe,
   Post,
@@ -28,6 +29,7 @@ import { TenantDb } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { PredictionService } from './prediction.service.js';
 import { QuoteService } from './quote.service.js';
+import { QuoteLineItemsService } from './quote-line-items.service.js';
 import { OdooService } from '../integrations/odoo/odoo.service.js';
 
 // UUID-shape match. `@IsUUID()` requires version 1-5, but our seed
@@ -150,6 +152,7 @@ export class PredictionController {
     private readonly thread: ThreadService,
     private readonly quotes: QuoteService,
     private readonly odoo: OdooService,
+    private readonly lineItems: QuoteLineItemsService,
   ) {}
 
   /**
@@ -266,93 +269,115 @@ export class PredictionController {
         break;
     }
 
+    // pricing-quotes-2 / data-contracts-1: the prediction-derived options price
+    // only the rate-card base. Fold in reviewer-added line items (travel/tools/
+    // discounts) so the approved price matches the grand total shown in the UI.
+    // 'custom' and 'tech_adjusted' are manual full prices — taken verbatim.
+    if (dto.choice === 'base' || dto.choice === 'recommended' || dto.choice === 'aggressive') {
+      const breakdown = await this.lineItems.getBreakdown(req.tenantId, engagementId);
+      approvedCents = Math.max(0, approvedCents + breakdown.lineItemTotalCents);
+    }
+
     const eventType =
       dto.choice === 'custom' ? 'approval_adjusted' : 'approval_granted';
 
     const comment =
       dto.choice === 'custom' ? dto.comment : dto.optionalComment;
 
-    // ── Phase C — multi-level approval gating ──────────────────
-    // Look up the tenant's thresholds. If the approved cents exceed
-    // either, we DON'T flip status → 'approved' yet. Instead the
-    // engagement waits for a VP or CEO to final-approve.
-    const tenantConfig = await this.tenantDb.run(req.tenantId, async (db) =>
-      db.tenant.findUnique({
-        where: { id: req.tenantId },
-        select: {
-          requiresVpApprovalAboveCents: true,
-          requiresCeoApprovalAboveCents: true,
-        },
-      }),
-    );
-    const ceoThreshold = tenantConfig?.requiresCeoApprovalAboveCents == null
-      ? null : Number(tenantConfig.requiresCeoApprovalAboveCents);
-    const vpThreshold = tenantConfig?.requiresVpApprovalAboveCents == null
-      ? null : Number(tenantConfig.requiresVpApprovalAboveCents);
+    // ── Phase C — multi-level approval gating (quotes-1, quotes-8) ──
+    // Read the live status AND the tenant thresholds INSIDE the write
+    // transaction so (a) the gate decision is consistent with committed config
+    // (no TOCTOU window where a racing threshold change is missed), and (b) a
+    // terminal/sent deal can't be re-approved back out of its final state —
+    // which would overwrite the price and re-fire the Odoo 'won' sync.
+    const TERMINAL_STATUSES = ['closed', 'lost', 'rejected', 'sent', 'expired'];
+    const { updated, targetStatus, finalLevel } = await this.tenantDb.run(
+      req.tenantId,
+      async (db) => {
+        const current = await db.engagement.findUnique({
+          where: { id: engagementId },
+          select: { status: true },
+        });
+        if (!current) throw new NotFoundException('engagement_not_found');
+        if (TERMINAL_STATUSES.includes(current.status)) {
+          throw new ConflictException(`cannot_approve_from_status:${current.status}`);
+        }
 
-    let targetStatus: 'approved' | 'pending_vp_approval' | 'pending_ceo_approval' = 'approved';
-    let finalLevel: 'vp' | 'ceo' | null = null;
-    let finalThreshold: number | null = null;
-    if (ceoThreshold != null && approvedCents > ceoThreshold) {
-      targetStatus = 'pending_ceo_approval';
-      finalLevel = 'ceo';
-      finalThreshold = ceoThreshold;
-    } else if (vpThreshold != null && approvedCents > vpThreshold) {
-      targetStatus = 'pending_vp_approval';
-      finalLevel = 'vp';
-      finalThreshold = vpThreshold;
-    }
+        const tenantConfig = await db.tenant.findUnique({
+          where: { id: req.tenantId },
+          select: {
+            requiresVpApprovalAboveCents: true,
+            requiresCeoApprovalAboveCents: true,
+          },
+        });
+        const ceoThreshold = tenantConfig?.requiresCeoApprovalAboveCents == null
+          ? null : Number(tenantConfig.requiresCeoApprovalAboveCents);
+        const vpThreshold = tenantConfig?.requiresVpApprovalAboveCents == null
+          ? null : Number(tenantConfig.requiresVpApprovalAboveCents);
 
-    const updated = await this.tenantDb.run(req.tenantId, async (db) => {
-      const eng = await db.engagement.update({
-        where: { id: engagementId },
-        data: {
-          approvedPriceCents: BigInt(approvedCents),
-          status: targetStatus,
-        },
-        select: { id: true, approvedPriceCents: true, status: true },
-      });
-      // Mirror onto engagement_quotes too. We write the approved price
-      // even when status is pending_*_approval — the manager's choice
-      // is captured; final-approver's act just unblocks the status.
-      await db.engagementQuote.updateMany({
-        where: { engagementId },
-        data: {
-          approvedPriceCents: BigInt(approvedCents),
-          approvedAt: new Date(),
-          approvedBy: req.user.sub,
-        },
-      });
-      await this.thread.emitWithin(db, req.tenantId, {
-        engagementId,
-        eventType,
-        actorType: 'user',
-        actorId: req.user.sub,
-        payload: {
-          predictionId: prediction.id,
-          choice: dto.choice,
-          approvedPriceCents: approvedCents,
-          basePriceCents: prediction.basePriceCents,
-          predictedPriceCents: prediction.predictedPriceCents,
-          regime: prediction.regime,
-          ...(comment ? { comment } : {}),
-        },
-      });
-      if (finalLevel) {
+        let status: 'approved' | 'pending_vp_approval' | 'pending_ceo_approval' = 'approved';
+        let level: 'vp' | 'ceo' | null = null;
+        let threshold: number | null = null;
+        if (ceoThreshold != null && approvedCents > ceoThreshold) {
+          status = 'pending_ceo_approval';
+          level = 'ceo';
+          threshold = ceoThreshold;
+        } else if (vpThreshold != null && approvedCents > vpThreshold) {
+          status = 'pending_vp_approval';
+          level = 'vp';
+          threshold = vpThreshold;
+        }
+
+        const eng = await db.engagement.update({
+          where: { id: engagementId },
+          data: {
+            approvedPriceCents: BigInt(approvedCents),
+            status,
+          },
+          select: { id: true, approvedPriceCents: true, status: true },
+        });
+        // Mirror onto engagement_quotes too. We write the approved price
+        // even when status is pending_*_approval — the manager's choice
+        // is captured; final-approver's act just unblocks the status.
+        await db.engagementQuote.updateMany({
+          where: { engagementId },
+          data: {
+            approvedPriceCents: BigInt(approvedCents),
+            approvedAt: new Date(),
+            approvedBy: req.user.sub,
+          },
+        });
         await this.thread.emitWithin(db, req.tenantId, {
           engagementId,
-          eventType: 'final_approval_requested',
+          eventType,
           actorType: 'user',
           actorId: req.user.sub,
           payload: {
-            level: finalLevel,
+            predictionId: prediction.id,
+            choice: dto.choice,
             approvedPriceCents: approvedCents,
-            thresholdCents: finalThreshold,
+            basePriceCents: prediction.basePriceCents,
+            predictedPriceCents: prediction.predictedPriceCents,
+            regime: prediction.regime,
+            ...(comment ? { comment } : {}),
           },
         });
-      }
-      return eng;
-    });
+        if (level) {
+          await this.thread.emitWithin(db, req.tenantId, {
+            engagementId,
+            eventType: 'final_approval_requested',
+            actorType: 'user',
+            actorId: req.user.sub,
+            payload: {
+              level,
+              approvedPriceCents: approvedCents,
+              thresholdCents: threshold,
+            },
+          });
+        }
+        return { updated: eng, targetStatus: status, finalLevel: level, finalThreshold: threshold };
+      },
+    );
 
     void this.thread.dispatchAfterCommit(req.tenantId, {
       engagementId,

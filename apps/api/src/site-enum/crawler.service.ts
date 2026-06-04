@@ -15,6 +15,8 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 
+import { safeFetch, SsrfError } from './ssrf-guard';
+
 /** Polite UA so server logs can identify and contact us. */
 const CRAWLER_UA =
   'RhudSiteEnumerator/1.0 (+https://rhud.app/site-enumeration; contact=support@rhud.app)';
@@ -458,9 +460,10 @@ export class CrawlerService {
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), PAGE_TIMEOUT_MS);
         try {
-          const res = await fetch(url, {
+          // safeFetch validates the target host (and every redirect hop) is
+          // public before connecting — blocks SSRF to metadata/internal IPs.
+          const res = await safeFetch(url, {
             method: 'GET',
-            redirect: 'follow',
             headers: { 'user-agent': CRAWLER_UA, accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5' },
             signal: ctrl.signal,
           });
@@ -478,6 +481,9 @@ export class CrawlerService {
           clearTimeout(t);
         }
       } catch (e) {
+        // A blocked (private/internal) target will never become public — fail
+        // immediately rather than burning the retry budget.
+        if (e instanceof SsrfError) throw e;
         lastErr = e;
         // Network error — back off and retry unless we've blown attempts.
         if (attempt === MAX_RETRIES) break;

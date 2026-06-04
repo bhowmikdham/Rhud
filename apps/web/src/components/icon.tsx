@@ -78,6 +78,9 @@ export const Icon = {
   MoreHorizontal: makeIcon(<><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></>),
   Hash: makeIcon(<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18" />),
   Refresh: makeIcon(<><path d="M21 12a9 9 0 1 1-3-6.7L21 8" /><path d="M21 3v5h-5" /></>),
+  Sun: makeIcon(<><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></>),
+  Moon: makeIcon(<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />),
+  Monitor: makeIcon(<><rect x="3" y="4" width="18" height="13" rx="1.5" /><path d="M8 21h8M12 17v4" /></>),
 } as const;
 
 export type IconName = keyof typeof Icon;

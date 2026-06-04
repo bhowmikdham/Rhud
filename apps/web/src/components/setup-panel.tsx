@@ -146,19 +146,19 @@ export function SetupPanel() {
         onClick={() => setCollapsed(false)}
         title={allDone ? 'Workspace overview' : `Setup: ${doneCount} of ${steps.length} done`}
         style={{
-          position: 'fixed', right: 16, bottom: 16, zIndex: 50,
+          position: 'fixed', right: 16, bottom: 16, zIndex: 'var(--z-dropdown)',
           appearance: 'none', cursor: 'pointer',
           display: 'flex', alignItems: 'center', gap: 8,
           padding: '8px 12px',
           background: 'var(--bg)',
           border: '1px solid var(--border)',
           borderRadius: 999,
-          boxShadow: '0 6px 20px rgba(0,0,0,.10), 0 1px 3px rgba(0,0,0,.06)',
+          boxShadow: 'var(--shadow-md)',
           fontSize: 12, fontWeight: 500, color: 'var(--fg)',
           transition: 'transform .15s, box-shadow .15s',
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = '0 10px 26px rgba(0,0,0,.12), 0 2px 4px rgba(0,0,0,.08)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 6px 20px rgba(0,0,0,.10), 0 1px 3px rgba(0,0,0,.06)'; }}
+        onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = 'var(--shadow-lg)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'var(--shadow-md)'; }}
       >
         <ProgressDots done={doneCount} total={steps.length} compact />
         <span>{allDone ? 'Workspace' : `Setup ${doneCount}/${steps.length}`}</span>
@@ -172,12 +172,12 @@ export function SetupPanel() {
       role="complementary"
       aria-label="Workspace setup"
       style={{
-        position: 'fixed', right: 16, bottom: 16, zIndex: 50,
+        position: 'fixed', right: 16, bottom: 16, zIndex: 'var(--z-dropdown)',
         width: 300,
         background: 'var(--bg)',
         border: '1px solid var(--border)',
         borderRadius: 12,
-        boxShadow: '0 12px 32px rgba(0,0,0,.12), 0 2px 6px rgba(0,0,0,.06)',
+        boxShadow: 'var(--shadow-lg)',
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}

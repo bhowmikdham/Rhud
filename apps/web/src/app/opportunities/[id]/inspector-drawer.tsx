@@ -53,7 +53,7 @@ export function InspectorDrawer({
     <Portal>
       <div
         style={{
-          position: 'fixed', inset: 0, zIndex: 70,
+          position: 'fixed', inset: 0, zIndex: 'var(--z-drawer)',
           display: 'flex', justifyContent: 'flex-end',
           background: mounted ? 'color-mix(in oklch, black 35%, transparent)' : 'transparent',
           transition: 'background 180ms ease-out',

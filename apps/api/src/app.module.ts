@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { DbModule } from './db/db.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { TemplatesModule } from './templates/templates.module.js';
@@ -32,6 +34,19 @@ import { HealthController } from './health.controller.js';
       // We validate with zod in ./config/env.ts on boot; leave Nest's
       // ConfigModule as a simple env provider.
     }),
+    // Per-IP rate limiting. Global module → ThrottlerGuard is usable on any
+    // controller. Baseline 60 req/min; the auth + gathering controllers apply
+    // tighter per-route limits. Behind a proxy this keys on req.ip, which is
+    // correct only with `trust proxy` set (see main.ts).
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
+    // App-wide scheduler foundation. Registering forRoot() once here turns on
+    // @Cron/@Interval discovery for every feature module. First consumer: the
+    // nightly audit-chain seal (AuditModule → AuditSealService). The existing
+    // cross-tenant retry sweepers in UnscopedDb (extraction/site-enum retries,
+    // email-cache purge) are written but currently unfired — they hang off this
+    // same foundation next. Idempotency/retry via a real queue (BullMQ/Redis)
+    // is the deferred hardening step; v1 relies on single-node serialization.
+    ScheduleModule.forRoot(),
     DbModule,
     NotificationsModule,
     ThreadModule,

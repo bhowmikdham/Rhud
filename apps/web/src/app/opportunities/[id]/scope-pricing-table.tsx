@@ -218,7 +218,12 @@ export function ScopePricingTable({
             </tr>
           </thead>
           <tbody>
+            {/* `editableSlugs === null` means the doc → slug map is still being
+                fetched, so we don't yet know which rows are editable. Render
+                those rows with a disabled input (stable shape) so resolution
+                only toggles `disabled`, never the layout — see ScopeRow. */}
             {baseBreakdown.map((line) => {
+              const loading = editableSlugs === null;
               const target = editableSlugs?.get(line.serviceLineSlug) ?? null;
               const editable = canEdit && !!target;
               return (
@@ -227,6 +232,8 @@ export function ScopePricingTable({
                   line={line}
                   currency={currency}
                   editable={editable}
+                  canEdit={canEdit}
+                  loading={loading}
                   target={target}
                   optimisticValue={optimistic[line.entityId]}
                   saving={savingId === line.entityId}
@@ -309,6 +316,8 @@ function ScopeRow({
   line,
   currency,
   editable,
+  canEdit,
+  loading,
   target,
   optimisticValue,
   saving,
@@ -320,6 +329,12 @@ function ScopeRow({
   line: ScopeLine;
   currency: string;
   editable: boolean;
+  /** The user may edit in principle (RLS/role) — independent of whether this
+   *  specific line resolved to an override target yet. */
+  canEdit: boolean;
+  /** The editability lookup hasn't resolved; render a disabled input so the
+   *  row's shape is stable and only `disabled` flips once we know. */
+  loading: boolean;
   target: OverrideTarget | null;
   optimisticValue: number | undefined;
   saving: boolean;
@@ -328,6 +343,12 @@ function ScopeRow({
   onSave: (line: BasePriceLine, nextValue: number, target: OverrideTarget) => void | Promise<void>;
   onSaveMethodology: (line: BasePriceLine, nextValue: string | null, target: OverrideTarget) => void | Promise<void>;
 }) {
+  // Show the number input for any line the user could edit (during loading we
+  // don't yet know per-line, so optimistically show it disabled) and for lines
+  // that resolved to an override target. Derived/read-only lines render the
+  // value instead. Keeping both branches the same height avoids a layout shift
+  // when the lookup resolves.
+  const showInput = canEdit && (loading || !!target);
   // The number the reviewer sees: optimistic shadow if present, else the
   // authoritative server value. The text input is controlled from this.
   const serverValue = optimisticValue ?? line.scopeValue;
@@ -385,7 +406,7 @@ function ScopeRow({
 
       {/* Scope: editable number input + unit, or read-only value */}
       <td data-label="Scope" style={cellStyle}>
-        {editable ? (
+        {showInput ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
             <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
               <input
@@ -397,7 +418,8 @@ function ScopeRow({
                 step={1}
                 value={draft}
                 aria-label={`Scope value for ${line.serviceLineName}, in ${line.scopeUnit}`}
-                disabled={saving}
+                aria-busy={loading}
+                disabled={saving || loading}
                 onChange={(e) => setDraft(e.target.value)}
                 onBlur={commit}
                 onKeyDown={(e) => {
@@ -449,9 +471,11 @@ function ScopeRow({
             <span style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>{line.scopeUnit}</span>
           </span>
         ) : (
-          <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          // Same min-height as the input so a derived line resolving from the
+          // loading placeholder doesn't change the row height.
+          <span style={{ fontVariantNumeric: 'tabular-nums', display: 'inline-flex', alignItems: 'center', minHeight: 28 }}>
             <b style={{ color: 'var(--fg)' }}>{serverValue}</b>{' '}
-            <span style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>{line.scopeUnit}</span>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-muted)', marginLeft: 4 }}>{line.scopeUnit}</span>
           </span>
         )}
       </td>

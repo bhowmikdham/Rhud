@@ -1,4 +1,4 @@
-import { Controller, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
@@ -7,10 +7,11 @@ import { AuditService } from './audit.service.js';
 /**
  * Admin-only audit ops.
  *
- * `build` is normally invoked by a scheduled job (nightly per design doc).
+ * `build` is normally invoked by the nightly seal cron (AuditSealService).
  * Exposing it as a manual endpoint lets ops re-run it after maintenance,
  * lets the smoke test exercise it deterministically, and gives compliance
- * reviewers a way to compute on demand. Same for `verify`.
+ * reviewers a way to compute on demand. Same for `verify`. `status` is the
+ * read model behind the admin "audit health" badge.
  */
 @Controller('audit')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -29,5 +30,11 @@ export class AuditController {
   @HttpCode(200)
   verify(@Req() req: AuthedRequest) {
     return this.svc.verify(req.tenantId);
+  }
+
+  /** Chain health for the admin badge: link count, last sealed-at, verify. */
+  @Get('status')
+  status(@Req() req: AuthedRequest) {
+    return this.svc.status(req.tenantId);
   }
 }

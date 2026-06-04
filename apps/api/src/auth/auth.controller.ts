@@ -1,6 +1,7 @@
 import { Body, Controller, Get, HttpCode, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service.js';
 import {
+  AvatarPresignDto,
   ConsumeMagicLinkDto,
   LoginDto,
   RequestMagicLinkDto,
@@ -11,14 +12,20 @@ import {
   VerifyEmailDto,
 } from './dto.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { AuthedRequest, JwtPayload, MeResponse } from './auth.types.js';
 
 @Controller('auth')
+// Rate-limit the whole auth surface per client IP. The unauthenticated and
+// token-consuming routes get tighter per-route overrides below — this is the
+// brute-force / account-enumeration / token-flood mitigation (auth-3).
+@UseGuards(ThrottlerGuard)
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Post('login')
   @HttpCode(200)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async login(@Body() dto: LoginDto): Promise<{ token: string; user: JwtPayload }> {
     return this.auth.loginWithPassword(dto.email, dto.password);
   }
@@ -31,6 +38,7 @@ export class AuthController {
    */
   @Post('magic-link/request')
   @HttpCode(202)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async requestMagicLink(
     @Body() dto: RequestMagicLinkDto,
   ): Promise<{ ok: true; devToken?: string }> {
@@ -43,6 +51,7 @@ export class AuthController {
 
   @Post('magic-link/consume')
   @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   async consumeMagicLink(
     @Body() dto: ConsumeMagicLinkDto,
   ): Promise<{ token: string; user: JwtPayload }> {
@@ -56,6 +65,7 @@ export class AuthController {
    */
   @Post('signup')
   @HttpCode(201)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async signup(@Body() dto: SignupDto): Promise<{ ok: true; devToken?: string }> {
     return this.auth.signup({
       email: dto.email,
@@ -74,6 +84,7 @@ export class AuthController {
    */
   @Post('verify-email')
   @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   async verifyEmail(@Body() dto: VerifyEmailDto): Promise<{ token: string; user: JwtPayload }> {
     return this.auth.verifyEmail(dto.token);
   }
@@ -84,6 +95,7 @@ export class AuthController {
    */
   @Post('password/reset/request')
   @HttpCode(202)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async requestPasswordReset(
     @Body() dto: RequestPasswordResetDto,
   ): Promise<{ ok: true; devToken?: string }> {
@@ -100,6 +112,7 @@ export class AuthController {
    */
   @Post('password/reset/consume')
   @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   async resetPassword(
     @Body() dto: ResetPasswordDto,
   ): Promise<{ token: string; user: JwtPayload }> {
@@ -112,8 +125,8 @@ export class AuthController {
     return this.auth.getMyProfile(req.user);
   }
 
-  /** Update the signed-in user's own profile (currently just display
-   *  name). Returns the same shape as GET /me so the client can swap
+  /** Update the signed-in user's own profile (display name + profile
+   *  photo). Returns the same shape as GET /me so the client can swap
    *  state without a re-fetch. */
   @Patch('me')
   @UseGuards(JwtAuthGuard)
@@ -123,6 +136,23 @@ export class AuthController {
   ): Promise<MeResponse> {
     return this.auth.updateMyProfile(req.user, {
       ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.avatarKey !== undefined ? { avatarKey: dto.avatarKey } : {}),
+    });
+  }
+
+  /** Get a signed PUT url to upload a new profile photo. The client PUTs
+   *  the image to `uploadUrl`, then PATCHes /auth/me with the returned
+   *  `key` to persist it. */
+  @Post('avatar/presign')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(200)
+  presignAvatar(
+    @Req() req: AuthedRequest,
+    @Body() dto: AvatarPresignDto,
+  ): Promise<{ uploadUrl: string; key: string; expiresAt: string }> {
+    return this.auth.presignAvatar(req.user, {
+      contentType: dto.contentType,
+      ...(dto.filename !== undefined ? { filename: dto.filename } : {}),
     });
   }
 }

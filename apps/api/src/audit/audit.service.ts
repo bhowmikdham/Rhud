@@ -143,6 +143,34 @@ export class AuditService {
       return { ok: true as const, links: links.length };
     });
   }
+
+  /**
+   * Lightweight chain status for the admin "audit health" badge: how many
+   * links exist, the last sealed link (sequence + the createdAt of the last
+   * event it covers), and a fresh verify result. `verify()` is O(events) but
+   * this is admin-only and infrequent, so re-deriving on read is fine.
+   */
+  async status(tenantId: string): Promise<{
+    links: number;
+    lastSequence: number | null;
+    lastSealedAt: string | null;
+    verify: Awaited<ReturnType<AuditService['verify']>>;
+  }> {
+    const head = await this.tenantDb.run(tenantId, async (db) => {
+      const last = await db.auditChainLink.findFirst({
+        where: { tenantId },
+        orderBy: { sequence: 'desc' },
+      });
+      const links = await db.auditChainLink.count({ where: { tenantId } });
+      return {
+        links,
+        lastSequence: last?.sequence ?? null,
+        lastSealedAt: last?.toCreatedAt.toISOString() ?? null,
+      };
+    });
+    const verify = await this.verify(tenantId);
+    return { ...head, verify };
+  }
 }
 
 // ── Hashing primitives ──────────────────────────────────────────────────────

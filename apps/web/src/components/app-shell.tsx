@@ -8,6 +8,7 @@ import { opportunities } from '@/lib/api';
 import { Icon } from './icon';
 import { OnboardingTour } from './onboarding-tour';
 import { SetupPanel } from './setup-panel';
+import { ThemeToggle, ThemeSegmented } from './theme-toggle';
 
 interface NavItem {
   href: string;
@@ -52,9 +53,7 @@ export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
   const tenantInitial = (tenant?.name ?? 'W').slice(0, 1).toUpperCase();
 
   const displayName = displayNameFor(user);
-  const initials = user ? initialsFor(user) : '··';
   const role = user?.role.replace('_', ' ') ?? '';
-  const userColor = roleColor(user?.role);
 
   // Active opportunities badge — counts anything not closed/sent/rejected/expired.
   const [openCount, setOpenCount] = useState<number | null>(null);
@@ -99,7 +98,7 @@ export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
           title={`Workspace: ${tenantName}`}
           style={{ textDecoration: 'none', color: 'inherit' }}
         >
-          <div className="workspace-avatar">{tenantInitial}</div>
+          <WorkspaceLogo url={tenant?.logoUrl ?? null} initial={tenantInitial} />
           <div className="workspace-name">{tenantName}</div>
           <Icon.ChevronDown size={12} />
         </Link>
@@ -120,7 +119,7 @@ export function AppShell({ children, crumbs = [], topbarActions }: ShellProps) {
 
         <div className="sidebar-bottom">
           <Link href="/settings" className="sidebar-user" style={{ textDecoration: 'none', color: 'inherit' }}>
-            <div className="avatar sm" style={{ background: userColor }}>{initials}</div>
+            <UserAvatar user={user} className="avatar sm" />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="sidebar-user-name">{user ? displayName : 'Not signed in'}</div>
               <div className="sidebar-user-role">{role}</div>
@@ -169,8 +168,6 @@ function Topbar({
   }, [menu]);
 
   const displayName = displayNameFor(user);
-  const initials = user ? initialsFor(user) : '··';
-  const userColor = roleColor(user?.role);
   const role = user?.role.replace('_', ' ') ?? '';
 
   return (
@@ -198,6 +195,8 @@ function Topbar({
       )}
       <div className="topbar-spacer" />
       {topbarActions}
+
+      <ThemeToggle />
 
       <div style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} />
 
@@ -236,9 +235,7 @@ function Topbar({
             transition: 'background .15s, border-color .15s',
           }}
         >
-          <div className="avatar sm" style={{ background: userColor, width: 22, height: 22, fontSize: 9.5 }}>
-            {initials}
-          </div>
+          <UserAvatar user={user} className="avatar sm" style={{ width: 22, height: 22, fontSize: 9.5 }} />
           <div style={{ textAlign: 'left', lineHeight: 1.15 }}>
             <div style={{ fontSize: 11.5, fontWeight: 500 }}>{user ? displayName : '—'}</div>
             <div style={{ fontSize: 9.5, color: 'var(--fg-subtle)' }}>{role}</div>
@@ -254,14 +251,14 @@ function Topbar({
               background: 'var(--bg)',
               border: '1px solid var(--border)',
               borderRadius: 10,
-              boxShadow: '0 10px 30px rgba(0,0,0,.08), 0 2px 6px rgba(0,0,0,.04)',
+              boxShadow: 'var(--shadow-lg)',
               padding: 6,
-              zIndex: 100,
+              zIndex: 'var(--z-modal)',
             }}
           >
             <div style={{ padding: '10px 10px 8px', borderBottom: '1px solid var(--divider)', marginBottom: 4 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div className="avatar" style={{ background: userColor }}>{initials}</div>
+                <UserAvatar user={user} className="avatar" />
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {displayName}
@@ -279,11 +276,16 @@ function Topbar({
               </div>
             </div>
 
+            <div style={{ padding: '4px 10px 8px' }}>
+              <div className="section-label" style={{ marginBottom: 6 }}>Appearance</div>
+              <ThemeSegmented />
+            </div>
+            <div style={{ borderTop: '1px solid var(--divider)', margin: '4px 0' }} />
+
             {[
               { icon: <Icon.User size={13} />,   label: 'Account settings', tab: 'account' },
               { icon: <Icon.Globe size={13} />,  label: 'Workspace',        tab: 'workspace' },
               { icon: <Icon.Bell size={13} />,   label: 'Notifications',    tab: 'notifications' },
-              { icon: <Icon.Shield size={13} />, label: 'Security',         tab: 'security' },
             ].map((m) => (
               <button
                 key={m.label}
@@ -378,4 +380,45 @@ function initialsFor(user: AuthUser): string {
     return parts[0]!.slice(0, 2).toUpperCase();
   }
   return user.email.slice(0, 2).toUpperCase();
+}
+
+/** User avatar — renders the uploaded photo when present, else the
+ *  initials badge tinted by role. Keeps the existing `.avatar` sizing
+ *  classes so every call site looks identical to before. */
+function UserAvatar({ user, className, style }: {
+  user: AuthUser | null;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const url = user?.avatarUrl ?? null;
+  // Degrade to initials if the signed url fails (e.g. a very long session
+  // outliving the GET signature) instead of showing a broken-image icon.
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [url]);
+  const showImg = !!url && !failed;
+  return (
+    <div
+      className={className}
+      style={{ background: showImg ? 'var(--bg-sunk)' : roleColor(user?.role), overflow: 'hidden', ...style }}
+    >
+      {showImg
+        ? <img src={url!} alt="" onError={() => setFailed(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        : (user ? initialsFor(user) : '··')}
+    </div>
+  );
+}
+
+/** Workspace logo — renders the uploaded logo when present, else the
+ *  workspace initial. Falls back to the initial if the signed url fails. */
+function WorkspaceLogo({ url, initial }: { url: string | null; initial: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [url]);
+  const showImg = !!url && !failed;
+  return (
+    <div className="workspace-avatar" style={{ overflow: 'hidden' }}>
+      {showImg
+        ? <img src={url!} alt="" onError={() => setFailed(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        : initial}
+    </div>
+  );
 }

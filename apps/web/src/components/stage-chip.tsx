@@ -11,6 +11,13 @@ const TONE: Record<string, { chip: string; label: string; icon: keyof typeof Ico
   submitted:        { chip: 'ok',     label: 'Submitted',        icon: 'Send' },
   predicted:        { chip: 'accent', label: 'Priced',           icon: 'Sparkle' },
   pending_approval: { chip: 'warn',   label: 'Awaiting approval',icon: 'Clock' },
+  // Tiered sign-offs above the manager threshold.
+  pending_vp_approval:  { chip: 'warn', label: 'VP approval',    icon: 'Clock' },
+  pending_ceo_approval: { chip: 'warn', label: 'CEO approval',   icon: 'Clock' },
+  // Reviewer holds — the opportunity is paused mid-pricing until sales acts.
+  returned_to_sales:     { chip: 'warn', label: 'Returned to sales',     icon: 'Clock' },
+  awaiting_clarification:{ chip: 'warn', label: 'Awaiting clarification', icon: 'Clock' },
+  escalated:             { chip: 'warn', label: 'Escalated',             icon: 'Clock' },
   approved:         { chip: 'ok',     label: 'Approved',         icon: 'Check' },
   drafting:         { chip: '',       label: 'Drafting',         icon: 'Sparkles' },
   draft_ready:      { chip: 'accent', label: 'Draft ready',      icon: 'FileText' },

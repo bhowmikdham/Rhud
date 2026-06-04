@@ -108,7 +108,7 @@ export default function OpportunityPreviewPage() {
           role="status"
           style={{
             position: 'fixed', bottom: 22, left: '50%', transform: 'translateX(-50%)',
-            zIndex: 80, background: 'var(--fg)', color: 'var(--bg)',
+            zIndex: 'var(--z-toast)', background: 'var(--fg)', color: 'var(--bg)',
             padding: '10px 16px', borderRadius: 999, fontSize: 12.5, fontWeight: 500,
             boxShadow: 'var(--shadow-lg)', display: 'inline-flex', alignItems: 'center', gap: 8,
             maxWidth: '90vw',
@@ -271,7 +271,7 @@ function StageHeader({
   return (
     <div
       style={{
-        position: 'sticky', top: 12, zIndex: 20,
+        position: 'sticky', top: 12, zIndex: 'var(--z-sticky)',
         background: 'var(--bg-elev)', border: '1px solid var(--border)',
         borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-sm)',
         padding: '14px 16px',

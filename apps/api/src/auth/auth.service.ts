@@ -8,12 +8,14 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { Role } from '@rhud/shared';
 import { isRole } from '@rhud/shared';
 import { TenantDb } from '../db/with-tenant.js';
 import { UnscopedDb } from '../db/unscoped-db.js';
 import { EmailService } from '../email/email.service.js';
+import { S3Service } from '../storage/s3.service.js';
+import { isAllowedImageType } from '../storage/media.js';
 import { loadEnv } from '../config/env.js';
 import type { JwtPayload, MeResponse } from './auth.types.js';
 
@@ -21,6 +23,9 @@ import type { JwtPayload, MeResponse } from './auth.types.js';
 const VERIFY_TTL_HOURS = 24;
 /** Default password-reset window: 60 minutes. */
 const RESET_TTL_MINUTES = 60;
+/** Signed-GET TTL for avatar urls. Long enough to outlive an open tab
+ *  between profile re-fetches; re-signed on every GET /auth/me. */
+const AVATAR_URL_TTL_SECONDS = 6 * 3600;
 
 /**
  * Auth sits at the boundary where we receive credentials but don't yet know
@@ -36,6 +41,7 @@ export class AuthService {
     private readonly tenantDb: TenantDb,
     private readonly jwt: JwtService,
     private readonly email: EmailService,
+    private readonly s3: S3Service,
   ) {}
 
   async loginWithPassword(
@@ -196,9 +202,14 @@ export class AuthService {
         where: { id: matched!.id },
         data: { consumedAt: new Date() },
       });
+      // Bump tokenVersion so every other outstanding session for this user is
+      // invalidated by the reset (the freshly-issued token below carries the
+      // new value and stays valid).
       return db.user.update({
         where: { id: matched!.userId },
-        data: { passwordHash: newHash },
+        // Completing a reset proves email control (the link was emailed there),
+        // so treat it as verification too — same rationale as magic-link.
+        data: { passwordHash: newHash, tokenVersion: { increment: 1 }, emailVerified: true },
       });
     });
 
@@ -207,6 +218,7 @@ export class AuthService {
       tenantId: user.tenantId,
       email: user.email,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     });
   }
 
@@ -262,7 +274,14 @@ export class AuthService {
         where: { id: matched!.id },
         data: { consumedAt: new Date() },
       });
-      return db.user.findUniqueOrThrow({ where: { id: matched!.userId } });
+      // Consuming a magic link proves control of the email (the token was
+      // emailed there), so treat it as verification. Closes the path where an
+      // unverified self-serve signup gets a full session without ever proving
+      // email ownership, and keeps emailVerified consistent for later logins.
+      return db.user.update({
+        where: { id: matched!.userId },
+        data: { emailVerified: true },
+      });
     });
 
     return this.issueJwt({
@@ -270,18 +289,20 @@ export class AuthService {
       tenantId: user.tenantId,
       email: user.email,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     });
   }
 
   // ── Profile (self) ────────────────────────────────────────────────
 
   /** GET /auth/me — enriched view of the signed-in user. Reads the row
-   *  from the DB so we can surface `name` (which is not in the JWT). */
+   *  from the DB so we can surface `name` + `avatarUrl` (neither is in
+   *  the JWT). */
   async getMyProfile(actor: JwtPayload): Promise<MeResponse> {
     const row = await this.tenantDb.run(actor.tid, async (db) =>
       db.user.findUnique({
         where: { id: actor.sub },
-        select: { id: true, email: true, name: true, role: true, tenantId: true },
+        select: { id: true, email: true, name: true, role: true, tenantId: true, avatarKey: true },
       }),
     );
     if (!row) throw new NotFoundException('user_not_found');
@@ -292,21 +313,38 @@ export class AuthService {
       email: row.email,
       role: row.role as Role,
       name: row.name,
+      avatarUrl: await this.resolveAvatarUrl(row.avatarKey),
     };
   }
 
   /** PATCH /auth/me — user updates their own profile. Trim + length-cap
    *  matches the dto; empty-after-trim clears the name (falls back to
-   *  the email local-part in the UI). */
+   *  the email local-part in the UI). `avatarKey` is the S3 key the client
+   *  just uploaded to (verified to sit under the caller's own prefix);
+   *  null clears the photo. */
   async updateMyProfile(
     actor: JwtPayload,
-    patch: { name?: string },
+    patch: { name?: string; avatarKey?: string | null },
   ): Promise<MeResponse> {
-    const data: { name?: string | null } = {};
+    const data: { name?: string | null; avatarKey?: string | null } = {};
     if (patch.name !== undefined) {
       const trimmed = patch.name.trim();
       if (trimmed.length > 120) throw new BadRequestException('name_too_long');
       data.name = trimmed.length === 0 ? null : trimmed;
+    }
+    if (patch.avatarKey !== undefined) {
+      if (patch.avatarKey === null) {
+        data.avatarKey = null;
+      } else {
+        // Security: a client could otherwise PATCH an arbitrary S3 key and
+        // obtain a signed-GET url to another tenant's object. Only accept
+        // keys under this user's own avatar prefix.
+        const prefix = S3Service.avatarPrefixForUser({ tenantId: actor.tid, userId: actor.sub });
+        if (!patch.avatarKey.startsWith(prefix)) {
+          throw new BadRequestException('avatar_key_invalid');
+        }
+        data.avatarKey = patch.avatarKey;
+      }
     }
     if (Object.keys(data).length === 0) {
       throw new BadRequestException('no_fields_to_update');
@@ -315,7 +353,7 @@ export class AuthService {
       db.user.update({
         where: { id: actor.sub },
         data,
-        select: { id: true, email: true, name: true, role: true, tenantId: true },
+        select: { id: true, email: true, name: true, role: true, tenantId: true, avatarKey: true },
       }),
     );
     if (!isRole(row.role)) throw new UnauthorizedException('invalid_user_role');
@@ -326,7 +364,39 @@ export class AuthService {
       email: row.email,
       role: row.role as Role,
       name: row.name,
+      avatarUrl: await this.resolveAvatarUrl(row.avatarKey),
     };
+  }
+
+  /** POST /auth/avatar/presign — hand back a signed PUT url for the
+   *  caller's new profile photo. The returned `key` is echoed back to
+   *  PATCH /auth/me once the client finishes the upload. */
+  async presignAvatar(
+    actor: JwtPayload,
+    args: { contentType: string; filename?: string },
+  ): Promise<{ uploadUrl: string; key: string; expiresAt: string }> {
+    if (!isAllowedImageType(args.contentType)) {
+      throw new BadRequestException('unsupported_image_type');
+    }
+    const key = S3Service.keyForUserAvatar({
+      tenantId: actor.tid,
+      userId: actor.sub,
+      uploadId: randomUUID(),
+      filename: args.filename?.trim() || 'avatar',
+    });
+    const { url, expiresAt } = await this.s3.presignPut({ key, contentType: args.contentType });
+    return { uploadUrl: url, key, expiresAt };
+  }
+
+  /** Resolve a stored avatar key to a short-lived signed GET url. */
+  private async resolveAvatarUrl(key: string | null): Promise<string | null> {
+    if (!key) return null;
+    try {
+      return await this.s3.presignGet({ key, expiresInSeconds: AVATAR_URL_TTL_SECONDS });
+    } catch {
+      // Never fail the whole profile read because signing hiccuped.
+      return null;
+    }
   }
 
   private issueJwt(user: {
@@ -334,6 +404,7 @@ export class AuthService {
     tenantId: string;
     email: string;
     role: string;
+    tokenVersion: number;
   }): { token: string; user: JwtPayload } {
     if (!isRole(user.role)) throw new UnauthorizedException('invalid_user_role');
     const payload: JwtPayload = {
@@ -341,6 +412,7 @@ export class AuthService {
       tid: user.tenantId,
       role: user.role as Role,
       email: user.email,
+      tv: user.tokenVersion,
     };
     return { token: this.jwt.sign(payload), user: payload };
   }

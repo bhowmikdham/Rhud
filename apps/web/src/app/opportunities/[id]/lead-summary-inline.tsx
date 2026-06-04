@@ -294,7 +294,7 @@ export function LeadSummaryInline({ engagementId }: Props) {
 function UrgencyTag({ urgency }: { urgency: SummaryNextAction['urgency'] }) {
   const map: Record<SummaryNextAction['urgency'], { bg: string; fg: string; label: string }> = {
     low:    { bg: 'transparent',                                       fg: 'var(--fg-muted)', label: 'low' },
-    medium: { bg: 'color-mix(in oklch, #c80 14%, transparent)',        fg: '#a60',            label: 'med' },
+    medium: { bg: 'color-mix(in oklch, var(--warn) 14%, transparent)',  fg: 'var(--warn)',     label: 'med' },
     high:   { bg: 'var(--danger-tint)',                                fg: 'var(--danger)',   label: 'high' },
   };
   const s = map[urgency];
@@ -387,7 +387,7 @@ function ManualPanel({
 function RiskPill({ risk }: { risk: SummaryRiskLevel }) {
   const map: Record<SummaryRiskLevel, { bg: string; fg: string; label: string }> = {
     low:    { bg: 'var(--ok-tint)',    fg: 'var(--ok)',    label: 'Low risk' },
-    medium: { bg: 'color-mix(in oklch, #c80 18%, transparent)', fg: '#a60', label: 'Medium risk' },
+    medium: { bg: 'color-mix(in oklch, var(--warn) 18%, transparent)', fg: 'var(--warn)', label: 'Medium risk' },
     high:   { bg: 'var(--danger-tint)', fg: 'var(--danger)', label: 'High risk' },
   };
   const s = map[risk];
@@ -401,7 +401,7 @@ function RiskPill({ risk }: { risk: SummaryRiskLevel }) {
 }
 
 function UrgencyDot({ urgency }: { urgency: SummaryNextAction['urgency'] }) {
-  const colors = { low: 'var(--fg-muted)', medium: '#c80', high: 'var(--danger)' };
+  const colors = { low: 'var(--fg-muted)', medium: 'var(--warn)', high: 'var(--danger)' };
   return (
     <span style={{
       display: 'inline-block', width: 7, height: 7, borderRadius: '50%',

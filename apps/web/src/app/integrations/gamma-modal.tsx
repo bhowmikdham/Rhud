@@ -129,7 +129,7 @@ export function GammaConnectModal({ onClose }: Props) {
       style={{
         position: 'fixed', inset: 0,
         background: 'color-mix(in oklch, black 40%, transparent)',
-        display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+        display: 'grid', placeItems: 'center', zIndex: 'var(--z-modal)', padding: 16,
       }}
       onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
     >

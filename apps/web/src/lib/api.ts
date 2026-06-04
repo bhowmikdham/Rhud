@@ -52,6 +52,7 @@ import type {
   SummaryRiskLevel,
   OpenTicketSummary,
   UpcomingFollowUp,
+  TenantNotificationConfig,
 } from '@rhud/shared';
 
 export type {
@@ -209,6 +210,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return parsed as T;
 }
 
+/**
+ * PUT a file straight to a presigned S3 url. The API never proxies these
+ * bytes (see the two-step presign flow used by ingest + avatar/logo
+ * uploads). Throws a plain Error on a non-2xx so callers can surface it.
+ */
+export async function uploadToSignedUrl(uploadUrl: string, file: File | Blob): Promise<void> {
+  const res = await fetch(uploadUrl, {
+    method: 'PUT',
+    // Must match the Content-Type the url was signed with, or S3 rejects
+    // the PUT with a SignatureDoesNotMatch error.
+    headers: { 'content-type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  if (!res.ok) {
+    throw new Error(`upload failed (${res.status})`);
+  }
+}
+
 // ── Auth ────────────────────────────────────────────────────────────────────
 
 export interface AuthMe {
@@ -219,6 +238,10 @@ export interface AuthMe {
   /** Optional display name. Null when the user hasn't set one — UI
    *  falls back to the email local-part. */
   name: string | null;
+  /** Short-lived signed GET url for the profile photo, or null. The UI
+   *  renders it in the sidebar / topbar / Account tab, falling back to
+   *  initials when null. */
+  avatarUrl: string | null;
 }
 
 export const auth = {
@@ -231,12 +254,22 @@ export const auth = {
   async me() {
     return request<AuthMe>('/auth/me');
   },
-  /** Update the signed-in user's own profile. Send `name: ''` to clear. */
-  async updateMe(patch: { name?: string }) {
+  /** Update the signed-in user's own profile. Send `name: ''` to clear the
+   *  name; send `avatarKey: null` to remove the photo. `avatarKey` is the
+   *  key returned by `avatarPresign` after the client PUTs the image. */
+  async updateMe(patch: { name?: string; avatarKey?: string | null }) {
     return request<AuthMe>('/auth/me', {
       method: 'PATCH',
       body: JSON.stringify(patch),
     });
+  },
+  /** Step 1 of avatar upload: get a signed PUT url + the object key.
+   *  Client PUTs the image to `uploadUrl`, then calls `updateMe({ avatarKey })`. */
+  async avatarPresign(dto: { contentType: string; filename?: string }) {
+    return request<{ uploadUrl: string; key: string; expiresAt: string }>(
+      '/auth/avatar/presign',
+      { method: 'POST', body: JSON.stringify(dto) },
+    );
   },
   /**
    * Request a magic sign-in link. Always resolves successfully — the API
@@ -864,11 +897,9 @@ export const quotes = {
     request<EngagementQuote | null>(`/opportunities/${engagementId}/quote/recompute`, {
       method: 'POST',
     }),
-  approve: (engagementId: string, approvedPriceCents: number) =>
-    request<EngagementQuote>(`/opportunities/${engagementId}/quote/approve`, {
-      method: 'POST',
-      body: JSON.stringify({ approvedPriceCents }),
-    }),
+  // Final price approval is intentionally NOT exposed here. It flows through
+  // predictions.approve(), which enforces the VP/CEO threshold gating that the
+  // (removed) quote-level approve endpoint bypassed (authz-boundary-2).
 };
 
 // ── Adaptive pricing — predictions, regime cascade, approval ────────────────
@@ -1034,6 +1065,11 @@ export interface TenantInfo {
   /** Industry-template the tenant cloned at signup. Used by the setup
    *  panel to nudge default-cyber tenants to confirm their taxonomy. */
   industryTemplateSlug: string;
+  /** Per-tenant notification routing override (null = system defaults).
+   *  Edited from Settings → Notifications. */
+  notificationConfig: TenantNotificationConfig | null;
+  /** Short-lived signed GET url for the workspace logo, or null. */
+  logoUrl: string | null;
 }
 
 export const tenant = {
@@ -1043,8 +1079,17 @@ export const tenant = {
     leadSummaryAutoGenerate?: boolean;
     requiresVpApprovalAboveCents?: number | null;
     requiresCeoApprovalAboveCents?: number | null;
+    notificationConfig?: TenantNotificationConfig | null;
+    logoKey?: string | null;
   }) =>
     request<TenantInfo>('/tenant/me', { method: 'PATCH', body: JSON.stringify(dto) }),
+  /** Step 1 of logo upload (admin): get a signed PUT url + object key.
+   *  Client PUTs the image, then calls `update({ logoKey })`. */
+  logoPresign: (dto: { contentType: string; filename?: string }) =>
+    request<{ uploadUrl: string; key: string; expiresAt: string }>(
+      '/tenant/logo/presign',
+      { method: 'POST', body: JSON.stringify(dto) },
+    ),
 };
 
 export const team = {

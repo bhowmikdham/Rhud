@@ -97,6 +97,43 @@ def predict_for_tenant(
     mode: str = payload.get("mode", "absolute")
 
     X_new = pipeline.transform([scope])
+
+    # ml-bridge-1: if NO predict-time feature overlaps the training feature
+    # space, `transform` yields an all-zero row and `model.predict` returns the
+    # learned bias term — a constant unrelated to this scope. This happens when
+    # the predict scope's keys (e.g. gathering node UUIDs) never match the keys
+    # the model was trained on. Rather than serve a confident-but-meaningless
+    # number, degrade to a base/median quote with a wide band + low confidence,
+    # flagged as cold_start, so a misaligned model is visible instead of
+    # silently wrong. (Proper fix: a canonical feature-key contract shared by
+    # train + predict — tracked as a follow-up.)
+    if not np.any(X_new[0]):
+        if base_price_cents is not None:
+            band = int(base_price_cents * 0.25)
+            return PredictResult(
+                predicted_price_cents=base_price_cents,
+                price_low_cents=max(0, base_price_cents - band),
+                price_high_cents=base_price_cents + band,
+                confidence=0.40,
+                top_k_similar=_top_k_simple(scope, training_set),
+                model_version=sequence,
+                cold_start=True,
+                adjustment_pct=0.0 if mode == "modifier" else None,
+                mode=mode,
+            )
+        median = int(payload.get("median_price_cents", 0))
+        band = int(median * 0.25)
+        return PredictResult(
+            predicted_price_cents=median,
+            price_low_cents=max(0, median - band),
+            price_high_cents=median + band,
+            confidence=0.40,
+            top_k_similar=_top_k_simple(scope, training_set),
+            model_version=sequence,
+            cold_start=True,
+            mode="absolute",
+        )
+
     raw = float(model.predict(X_new)[0])
 
     if mode == "modifier":

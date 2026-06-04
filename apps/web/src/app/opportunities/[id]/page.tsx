@@ -338,7 +338,7 @@ export default function OpportunityDetailPage() {
   if (!eng) {
     return (
       <AppShell crumbs={[{ label: 'Opportunities', href: '/opportunities' }]}>
-        <div className="page-inner empty"><span className="spin" /></div>
+        <WorkspaceSkeleton />
       </AppShell>
     );
   }
@@ -431,7 +431,14 @@ export default function OpportunityDetailPage() {
           </div>
           <div className="artifact-body">
             {activeFocus === 'price' && (
-            <div ref={predictionSectionRef} style={{ scrollMarginTop: 80, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div
+              ref={predictionSectionRef}
+              role="tabpanel"
+              id="focus-panel-price"
+              aria-labelledby="focus-tab-price"
+              tabIndex={0}
+              style={{ scrollMarginTop: 80, display: 'flex', flexDirection: 'column', gap: 16 }}
+            >
             {/* Action error — a lifecycle action failed. Dismissible, and
                 never discards the loaded opportunity (unlike the fatal load
                 guard above). */}
@@ -662,7 +669,13 @@ export default function OpportunityDetailPage() {
             )}
 
             {activeFocus === 'scope' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div
+                role="tabpanel"
+                id="focus-panel-scope"
+                aria-labelledby="focus-tab-scope"
+                tabIndex={0}
+                style={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+              >
                 <ScopingQuestionsCard
                   engagementId={eng.id}
                   currentTemplateId={eng.templateId}
@@ -679,11 +692,24 @@ export default function OpportunityDetailPage() {
             )}
 
             {activeFocus === 'documents' && (
-              <ExtractedPointsCard engagementId={eng.id} />
+              <div
+                role="tabpanel"
+                id="focus-panel-documents"
+                aria-labelledby="focus-tab-documents"
+                tabIndex={0}
+              >
+                <ExtractedPointsCard engagementId={eng.id} />
+              </div>
             )}
 
             {activeFocus === 'proposal' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div
+                role="tabpanel"
+                id="focus-panel-proposal"
+                aria-labelledby="focus-tab-proposal"
+                tabIndex={0}
+                style={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+              >
                 {quote && <JustificationCard engagementId={eng.id} clientEmail={eng.clientEmail} />}
                 {['approved', 'drafting', 'draft_ready', 'sent'].includes(eng.status) && (
                   <ProposalSummaryCard
@@ -838,6 +864,49 @@ function payloadHint(ev: ThreadEventRow): React.ReactNode {
     return <> · expires {new Date(p.expiresAt).toLocaleDateString()}</>;
   }
   return null;
+}
+
+/** Structure-stable loading state for the workspace. Mirrors the real
+ *  thread-split layout (thread rail on the left, workbench on the right) with
+ *  `.skeleton` blocks so the page doesn't flash a bare spinner and then snap
+ *  into a different shape. The sweep animation is neutralised automatically
+ *  under prefers-reduced-motion (see globals.css). */
+function WorkspaceSkeleton() {
+  return (
+    <div className="thread-split" aria-busy="true" aria-label="Loading opportunity">
+      <div className="thread-pane">
+        <div className="thread-head">
+          <div className="skeleton skeleton-text lg" style={{ width: '58%' }} />
+          <div className="skeleton skeleton-text" style={{ width: '40%', marginTop: 10 }} />
+          <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
+            <div className="skeleton" style={{ width: 70, height: 20, borderRadius: 4 }} />
+            <div className="skeleton" style={{ width: 90, height: 20, borderRadius: 4 }} />
+          </div>
+        </div>
+        <div className="thread-body" style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div className="skeleton" style={{ width: 14, height: 14, borderRadius: 999, flexShrink: 0, marginTop: 1 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="skeleton skeleton-text" style={{ width: `${52 + (i % 3) * 12}%` }} />
+                <div className="skeleton skeleton-text" style={{ width: `${30 + (i % 2) * 12}%`, marginTop: 6 }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="artifact-pane">
+        <div className="artifact-head">
+          <div className="skeleton skeleton-text" style={{ width: 190 }} />
+          <div className="skeleton" style={{ width: 120, height: 24, borderRadius: 6 }} />
+        </div>
+        <div className="artifact-body" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="skeleton" style={{ width: '100%', height: 150, borderRadius: 16 }} />
+          <div className="skeleton" style={{ width: '100%', height: 220, borderRadius: 12 }} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 

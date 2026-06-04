@@ -151,20 +151,45 @@ export class IngestionService {
       if (existing) return { artifactId: existing.id };
     }
 
-    const created = await this.tenantDb.run(args.tenantId, async (db) =>
-      db.ingestionArtifact.create({
-        data: {
-          tenantId: args.tenantId,
-          source: args.source,
-          kind: args.content.kind as ArtifactKind,
-          status: 'received',
-          ...(args.receivedBy ? { receivedBy: args.receivedBy } : {}),
-          ...(args.externalId ? { externalId: args.externalId } : {}),
-          ...this.materialiseContentFields(args.content),
-        },
-        select: { id: true },
-      }),
-    );
+    // concurrency-4: a concurrent redelivery can insert the same (tenantId,
+    // externalId) between the findFirst above and this create. The unique index
+    // turns that race into a P2002 — catch it and resolve to the row the other
+    // request created, rather than inserting a duplicate artifact (which
+    // downstream becomes a duplicate opportunity). Detect P2002 by code so we
+    // don't import @prisma/client (banned outside src/db by the lint rule).
+    const outcome = await this.tenantDb.run(args.tenantId, async (db) => {
+      try {
+        const row = await db.ingestionArtifact.create({
+          data: {
+            tenantId: args.tenantId,
+            source: args.source,
+            kind: args.content.kind as ArtifactKind,
+            status: 'received',
+            ...(args.receivedBy ? { receivedBy: args.receivedBy } : {}),
+            ...(args.externalId ? { externalId: args.externalId } : {}),
+            ...this.materialiseContentFields(args.content),
+          },
+          select: { id: true },
+        });
+        return { id: row.id, deduped: false };
+      } catch (e) {
+        const isUniqueViolation =
+          typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'P2002';
+        if (args.externalId && isUniqueViolation) {
+          const externalId = args.externalId;
+          const existing = await db.ingestionArtifact.findFirst({
+            where: { tenantId: args.tenantId, externalId },
+            select: { id: true },
+          });
+          if (existing) return { id: existing.id, deduped: true };
+        }
+        throw e;
+      }
+    });
+    // Dedup hit on the race path — return the existing artifact without
+    // re-running the S3/inline write below.
+    if (outcome.deduped) return { artifactId: outcome.id };
+    const created = { id: outcome.id };
 
     // For inline file/audio artifacts the row exists but the S3 key
     // is empty until we write the bytes. Doing it OUTSIDE the row

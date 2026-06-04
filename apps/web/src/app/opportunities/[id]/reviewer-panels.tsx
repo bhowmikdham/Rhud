@@ -195,9 +195,9 @@ const KIND_LABELS: Record<QuoteLineItemKind, string> = {
 };
 
 const KIND_COLORS: Record<QuoteLineItemKind, string> = {
-  travel: '#558',
-  tool: '#586',
-  resource: '#856',
+  travel: 'var(--kind-travel)',
+  tool: 'var(--kind-tool)',
+  resource: 'var(--kind-resource)',
   discount: 'var(--danger)',
   custom: 'var(--fg-muted)',
 };
@@ -395,7 +395,7 @@ function AddLineItemModal({
         style={{
           position: 'fixed', inset: 0,
           background: 'color-mix(in oklch, black 40%, transparent)',
-          display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+          display: 'grid', placeItems: 'center', zIndex: 'var(--z-modal)', padding: 16,
         }}
         onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
       >
@@ -629,7 +629,7 @@ function HoldReasonModal({
         style={{
           position: 'fixed', inset: 0,
           background: 'color-mix(in oklch, black 40%, transparent)',
-          display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+          display: 'grid', placeItems: 'center', zIndex: 'var(--z-modal)', padding: 16,
         }}
         onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
       >

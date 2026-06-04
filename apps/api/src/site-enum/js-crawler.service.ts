@@ -18,6 +18,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { CrawlOptions, CrawlResult, DiscoveredPage } from './crawler.service.js';
 import { bodyFingerprint, fingerprintsEqual } from './crawler.service.js';
+import { assertPublicUrl } from './ssrf-guard.js';
 import {
   detectTechStack,
   platformProbes,
@@ -217,6 +218,11 @@ export class JsCrawlerService {
         try {
           let res: import('playwright').Response | null = null;
           try {
+            // Block SSRF: never navigate Chromium to a private/internal host.
+            // (Frontier is same-origin and the root is validated at kickoff;
+            // this also covers any same-origin URL that resolves internally.
+            // Redirect-to-internal inside the browser is a known residual.)
+            await assertPublicUrl(item.url);
             res = await page.goto(item.url, {
               waitUntil: 'domcontentloaded',
               timeout: PAGE_TIMEOUT_MS,

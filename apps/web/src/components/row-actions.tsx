@@ -170,9 +170,9 @@ export function RowActions({ items, size = 'md', stopPropagation, ariaLabel = 'A
             background: 'var(--bg)',
             border: '1px solid var(--border)',
             borderRadius: 10,
-            boxShadow: '0 12px 32px rgba(0,0,0,.10), 0 2px 6px rgba(0,0,0,.06)',
+            boxShadow: 'var(--shadow-lg)',
             padding: 4,
-            zIndex: 80,
+            zIndex: 'var(--z-popover)',
           }}
           onClick={(e) => { if (stopPropagation) e.stopPropagation(); }}
         >

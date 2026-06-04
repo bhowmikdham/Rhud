@@ -1,4 +1,5 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { GatheringService } from './gathering.service.js';
 import { CreateScopingDocUploadUrlDto, CreateUploadUrlDto, LoopStepDto, SubmitAnswerDto } from './dto.js';
@@ -10,6 +11,11 @@ import { CreateScopingDocUploadUrlDto, CreateUploadUrlDto, LoopStepDto, SubmitAn
  * against argon2id hashes).
  */
 @Controller('/g/:token')
+// Public, unauthenticated namespace whose token resolution argon2-verifies up
+// to 200 candidate hashes per call — throttle per IP to blunt the unauthenticated
+// brute-force / argon2-amplification DoS surface.
+@UseGuards(ThrottlerGuard)
+@Throttle({ default: { limit: 60, ttl: 60_000 } })
 export class GatheringController {
   constructor(private readonly svc: GatheringService) {}
 

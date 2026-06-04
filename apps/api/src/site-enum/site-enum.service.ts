@@ -14,6 +14,7 @@
  */
 
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
@@ -42,6 +43,7 @@ import { CrawlerService, type CrawlOptions } from './crawler.service.js';
 import { JsCrawlerService } from './js-crawler.service.js';
 import { SiteClassifierService, type ClassifiedPage } from './classifier.service.js';
 import { SiteScopeMapperService } from './mapper.service.js';
+import { assertPublicUrl, SsrfError } from './ssrf-guard.js';
 
 const MAX_RETRY_ATTEMPTS = 3;
 
@@ -117,6 +119,17 @@ export class SiteEnumService implements OnModuleInit, OnModuleDestroy {
   ): Promise<KickoffResult> {
     if (!isPlausibleUrl(siteUrl)) {
       throw new NotFoundException('invalid_site_url');
+    }
+    // SSRF: reject URLs that resolve to private/internal hosts up front. The
+    // crawlers re-check at fetch/navigation time, but this returns a clean 400
+    // before any enumeration row is created.
+    const trimmed = siteUrl.trim();
+    const normalized = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    try {
+      await assertPublicUrl(normalized);
+    } catch (e) {
+      if (e instanceof SsrfError) throw new BadRequestException('site_url_not_publicly_reachable');
+      throw e;
     }
     const id = await this.tenantDb.run(tenantId, async (db) => {
       const eng = await db.engagement.findUnique({

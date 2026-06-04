@@ -15,7 +15,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest, JwtPayload } from '../auth/auth.types.js';
 import { TeamService, type InviteSummary, type UserSummary } from './team.service.js';
-import { CreateInviteDto, UpdateUserRoleDto, AcceptInviteDto, UpdateTenantDto } from './dto.js';
+import { CreateInviteDto, UpdateUserRoleDto, AcceptInviteDto, UpdateTenantDto, LogoPresignDto } from './dto.js';
 import type { Role } from '@rhud/shared';
 
 /**
@@ -51,6 +51,24 @@ export class TeamController {
       ...(dto.leadSummaryAutoGenerate !== undefined ? { leadSummaryAutoGenerate: dto.leadSummaryAutoGenerate } : {}),
       ...(dto.requiresVpApprovalAboveCents !== undefined ? { requiresVpApprovalAboveCents: dto.requiresVpApprovalAboveCents } : {}),
       ...(dto.requiresCeoApprovalAboveCents !== undefined ? { requiresCeoApprovalAboveCents: dto.requiresCeoApprovalAboveCents } : {}),
+      ...(dto.notificationConfig !== undefined ? { notificationConfig: dto.notificationConfig } : {}),
+      ...(dto.logoKey !== undefined ? { logoKey: dto.logoKey } : {}),
+    });
+  }
+
+  /** Get a signed PUT url to upload a new workspace logo. Admin-only.
+   *  Client PUTs the image to `uploadUrl`, then PATCHes /tenant/me with
+   *  the returned `key` (as `logoKey`) to persist it. */
+  @Post('logo/presign')
+  @Roles('admin')
+  @HttpCode(200)
+  presignLogo(
+    @Req() req: AuthedRequest,
+    @Body() dto: LogoPresignDto,
+  ): Promise<{ uploadUrl: string; key: string; expiresAt: string }> {
+    return this.svc.presignLogo(req.tenantId, {
+      contentType: dto.contentType,
+      ...(dto.filename !== undefined ? { filename: dto.filename } : {}),
     });
   }
 

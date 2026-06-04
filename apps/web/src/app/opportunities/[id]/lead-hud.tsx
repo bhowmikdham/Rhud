@@ -191,7 +191,7 @@ function ChipShell({
   const palette: Record<NonNullable<typeof tone>, { border: string; bg: string; fg: string }> = {
     default: { border: 'var(--border)', bg: 'var(--bg-elev)', fg: 'var(--fg)' },
     ok:      { border: 'color-mix(in oklch, var(--ok) 28%, transparent)', bg: 'var(--ok-tint)', fg: 'var(--ok)' },
-    warn:    { border: 'color-mix(in oklch, #c80 28%, transparent)', bg: 'color-mix(in oklch, #c80 14%, transparent)', fg: '#a60' },
+    warn:    { border: 'color-mix(in oklch, var(--warn) 28%, transparent)', bg: 'var(--warn-tint)', fg: 'var(--warn)' },
     danger:  { border: 'color-mix(in oklch, var(--danger) 28%, transparent)', bg: 'var(--danger-tint)', fg: 'var(--danger)' },
   };
   const p = palette[tone ?? 'default'];
@@ -343,7 +343,7 @@ function SlideOverDrawer({
     <Portal>
       <div
         style={{
-          position: 'fixed', inset: 0, zIndex: 70,
+          position: 'fixed', inset: 0, zIndex: 'var(--z-drawer)',
           display: 'flex', justifyContent: 'flex-end',
           background: mounted ? 'color-mix(in oklch, black 35%, transparent)' : 'transparent',
           transition: 'background 180ms ease-out',
