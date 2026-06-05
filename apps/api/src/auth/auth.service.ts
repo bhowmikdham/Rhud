@@ -357,6 +357,15 @@ export class AuthService {
       }),
     );
     if (!isRole(row.role)) throw new UnauthorizedException('invalid_user_role');
+    // Reclaim superseded photos once the new key is committed: sweep the
+    // caller's own avatar prefix, keeping only the key we just stored (none
+    // when the photo was removed). Best-effort — never blocks the response.
+    if (patch.avatarKey !== undefined) {
+      await this.s3.deleteByPrefix(
+        S3Service.avatarPrefixForUser({ tenantId: actor.tid, userId: actor.sub }),
+        row.avatarKey ? { keep: row.avatarKey } : undefined,
+      );
+    }
     this.logger.log(`user profile updated tenant=${actor.tid} user=${actor.sub}`);
     return {
       sub: row.id,
