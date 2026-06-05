@@ -318,6 +318,19 @@ export class UnscopedDb {
   }
 
   /**
+   * All tenant ids, for cross-tenant scheduled sweeps (e.g. the nightly
+   * audit-chain seal). No tenant scope — the sweeper runs on a timer, not a
+   * request, and fans out to the tenant-scoped path (TenantDb) per id.
+   * Ordered by created_at so the sweep order is deterministic. Unbounded by
+   * design: every tenant must be sealed; the caller paces the per-tenant work.
+   */
+  async findAllTenantIds(): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM tenants ORDER BY created_at ASC`;
+    return rows.map((r) => r.id);
+  }
+
+  /**
    * Returns active (unexpired, unrevoked) gathering tokens. The plaintext
    * token coming in over `/g/:token` doesn't reveal a tenant, so token
    * resolution scans candidates and verifies each via argon2.

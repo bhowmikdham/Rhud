@@ -42,6 +42,15 @@ export const envSchema = z.object({
   // Region for SES API calls. Defaults to ap-south-1 (where the demo
   // stack lives). The SDK also picks up AWS_REGION if this is unset.
   SES_REGION: z.string().default('ap-south-1'),
+
+  // ── Scheduler ───────────────────────────────────────────────────
+  // Master switch for the nightly audit-chain seal cron (AuditSealService).
+  // Default on; set to 'false' to disable (e.g. when a dedicated worker owns
+  // the sweep, or to silence it on a staging box). The cron also never fires
+  // under NODE_ENV=test. Declared here for discoverability + validation; the
+  // service reads process.env directly (house pattern), treating anything but
+  // the literal 'false' as enabled.
+  AUDIT_SEAL_ENABLED: z.enum(['true', 'false']).default('true'),
 });
 
 export type Env = z.infer<typeof envSchema>;
