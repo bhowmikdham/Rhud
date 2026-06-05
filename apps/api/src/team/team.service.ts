@@ -283,15 +283,25 @@ export class TeamService {
         : (notificationConfig as unknown as Prisma.InputJsonValue);
     }
 
-    return this.tenantDb.run(tenantId, async (db) => {
-      const updated = await db.tenant.update({
+    const updated = await this.tenantDb.run(tenantId, async (db) => {
+      const row = await db.tenant.update({
         where: { id: tenantId },
         data: prismaData,
         select: TENANT_CONFIG_SELECT,
       });
       this.logger.log(`tenant ${tenantId} updated by ${actor.sub}`);
-      return this.toTenantConfigDto(updated as TenantConfigRow);
+      return row as TenantConfigRow;
     });
+    // Reclaim superseded logos once the new key is committed: sweep the
+    // tenant's branding prefix, keeping only the key we just stored (none when
+    // the logo was removed). Best-effort, outside the DB tx — never blocks.
+    if (args.logoKey !== undefined) {
+      await this.s3.deleteByPrefix(
+        S3Service.logoPrefixForTenant({ tenantId }),
+        updated.logoKey ? { keep: updated.logoKey } : undefined,
+      );
+    }
+    return this.toTenantConfigDto(updated);
   }
 
   /** POST /tenant/logo/presign — signed PUT url for the workspace logo.
@@ -405,6 +415,9 @@ export class TeamService {
       await db.user.delete({ where: { id: userId } });
       this.logger.log(`user deleted tenant=${tenantId} actor=${actor.sub} target=${userId}`);
     });
+    // The user is gone — their profile photos are now dead weight. Best-effort
+    // sweep of their (tenant-scoped) avatar prefix to reclaim the storage.
+    await this.s3.deleteByPrefix(S3Service.avatarPrefixForUser({ tenantId, userId }));
   }
 
   // ── Invites ─────────────────────────────────────────────────────────────

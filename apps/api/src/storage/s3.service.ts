@@ -1,5 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 /**
@@ -149,6 +155,54 @@ export class S3Service {
       Body: typeof opts.body === 'string' ? Buffer.from(opts.body, 'utf8') : opts.body,
     });
     await this.client.send(cmd);
+  }
+
+  /**
+   * Delete every object under `prefix`, optionally keeping one key.
+   *
+   * Used to reclaim storage when a profile photo / workspace logo is
+   * replaced or removed: each upload gets a fresh `uploadId` in its key, so
+   * the previous object (and any object that was PUT to a presigned url but
+   * never saved via PATCH) would otherwise linger forever. Sweeping the whole
+   * prefix — keeping only the freshly-committed key — is self-healing and
+   * mops up those orphans too.
+   *
+   * Best-effort by design: the DB already reflects the intended state, so a
+   * failed delete must never break the user-facing request. We log and move
+   * on, leaving at worst an orphaned object. Callers pass a prefix scoped to
+   * the actor (per-user / per-tenant), so this can never reach across tenants.
+   */
+  async deleteByPrefix(prefix: string, opts?: { keep?: string }): Promise<void> {
+    try {
+      let continuationToken: string | undefined;
+      do {
+        const list = await this.client.send(
+          new ListObjectsV2Command({
+            Bucket: this.bucket,
+            Prefix: prefix,
+            ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+          }),
+        );
+        const keys = (list.Contents ?? [])
+          .map((o) => o.Key)
+          .filter((k): k is string => Boolean(k) && k !== opts?.keep);
+        if (keys.length > 0) {
+          // DeleteObjects caps at 1000 keys/call; ListObjectsV2 already pages
+          // at 1000, so one delete per page stays within the limit.
+          await this.client.send(
+            new DeleteObjectsCommand({
+              Bucket: this.bucket,
+              Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+            }),
+          );
+        }
+        continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
+      } while (continuationToken);
+    } catch (err) {
+      this.logger.warn(
+        `s3 deleteByPrefix failed prefix=${prefix}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
