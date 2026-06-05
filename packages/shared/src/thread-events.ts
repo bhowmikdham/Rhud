@@ -84,6 +84,9 @@ export const THREAD_EVENT_TYPES = [
   /// Quote line item removed.
   /// Payload: `{ lineItemId, kind, label, amountCents }`.
   'quote_line_item_removed',
+  /// Quote line item edited in place. Payload:
+  /// `{ lineItemId, kind, label, amountCents }`.
+  'quote_line_item_updated',
   // Phase B — classification + routing.
   /// First classification (LLM or manual). Payload:
   /// `{ categorySlug, subCategorySlug?, source: 'llm' | 'manual', model? }`.

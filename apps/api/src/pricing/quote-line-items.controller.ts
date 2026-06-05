@@ -85,7 +85,7 @@ export class QuoteLineItemsController {
     @Param('itemId', new ParseUUIDPipe()) itemId: string,
     @Body() dto: UpdateLineItemDto,
   ) {
-    return this.svc.update(req.tenantId, engagementId, itemId, dto as Parameters<QuoteLineItemsService['update']>[3]);
+    return this.svc.update(req.tenantId, engagementId, itemId, dto as Parameters<QuoteLineItemsService['update']>[3], req.user.sub);
   }
 
   @Delete(':itemId')

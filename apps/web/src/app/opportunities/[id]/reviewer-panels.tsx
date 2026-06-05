@@ -15,7 +15,7 @@
  *     Escalate), each opening a small reason-modal.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   describeError,
   opportunities,
@@ -206,20 +206,20 @@ interface LineItemsProps {
   engagementId: string;
   userRole: string;
   currency: string;
+  /** Totals breakdown, owned by the parent so the approval card + re-approval
+   *  banner read the same numbers. `null` while the parent is still loading. */
+  data: QuoteTotalsBreakdown | null;
+  /** Called after an add/remove so the parent refetches the breakdown AND the
+   *  thread — the latter drives the "pricing changed since approval" re-approval
+   *  prompt, since the approved price is only recomputed on (re-)approval. */
+  onChanged: () => void | Promise<void>;
 }
 
-export function QuoteLineItemsCard({ engagementId, userRole, currency }: LineItemsProps) {
+export function QuoteLineItemsCard({ engagementId, userRole, currency, data, onChanged }: LineItemsProps) {
   const confirm = useConfirm();
   const canEdit = ['admin', 'sales_manager', 'tech_team'].includes(userRole);
-  const [data, setData] = useState<QuoteTotalsBreakdown | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  const refresh = useCallback(() => {
-    quoteLineItems.list(engagementId).then(setData).catch((e) => setErr(describeError(e)));
-  }, [engagementId]);
-
-  useEffect(() => { refresh(); }, [refresh]);
 
   async function remove(item: QuoteLineItemRow) {
     const ok = await confirm({
@@ -231,7 +231,7 @@ export function QuoteLineItemsCard({ engagementId, userRole, currency }: LineIte
     if (!ok) return;
     try {
       await quoteLineItems.remove(engagementId, item.id);
-      refresh();
+      await onChanged();
     } catch (e) {
       setErr(describeError(e));
     }
@@ -331,7 +331,7 @@ export function QuoteLineItemsCard({ engagementId, userRole, currency }: LineIte
           currency={currency}
           baseTotalCents={data.baseTotalCents}
           onClose={() => setShowAdd(false)}
-          onSaved={() => { setShowAdd(false); refresh(); }}
+          onSaved={() => { setShowAdd(false); void onChanged(); }}
         />
       )}
     </div>

@@ -93,6 +93,7 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   scope_exclusions_updated:  [],
   quote_line_item_added:     [],
   quote_line_item_removed:   [],
+  quote_line_item_updated:   [],
   // Phase B — classification + routing.
   // Classification itself is silent (informational, surfaced as a chip).
   // Reviewer assignment fans out to manager so they see who took it.

@@ -158,6 +158,7 @@ export class QuoteLineItemsService {
     engagementId: string,
     lineItemId: string,
     input: UpdateQuoteLineItemInput,
+    actorUserId: string,
   ): Promise<QuoteLineItemRow> {
     return this.tenantDb.run(tenantId, async (db) => {
       const existing = await db.engagementQuoteLineItem.findUnique({
@@ -201,6 +202,22 @@ export class QuoteLineItemsService {
           percentageBps: nextPct,
           ...(input.position != null ? { position: input.position } : {}),
           updatedAt: new Date(),
+        },
+      });
+      // Parity with create/remove: emit so a post-approval edit is captured in
+      // the thread. The opportunity UI derives "pricing changed since approval"
+      // from these events to prompt a re-approval (the approved price + proposal
+      // are recomputed only on (re-)approval, not on a bare line-item edit).
+      await this.thread.emitWithin(db, tenantId, {
+        engagementId,
+        eventType: 'quote_line_item_updated',
+        actorType: 'user',
+        actorId: actorUserId,
+        payload: {
+          lineItemId: updated.id,
+          kind: updated.kind,
+          label: updated.label,
+          amountCents: nextAmount,
         },
       });
       return toRowDto(updated);
