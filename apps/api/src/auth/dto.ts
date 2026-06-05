@@ -1,4 +1,5 @@
-import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength, ValidateIf } from 'class-validator';
+import { IMAGE_CONTENT_TYPES } from '../storage/media.js';
 
 export class LoginDto {
   @IsEmail()
@@ -71,12 +72,33 @@ export class ResetPasswordDto {
   newPassword!: string;
 }
 
-/** PATCH /auth/me — user updates their own profile. Currently just name;
- *  email is the unique sign-in identity (so changing it warrants its own
- *  flow), and role is administered through the Team panel. */
+/** PATCH /auth/me — user updates their own profile. `name` and the profile
+ *  photo (`avatarKey`); email is the unique sign-in identity (so changing it
+ *  warrants its own flow), and role is administered through the Team panel. */
 export class UpdateMeDto {
   @IsOptional()
   @IsString()
   @MaxLength(120)
   name?: string;
+
+  /** S3 object key returned by POST /auth/avatar/presign (after the client
+   *  PUTs the image). The service verifies it sits under the caller's own
+   *  avatar prefix before persisting. Pass null to remove the photo. */
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @MaxLength(512)
+  avatarKey?: string | null;
+}
+
+/** POST /auth/avatar/presign — request a signed PUT url for a profile photo. */
+export class AvatarPresignDto {
+  @IsString()
+  @IsIn(IMAGE_CONTENT_TYPES as unknown as string[])
+  contentType!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  filename?: string;
 }

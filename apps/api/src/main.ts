@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import { AppModule } from './app.module.js';
@@ -7,9 +8,16 @@ import { loadEnv } from './config/env.js';
 
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: ['log', 'error', 'warn', 'debug'],
   });
+
+  // Behind the prod reverse proxy, trust the first hop so req.ip reflects the
+  // real client — required for correct per-IP rate limiting. Assumes a single
+  // proxy in front; in dev there is no proxy, so we leave it off.
+  if (env.NODE_ENV === 'production') {
+    app.set('trust proxy', 1);
+  }
 
   app.use(helmet());
   // API_CORS_ORIGIN is a comma-separated list — needed because the

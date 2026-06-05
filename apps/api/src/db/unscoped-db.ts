@@ -28,6 +28,7 @@ export class UnscopedDb {
     role: string;
     passwordHash: string | null;
     emailVerified: boolean;
+    tokenVersion: number;
   } | null> {
     const rows = await this.prisma.$queryRaw<
       Array<{
@@ -37,8 +38,9 @@ export class UnscopedDb {
         role: string;
         password_hash: string | null;
         email_verified: boolean;
+        token_version: number;
       }>
-    >`SELECT id, tenant_id, email, role, password_hash, email_verified
+    >`SELECT id, tenant_id, email, role, password_hash, email_verified, token_version
         FROM users
        WHERE email = ${email}::citext
        LIMIT 1`;
@@ -51,7 +53,21 @@ export class UnscopedDb {
       role: r.role,
       passwordHash: r.password_hash,
       emailVerified: r.email_verified,
+      tokenVersion: r.token_version,
     };
+  }
+
+  /**
+   * Auth-state lookup for JwtAuthGuard's per-request revocation check. Keyed
+   * by the (signature-verified) user id from the JWT, so reading unscoped is
+   * safe — we only ever read the very user the token claims to be. Returns
+   * null when the user no longer exists (deactivation = hard delete).
+   */
+  async findUserAuthState(id: string): Promise<{ tokenVersion: number } | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ token_version: number }>>`
+      SELECT token_version FROM users WHERE id = ${id}::uuid LIMIT 1`;
+    const r = rows[0];
+    return r ? { tokenVersion: r.token_version } : null;
   }
 
   /**
@@ -315,6 +331,19 @@ export class UnscopedDb {
     const rows = await this.prisma.$queryRaw<Array<{ name: string }>>`
       SELECT name FROM tenants WHERE id = ${tenantId}::uuid LIMIT 1`;
     return rows[0]?.name ?? null;
+  }
+
+  /**
+   * All tenant ids, for cross-tenant scheduled sweeps (e.g. the nightly
+   * audit-chain seal). No tenant scope — the sweeper runs on a timer, not a
+   * request, and fans out to the tenant-scoped path (TenantDb) per id.
+   * Ordered by created_at so the sweep order is deterministic. Unbounded by
+   * design: every tenant must be sealed; the caller paces the per-tenant work.
+   */
+  async findAllTenantIds(): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM tenants ORDER BY created_at ASC`;
+    return rows.map((r) => r.id);
   }
 
   /**

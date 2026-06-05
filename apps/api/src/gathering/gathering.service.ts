@@ -950,11 +950,17 @@ export class GatheringService {
 
   async submit(plaintext: string, ctx: RequestContext): Promise<{ status: string }> {
     const t = await this.resolveToken(plaintext, ctx);
-    const result = await this.tenantDb.run(t.tenantId, async (db) => {
-      await db.engagement.update({
-        where: { id: t.engagementId },
+    // concurrency-3: claim the submit atomically. Only the first of any
+    // concurrent double-submit transitions the engagement out of the gathering
+    // state ('issued'/'in_progress'); a racing/repeat submit sees count===0 and
+    // must NOT re-emit scope_submitted, re-revoke the token, or re-run the
+    // quote/predict pipeline (which would double-fire and duplicate events).
+    const claimed = await this.tenantDb.run(t.tenantId, async (db) => {
+      const claim = await db.engagement.updateMany({
+        where: { id: t.engagementId, status: { in: ['issued', 'in_progress'] } },
         data: { status: 'submitted', submittedAt: new Date() },
       });
+      if (claim.count === 0) return false;
       await this.thread.emitWithin(db, t.tenantId, {
         engagementId: t.engagementId,
         eventType: 'scope_submitted',
@@ -965,8 +971,12 @@ export class GatheringService {
         where: { id: t.tokenId },
         data: { revokedAt: new Date() },
       });
-      return { status: 'submitted' };
+      return true;
     });
+
+    // Lost the claim (concurrent or repeat submit) — idempotent no-op: the
+    // winner already emitted the event and is running the pipeline.
+    if (!claimed) return { status: 'submitted' };
 
     void this.thread.dispatchAfterCommit(t.tenantId, {
       engagementId: t.engagementId,
@@ -1021,7 +1031,7 @@ export class GatheringService {
     // unclassified — the UI surfaces a manual "Classify" button.
     void this.classification.classifyOnSubmit(t.tenantId, t.engagementId);
 
-    return result;
+    return { status: 'submitted' };
   }
 }
 

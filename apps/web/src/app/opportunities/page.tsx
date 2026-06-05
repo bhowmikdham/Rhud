@@ -31,21 +31,32 @@ const KANBAN_COLUMNS: Array<{
   {
     id: 'discovery',
     label: 'Discovery',
-    statuses: ['issued', 'in_progress'],
-    hint: 'Client filling out scope',
+    // 'ingesting' is the direct-ingest start state (files dropped,
+    // extraction running, before it settles to 'submitted'). It must
+    // live in the first column — mirrors the detail page's stageOf(),
+    // whose default branch treats ingesting as Discovery. Omitting it
+    // here is what hid freshly-uploaded opportunities from the board.
+    statuses: ['ingesting', 'issued', 'in_progress'],
+    hint: 'Intake & scoping',
     accent: 'oklch(0.62 0.14 250)',
   },
   {
     id: 'submitted',
     label: 'Pricing',
-    statuses: ['submitted', 'predicted'],
+    // Reviewer holds (returned_to_sales / awaiting_clarification /
+    // escalated) sit over the pricing stage — matches stageOf(), which
+    // maps them to stage 'pricing' with a hold side-state. The card's
+    // StageChip still spells out the specific hold.
+    statuses: ['submitted', 'predicted', 'returned_to_sales', 'awaiting_clarification', 'escalated'],
     hint: 'Scope in, price computed',
     accent: 'oklch(0.6 0.13 180)',
   },
   {
     id: 'approval',
     label: 'Awaiting approval',
-    statuses: ['pending_approval'],
+    // Tiered sign-offs (VP / CEO) are still "awaiting approval" — keep
+    // them in this column alongside the manager-level pending_approval.
+    statuses: ['pending_approval', 'pending_vp_approval', 'pending_ceo_approval'],
     hint: 'Manager review',
     accent: 'oklch(0.7 0.14 80)',
   },
@@ -459,15 +470,27 @@ function KanbanView({
     return <div className="empty" style={{ padding: 60 }}><span className="spin" /></div>;
   }
 
-  const columns = KANBAN_COLUMNS.map((col) => ({
-    ...col,
-    items: filtered.filter((e) => col.statuses.includes(e.status)),
-  }));
+  // Assign every filtered opportunity to exactly one pipeline column.
+  // This mirrors the detail page's stageOf(): a status that no column
+  // names explicitly still lands in Discovery (the leftmost stage)
+  // rather than dropping off the board — the bug that hid freshly
+  // 'ingesting' opportunities. Only genuinely archived statuses
+  // (rejected/expired/lost) are intentionally left out, surfaced as a
+  // count below.
+  const columns = KANBAN_COLUMNS.map((col) => ({ ...col, items: [] as EngagementSummary[] }));
+  // KANBAN_COLUMNS is a non-empty literal, so a fallback always exists.
+  const fallbackColumn = (columns.find((c) => c.id === 'discovery') ?? columns[0])!;
+  const orphans: EngagementSummary[] = [];
+  for (const e of filtered) {
+    if (ARCHIVED_STATUSES.has(e.status)) {
+      orphans.push(e);
+      continue;
+    }
+    const target = columns.find((c) => c.statuses.includes(e.status)) ?? fallbackColumn;
+    target.items.push(e);
+  }
 
   const totalShown = columns.reduce((acc, c) => acc + c.items.length, 0);
-  // Track items that are part of the active filter but not in any
-  // pipeline column (rejected/expired) so the user knows they exist.
-  const orphans = filtered.filter((e) => !columns.some((c) => c.items.includes(e)));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -542,7 +565,7 @@ function KanbanColumn({
         padding: '4px 4px 6px',
         position: 'sticky',
         top: 0,
-        zIndex: 1,
+        zIndex: 'var(--z-sticky)',
         background: 'var(--bg)',
       }}>
         <span style={{

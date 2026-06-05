@@ -47,6 +47,25 @@
     --danger:    oklch(0.55 0.17 25);
     --danger-tint: oklch(0.96 0.03 25);
 
+    /* Semantic accents outside the core ramp (quote line-item kinds, approval
+       gate tones). Kept as tokens so they theme; the dark block lightens them
+       so they don't go dark-on-dark. */
+    --kind-travel:   #558;
+    --kind-tool:     #586;
+    --kind-resource: #856;
+    --gate-ceo:      #7c3aed;
+    --gate-vp:       #0e7490;
+
+    /* Extracted-point category chips (hue-coded). Light = pale fill + dark ink;
+       the dark block flips to a dark tinted fill + light ink so they read as
+       tints (not bright pastel pills) on dark. */
+    --cat-scope-bg: oklch(0.92 0.05 145);  --cat-scope-fg: oklch(0.32 0.12 145);
+    --cat-method-bg: oklch(0.93 0.04 280); --cat-method-fg: oklch(0.34 0.12 280);
+    --cat-service-bg: oklch(0.92 0.05 240); --cat-service-fg: oklch(0.32 0.12 240);
+    --cat-identity-bg: oklch(0.93 0.04 60); --cat-identity-fg: oklch(0.36 0.12 60);
+    --cat-env-bg: oklch(0.93 0.04 200);    --cat-env-fg: oklch(0.34 0.12 200);
+    --cat-compliance-bg: oklch(0.93 0.04 25); --cat-compliance-fg: oklch(0.40 0.15 25);
+
     --row-h: 36px;
     --pad-x: 16px;
     --pad-y: 12px;
@@ -59,6 +78,40 @@
     --shadow-sm: 0 1px 2px rgba(10,10,10,.06), 0 1px 0 rgba(10,10,10,.03);
     --shadow-md: 0 2px 6px rgba(10,10,10,.06), 0 4px 18px rgba(10,10,10,.08);
     --shadow-lg: 0 8px 28px rgba(10,10,10,.12), 0 1px 0 rgba(10,10,10,.06);
+
+    /* Z-index scale — the single source of truth for stacking order. Never
+       hardcode a z-index; use one of these so layers can't silently collide.
+       base < sticky < dropdown < overlay < drawer < popover < modal < toast. */
+    --z-base:     1;
+    --z-sticky:   20;   /* sticky table headers / in-flow pinned rows */
+    --z-dropdown: 50;   /* small floating panels (setup, issue-link)   */
+    --z-overlay:  60;   /* full-screen scrims behind a dialog          */
+    --z-drawer:   70;   /* right-anchored slide-overs (inspector, hud) */
+    --z-popover:  80;   /* anchored menus / floating chips             */
+    --z-modal:    100;  /* centered dialogs + topbar menu              */
+    --z-toast:    120;  /* transient notifications (reserved)          */
+
+    /* Type scale — matches the px sizes already used across the app so
+       adopting these is a visual no-op. Prefer the --text-* vars / .t-*
+       classes over raw px literals in JSX. */
+    --text-2xs:  10.5px;
+    --text-xs:   11.5px;
+    --text-sm:   12.5px;
+    --text-base: 13.5px;
+    --text-md:   15px;
+    --text-lg:   18px;
+    --text-xl:   22px;
+
+    /* Space scale — the recurring gap/padding steps used in inline styles. */
+    --space-1: 4px;
+    --space-2: 6px;
+    --space-3: 8px;
+    --space-4: 10px;
+    --space-5: 12px;
+    --space-6: 14px;
+    --space-7: 16px;
+    --space-8: 20px;
+    --space-9: 24px;
 
     --sidebar-w: 232px;
     --topbar-h: 52px;
@@ -82,10 +135,113 @@
   ::selection { background: var(--accent-tint-strong); color: var(--fg); }
 }
 
+/* ============================================================
+   Dark theme — overrides every colour token (and a few baked-in surfaces)
+   when <html data-theme="dark"> is set. The attribute is applied pre-paint by
+   the inline script in app/layout.tsx and toggled by components/theme-toggle.
+   Left UNLAYERED on purpose: unlayered rules beat the @layer base :root above,
+   so these win without an !important.
+
+   A11y model (warm-neutral, accent hue 265):
+   • Foregrounds invert to a warm off-white ramp — --fg-muted ≈7:1 and
+     --fg-subtle ≈4.9:1 on --bg (both clear AA); --fg-faint is decorative.
+   • Borders/hovers switch to white-low-alpha so they read on dark.
+   • Accent + status colours are BRIGHT so they stay legible as TEXT on dark
+     surfaces (chips/labels read colour-on-tint); their solid FILLS therefore
+     carry the dark --*-fg as text (vivid button, near-black label). Tints are
+     dark tinted surfaces, not light washes.
+   ============================================================ */
+:root[data-theme="dark"] {
+  --bg:        oklch(0.18 0.006 65);
+  --bg-elev:   oklch(0.215 0.006 65);
+  --bg-sunk:   oklch(0.15 0.006 65);
+  --bg-hover:  rgba(255, 255, 255, 0.045);
+  --bg-active: rgba(255, 255, 255, 0.075);
+
+  --fg:        oklch(0.96 0.004 65);
+  --fg-muted:  oklch(0.74 0.006 65);
+  --fg-subtle: oklch(0.64 0.006 65); /* ≈5.4:1 on --bg — safety margin over the 4.5 floor */
+  --fg-faint:  oklch(0.49 0.006 65);
+
+  /* Slightly stronger than a literal light-theme inversion: white-on-dark
+     borders need more alpha to register as an edge on elevated surfaces. */
+  --border:        rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.24);
+  --divider:       rgba(255, 255, 255, 0.085);
+
+  --accent:             oklch(0.72 0.15 265);
+  --accent-fg:          oklch(0.18 0.012 265);
+  --accent-hover:       oklch(0.78 0.15 265);
+  --accent-tint:        oklch(0.27 0.055 265);
+  --accent-tint-strong: oklch(0.34 0.075 265);
+
+  --ok:          oklch(0.74 0.14 150);
+  --ok-tint:     oklch(0.26 0.05 150);
+  --warn:        oklch(0.80 0.14 75);
+  --warn-tint:   oklch(0.28 0.055 75);
+  --danger:      oklch(0.72 0.17 25);
+  --danger-tint: oklch(0.27 0.06 25);
+
+  /* Lightened so they stay legible on dark surfaces (the light values are
+     mid-dark and would vanish). */
+  --kind-travel:   oklch(0.72 0.07 255);
+  --kind-tool:     oklch(0.74 0.08 150);
+  --kind-resource: oklch(0.74 0.08 330);
+  --gate-ceo:      oklch(0.74 0.13 295);
+  --gate-vp:       oklch(0.74 0.10 200);
+
+  /* Category chips → dark hue-tinted fill + light hue-matched ink (consistent
+     with --ok-tint/--warn-tint chips rather than bright pastel pills). */
+  --cat-scope-bg: oklch(0.27 0.05 145);     --cat-scope-fg: oklch(0.82 0.11 145);
+  --cat-method-bg: oklch(0.27 0.05 280);    --cat-method-fg: oklch(0.83 0.10 280);
+  --cat-service-bg: oklch(0.27 0.05 240);   --cat-service-fg: oklch(0.83 0.10 240);
+  --cat-identity-bg: oklch(0.27 0.05 60);   --cat-identity-fg: oklch(0.85 0.11 60);
+  --cat-env-bg: oklch(0.27 0.05 200);       --cat-env-fg: oklch(0.84 0.10 200);
+  --cat-compliance-bg: oklch(0.27 0.06 25); --cat-compliance-fg: oklch(0.80 0.13 25);
+
+  /* Dark elevation reads as a darker halo + a faint top highlight, not a
+     light drop shadow. */
+  --shadow-xs: 0 1px 0 rgba(0,0,0,.4);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.5), 0 1px 0 rgba(0,0,0,.35);
+  --shadow-md: 0 2px 6px rgba(0,0,0,.5), 0 6px 20px rgba(0,0,0,.55);
+  --shadow-lg: 0 14px 38px rgba(0,0,0,.62), 0 1px 0 rgba(255,255,255,.05);
+
+  color-scheme: dark;
+}
+
+/* Baked-in surfaces that don't resolve off a single token — re-skin for dark.
+   (The workspace avatar's gradient was a near-black that vanished on a dark
+   sidebar; the decorative shimmers were a hard white sweep that's harsh on
+   dark.) */
+:root[data-theme="dark"] .workspace-avatar {
+  background: linear-gradient(135deg, oklch(0.46 0.03 265) 0%, oklch(0.60 0.07 265) 100%);
+}
+:root[data-theme="dark"] .dash-shimmy::after,
+:root[data-theme="dark"] .pipeline-bar-shimmer { opacity: 0.12; }
+/* The price-hero glow uses --accent-tint, which is a near-bg dark violet on
+   dark — lift it to the stronger tint so the hero still reads as a surface. */
+:root[data-theme="dark"] .ml-hero {
+  background:
+    radial-gradient(ellipse at top right, var(--accent-tint-strong) 0%, transparent 62%),
+    radial-gradient(ellipse at bottom left, var(--accent-tint) 0%, transparent 65%),
+    var(--bg-elev);
+}
+
 /* ───────── Primitives ───────── */
 
 .mono { font-family: var(--font-mono); font-size: 12px; letter-spacing: -0.01em; }
 .num  { font-variant-numeric: tabular-nums; }
+
+/* Type-scale utilities — thin font-size-only helpers backed by the --text-*
+   tokens. Use in place of `style={{ fontSize: 12.5 }}` so the scale stays the
+   source of truth. Adopted file-by-file (not a blanket sweep). */
+.t-2xs  { font-size: var(--text-2xs); }
+.t-xs   { font-size: var(--text-xs); }
+.t-sm   { font-size: var(--text-sm); }
+.t-base { font-size: var(--text-base); }
+.t-md   { font-size: var(--text-md); }
+.t-lg   { font-size: var(--text-lg); }
+.t-xl   { font-size: var(--text-xl); }
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -346,7 +502,11 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
 
 .thread-split {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  /* Flexible thread column: holds ~380px on a full window but yields down to
+     320px when a desktop window is narrowed/split, so the workbench (the
+     primary work area) stays usable instead of being crushed. Desktop-only —
+     no mobile breakpoint by design. */
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
@@ -806,7 +966,7 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
   background: color-mix(in oklch, black 40%, transparent);
   display: grid; place-items: center;
   padding: 24px;
-  z-index: 100;
+  z-index: var(--z-modal);
   animation: fade-in .15s ease-out;
 }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
@@ -1108,6 +1268,29 @@ button:focus-visible, a:focus-visible, .input:focus-visible {
   display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ───────── Skeleton ─────────
+   Loading placeholder that holds an element's shape so async content lands
+   without a layout shift. A lighter band sweeps across to read as "loading".
+   The global prefers-reduced-motion block neutralises the sweep automatically
+   (leaving a calm static block), so no extra guard is needed here. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-sunk);
+  border-radius: var(--radius-sm);
+}
+.skeleton::after {
+  content: '';
+  position: absolute; inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, var(--bg-elev) 55%, transparent);
+  opacity: 0.6;
+  animation: skeletonSweep 1.4s ease-in-out infinite;
+}
+@keyframes skeletonSweep { 100% { transform: translateX(100%); } }
+.skeleton-text { height: 10px; border-radius: 4px; }
+.skeleton-text.lg { height: 14px; }
 
 /* Body-swap fade used by the proposal draft card to transition between
    idle / drafting / regenerating / ready states without snapping. */

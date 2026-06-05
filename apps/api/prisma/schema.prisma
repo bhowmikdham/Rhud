@@ -44,6 +44,10 @@ model Tenant {
   // Per-tenant notification routing override. See @rhud/shared
   // TenantNotificationConfig. Null = use defaults.
   notificationConfig            Json?    @map("notification_config")
+  // Workspace logo — stores the S3 object KEY (not a url). Resolved to a
+  // short-lived signed GET url in GET/PATCH /tenant/me. Null = show the
+  // initial-letter fallback. Uploaded via POST /tenant/logo/presign.
+  logoKey                       String?  @map("logo_key")
   createdAt                     DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   users                   User[]
@@ -650,7 +654,10 @@ model IngestionArtifact {
 
   @@index([tenantId])
   @@index([tenantId, status])
-  @@index([tenantId, externalId])
+  // Unique (not just indexed): the dedup key for inbound webhook redeliveries.
+  // NULL external_id rows (manual uploads) are exempt — Postgres NULLs are
+  // distinct in a unique index. Backs the P2002-on-race dedup in receive().
+  @@unique([tenantId, externalId], map: "ingestion_artifacts_tenant_external_uniq")
   @@index([engagementId])
   @@map("ingestion_artifacts")
 }
@@ -863,6 +870,10 @@ model User {
   /// Human-readable display name. Optional — falls back to the email
   /// local-part in the UI when null. Editable from Settings → Account.
   name         String?
+  /// Profile photo — stores the S3 object KEY (not a url). Resolved to a
+  /// short-lived signed GET url in GET/PATCH /auth/me. Null = show the
+  /// initials fallback. Uploaded via POST /auth/avatar/presign.
+  avatarKey    String?  @map("avatar_key")
   passwordHash String?  @map("password_hash")
   // CHECK constraint is added in the migration SQL.
   role         String
@@ -875,6 +886,13 @@ model User {
   emailVerified              Boolean   @default(true) @map("email_verified")
   emailVerificationTokenHash String?   @map("email_verification_token_hash")
   emailVerificationExpiresAt DateTime? @map("email_verification_expires_at") @db.Timestamptz
+
+  // ── Session revocation (added 20260808) ──────────────────────────
+  // Monotonic counter embedded in every issued JWT as `tv`. JwtAuthGuard
+  // rejects a token whose `tv` no longer matches this column, so bumping it
+  // invalidates all of a user's existing sessions. Bumped on role change and
+  // password reset; a deactivated user is hard-deleted (no row → rejected).
+  tokenVersion Int @default(0) @map("token_version")
 
   tenant         Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   magicLinks     MagicLink[]

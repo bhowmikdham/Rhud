@@ -1,7 +1,7 @@
 'use client';
 
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Suspense, useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth, useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { Icon } from '@/components/icon';
@@ -18,6 +18,7 @@ import {
   industryTemplates,
   industry,
   describeError,
+  uploadToSignedUrl,
   type InviteSummary,
   type LlmConfig,
   type LlmProviderName,
@@ -28,6 +29,13 @@ import {
   type RoutingRuleRow,
   type IndustryTemplateRow,
 } from '@/lib/api';
+import {
+  DEFAULT_NOTIFICATION_ROUTES,
+  RECIPIENT_ROLES,
+  type RecipientRole,
+  type ThreadEventType,
+  type TenantNotificationConfig,
+} from '@rhud/shared';
 
 const TABS = [
   { id: 'account',       label: 'Account',        icon: 'User' as const },
@@ -47,6 +55,10 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]['id'];
 
+function isTabId(v: string | null): v is TabId {
+  return v != null && TABS.some((t) => t.id === v);
+}
+
 export default function SettingsPage() {
   return (
     <Suspense fallback={null}>
@@ -60,12 +72,15 @@ function SettingsInner() {
   const { tenant } = useAuth();
   const search = useSearchParams();
   const router = useRouter();
-  const initialTab = (search.get('tab') as TabId | null) ?? 'account';
+  // Validate the ?tab= param against the live TABS — stale deep-links to
+  // removed tabs ('security'/'billing'/'api') would otherwise render a
+  // blank pane with no sidebar selection.
+  const initialTab: TabId = isTabId(search.get('tab')) ? search.get('tab') as TabId : 'account';
   const [tab, setTab] = useState<TabId>(initialTab);
 
   useEffect(() => {
-    const next = search.get('tab') as TabId | null;
-    if (next && next !== tab) setTab(next);
+    const next = search.get('tab');
+    if (isTabId(next) && next !== tab) setTab(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
@@ -128,7 +143,7 @@ function SettingsInner() {
             {tab === 'routing' && <RoutingRulesPanel isAdmin={user.role === 'admin'} />}
             {tab === 'approvals' && <ApprovalThresholdsPanel isAdmin={user.role === 'admin'} />}
             {tab === 'ai' && <AiPanel isAdmin={user.role === 'admin'} />}
-            {tab === 'notifications' && <NotificationsPanel />}
+            {tab === 'notifications' && <NotificationsPanel isAdmin={user.role === 'admin'} />}
             {/* security / billing / api panels removed — see TABS comment */}
           </div>
         </div>
@@ -186,6 +201,95 @@ function SectionCard({ title, desc, children, actions }: {
   );
 }
 
+// ─── Image upload (avatar / logo) ────────────────────────────
+
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const IMAGE_ACCEPT = IMAGE_TYPES.join(',');
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Reusable image picker for the profile photo + workspace logo. Renders the
+ * current image (or a fallback), and runs the two-step presign→PUT→save flow
+ * the parent supplies via `onPick`. Self-contained busy/error state so a
+ * failed upload never strands the surrounding form.
+ */
+function MediaUploader({
+  currentUrl, fallback, shape, disabled, onPick, onRemove,
+}: {
+  currentUrl: string | null;
+  fallback: React.ReactNode;
+  shape: 'circle' | 'square';
+  disabled?: boolean;
+  onPick: (file: File) => Promise<void>;
+  onRemove?: () => Promise<void>;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const size = 52;
+  const radius = shape === 'circle' ? '50%' : '10px';
+
+  async function handleFile(file: File) {
+    setErr(null);
+    if (!IMAGE_TYPES.includes(file.type)) { setErr('Use a PNG, JPEG, WebP, or GIF image.'); return; }
+    if (file.size > MAX_IMAGE_BYTES) { setErr('Image must be under 5 MB.'); return; }
+    setBusy(true);
+    try { await onPick(file); }
+    catch (e) { setErr(describeError(e)); }
+    finally { setBusy(false); }
+  }
+
+  async function handleRemove() {
+    if (!onRemove) return;
+    setBusy(true); setErr(null);
+    try { await onRemove(); }
+    catch (e) { setErr(describeError(e)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{
+          width: size, height: size, borderRadius: radius, overflow: 'hidden',
+          display: 'grid', placeItems: 'center', position: 'relative', flexShrink: 0,
+          border: '1px solid var(--border)',
+        }}>
+          {currentUrl
+            ? <img src={currentUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            : fallback}
+          {busy && (
+            <div style={{
+              position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+              background: 'color-mix(in oklch, var(--bg) 55%, transparent)',
+            }}>
+              <span className="spin" />
+            </div>
+          )}
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept={IMAGE_ACCEPT}
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void handleFile(f);
+            e.target.value = ''; // allow re-picking the same file
+          }}
+        />
+        <button className="btn sm" disabled={disabled || busy} onClick={() => inputRef.current?.click()}>
+          {currentUrl ? 'Replace' : 'Upload'}
+        </button>
+        {currentUrl && onRemove && (
+          <button className="btn sm ghost" disabled={disabled || busy} onClick={handleRemove}>Remove</button>
+        )}
+      </div>
+      {err && <div style={{ fontSize: 11.5, color: 'var(--danger)' }}>{err}</div>}
+    </div>
+  );
+}
+
 // ─── Account ─────────────────────────────
 
 function AccountPanel() {
@@ -233,14 +337,26 @@ function AccountPanel() {
   return (
     <>
       <SectionCard title="Profile" desc="How you appear to teammates and clients.">
-        <Row label="Photo" sub="Coming soon — file uploads aren't wired yet.">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div className="avatar lg" style={{ background: roleColor(role), width: 52, height: 52, fontSize: 16 }}>
-              {initials}
-            </div>
-            <button className="btn sm" disabled>Upload</button>
-            <button className="btn sm ghost" disabled>Remove</button>
-          </div>
+        <Row label="Photo" sub="PNG, JPEG, WebP, or GIF, up to 5 MB. Shown in the sidebar and to teammates.">
+          <MediaUploader
+            shape="circle"
+            currentUrl={user.avatarUrl ?? null}
+            fallback={
+              <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: roleColor(role), color: '#fff', fontSize: 16, fontWeight: 600 }}>
+                {initials}
+              </div>
+            }
+            onPick={async (file) => {
+              const { uploadUrl, key } = await authApi.avatarPresign({ contentType: file.type, filename: file.name });
+              await uploadToSignedUrl(uploadUrl, file);
+              await authApi.updateMe({ avatarKey: key });
+              await refreshUser();
+            }}
+            onRemove={async () => {
+              await authApi.updateMe({ avatarKey: null });
+              await refreshUser();
+            }}
+          />
         </Row>
         <Row label="Full name" sub="Shown in the sidebar, topbar, and to your teammates.">
           <input
@@ -338,11 +454,25 @@ function WorkspacePanel({ isAdmin }: { isAdmin: boolean }) {
         title="Workspace"
         desc={tenant?.name ? `Visible to everyone in ${tenant.name}.` : 'Visible to everyone in this workspace.'}
       >
-        <Row label="Logo" sub="Coming soon — file uploads aren't wired yet.">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div className="workspace-avatar" style={{ width: 48, height: 48, fontSize: 18, borderRadius: 10 }}>{initial}</div>
-            <button className="btn sm" disabled>Upload</button>
-          </div>
+        <Row label="Logo" sub="PNG, JPEG, WebP, or GIF, up to 5 MB. Shown in the sidebar and on invites.">
+          <MediaUploader
+            shape="square"
+            disabled={!isAdmin}
+            currentUrl={tenant?.logoUrl ?? null}
+            fallback={
+              <div className="workspace-avatar" style={{ width: '100%', height: '100%', fontSize: 18, borderRadius: 0 }}>{initial}</div>
+            }
+            onPick={async (file) => {
+              const { uploadUrl, key } = await tenantApi.logoPresign({ contentType: file.type, filename: file.name });
+              await uploadToSignedUrl(uploadUrl, file);
+              await tenantApi.update({ logoKey: key });
+              await refreshTenant();
+            }}
+            onRemove={async () => {
+              await tenantApi.update({ logoKey: null });
+              await refreshTenant();
+            }}
+          />
         </Row>
         <Row label="Workspace name" sub="Shown in the sidebar, on invites, and on client-facing links.">
           <input
@@ -688,7 +818,7 @@ function InviteModal({ onClose, onCreated }: { onClose(): void; onCreated(devTok
       style={{
         position: 'fixed', inset: 0,
         background: 'color-mix(in oklch, black 40%, transparent)',
-        display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+        display: 'grid', placeItems: 'center', zIndex: 'var(--z-modal)', padding: 16,
       }}
       onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
     >
@@ -1148,53 +1278,292 @@ function AiPanel({ isAdmin }: { isAdmin: boolean }) {
 
 // ─── Notifications ─────────────────────────────
 
-function NotificationsPanel() {
-  const groups: Array<{ title: string; rows: Array<[string, 'email' | 'slack', boolean]> }> = [
-    { title: 'Engagement activity', rows: [
-      ['Client submits a scope form', 'email', true],
-      ['Client submits a scope form', 'slack', true],
-      ['Rhud finishes a price prediction', 'email', false],
-      ['Rhud finishes a price prediction', 'slack', true],
-      ['Proposal drafted by Gamma', 'email', true],
-      ['Proposal drafted by Gamma', 'slack', false],
-      ['Client opens a proposal link', 'email', true],
-      ['Client opens a proposal link', 'slack', false],
-    ]},
-    { title: 'Approvals', rows: [
-      ['Your approval is requested', 'email', true],
-      ['Your approval is requested', 'slack', true],
-      ['Approval SLA at risk (>8h pending)', 'email', true],
-      ['Approval SLA at risk (>8h pending)', 'slack', true],
-    ]},
-    { title: 'Digests', rows: [
-      ['Daily morning digest', 'email', true],
-      ['Weekly pipeline summary (Mondays)', 'email', true],
-    ]},
-  ];
-  return (
-    <>
-      {groups.map((g) => (
-        <SectionCard key={g.title} title={g.title}>
-          {g.rows.map((r, i, arr) => (
-            <NotificationRow key={i} label={r[0]} channel={r[1]} initial={r[2]} last={i === arr.length - 1} />
-          ))}
-        </SectionCard>
-      ))}
-    </>
-  );
+/** The two recipient roles Rhud actually emails internally. The third
+ *  shared role ('client') is delivered by the rep directly (proposal links),
+ *  not routed here, so it isn't shown — but it's preserved on save for any
+ *  event whose default includes it. */
+const NOTIF_VISIBLE_ROLES: Array<{ role: RecipientRole; label: string }> = [
+  { role: 'sales_employee', label: 'Sales rep' },
+  { role: 'sales_manager', label: 'Sales manager' },
+];
+
+/** Curated, human-labelled catalog of the lifecycle events worth routing.
+ *  Every `type` is a real ThreadEventType the dispatcher fans out; the
+ *  defaults come from @rhud/shared so this never drifts. Internal/noisy
+ *  events (classification, quote line-item edits, …) are intentionally
+ *  omitted — they're silent by default and not useful to route. */
+const NOTIF_GROUPS: Array<{ title: string; events: Array<{ type: ThreadEventType; label: string }> }> = [
+  { title: 'Scoping', events: [
+    { type: 'link_issued', label: 'Scoping link issued to a client' },
+    { type: 'scope_submitted', label: 'Client submits the scope form' },
+    { type: 'clarification_requested', label: 'Reviewer asks for clarification' },
+    { type: 'scope_returned_to_sales', label: 'Scope sent back to sales' },
+    { type: 'scope_escalated', label: 'Scope escalated' },
+  ]},
+  { title: 'Review & routing', events: [
+    { type: 'reviewer_assigned', label: 'Reviewer assigned to an opportunity' },
+    { type: 'reviewer_reassigned', label: 'Reviewer reassigned' },
+  ]},
+  { title: 'Pricing', events: [
+    { type: 'price_predicted', label: 'Rhud finishes a price prediction' },
+    { type: 'price_tech_adjusted', label: 'Tech team adjusts the predicted price' },
+  ]},
+  { title: 'Approvals', events: [
+    { type: 'approval_requested', label: 'Manager approval requested' },
+    { type: 'approval_granted', label: 'Price approved' },
+    { type: 'approval_adjusted', label: 'Price approved with an adjustment' },
+    { type: 'approval_rejected', label: 'Price rejected' },
+    { type: 'approval_reverted', label: 'Approval reverted' },
+    { type: 'final_approval_requested', label: 'VP / CEO sign-off requested' },
+    { type: 'final_approval_granted', label: 'VP / CEO sign-off granted' },
+    { type: 'final_approval_rejected', label: 'VP / CEO sign-off rejected' },
+  ]},
+  { title: 'Proposal & delivery', events: [
+    { type: 'proposal_draft_ready', label: 'Proposal draft ready' },
+    { type: 'proposal_sent', label: 'Proposal sent to the client' },
+    { type: 'engagement_synced', label: 'Opportunity synced to Odoo' },
+    { type: 'engagement_closed', label: 'Opportunity marked won / closed' },
+  ]},
+  { title: 'Lead management', events: [
+    { type: 'ticket_opened', label: 'Support ticket opened' },
+    { type: 'ticket_status_changed', label: 'Ticket status changed' },
+    { type: 'ticket_resolved', label: 'Ticket resolved' },
+  ]},
+  { title: 'Inbound & files', events: [
+    { type: 'engagement_created_from_email', label: 'Opportunity created from an inbound email' },
+    { type: 'file_uploaded', label: 'Client uploads a file' },
+    { type: 'site_enumeration_failed', label: 'Website scan failed' },
+  ]},
+];
+
+interface NotifWorking {
+  disabled: boolean;
+  /** Sparse — only events the admin has explicitly overridden. */
+  routes: Record<string, RecipientRole[]>;
 }
 
-function NotificationRow({ label, channel, initial, last }: {
-  label: string;
-  channel: 'email' | 'slack';
-  initial: boolean;
-  last: boolean;
-}) {
-  const [v, setV] = useState(initial);
+function notifFromStored(cfg: TenantNotificationConfig | null): NotifWorking {
+  return { disabled: !!cfg?.disabled, routes: { ...(cfg?.routes ?? {}) } };
+}
+
+function rolesEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/** Collapse working state to the sparse wire shape: drop overrides that
+ *  match the default, and return null when nothing differs from defaults. */
+function notifNormalize(w: NotifWorking): TenantNotificationConfig | null {
+  const routes: Partial<Record<ThreadEventType, RecipientRole[]>> = {};
+  for (const [ev, roles] of Object.entries(w.routes)) {
+    const def = DEFAULT_NOTIFICATION_ROUTES[ev as ThreadEventType];
+    if (!def || !rolesEqual(roles, def)) routes[ev as ThreadEventType] = roles;
+  }
+  const hasRoutes = Object.keys(routes).length > 0;
+  if (!w.disabled && !hasRoutes) return null;
+  return {
+    ...(w.disabled ? { disabled: true } : {}),
+    ...(hasRoutes ? { routes } : {}),
+  };
+}
+
+/** Stable serialization for dirty-detection — key order independent. */
+function notifCanon(cfg: TenantNotificationConfig | null): string {
+  if (!cfg) return 'null';
+  const routes = cfg.routes ?? {};
+  const entries = Object.keys(routes).sort().map((k) => [k, routes[k as ThreadEventType]]);
+  return JSON.stringify({ disabled: !!cfg.disabled, routes: entries });
+}
+
+function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
+  const { tenant, refreshTenant } = useAuth();
+  const stored = tenant?.notificationConfig ?? null;
+  const storedCanon = notifCanon(stored);
+
+  const [working, setWorking] = useState<NotifWorking>(() => notifFromStored(stored));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Re-seed when the cached tenant config changes (e.g. after a save +
+  // refreshTenant, or a config edit from another tab).
+  useEffect(() => {
+    setWorking(notifFromStored(stored));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storedCanon]);
+
+  const dirty = notifCanon(notifNormalize(working)) !== storedCanon;
+
+  function effectiveRoles(type: ThreadEventType): RecipientRole[] {
+    return working.routes[type] ?? DEFAULT_NOTIFICATION_ROUTES[type] ?? [];
+  }
+  function isCustom(type: ThreadEventType): boolean {
+    const override = working.routes[type];
+    if (!override) return false;
+    return !rolesEqual(override, DEFAULT_NOTIFICATION_ROUTES[type] ?? []);
+  }
+  function toggleRole(type: ThreadEventType, role: RecipientRole) {
+    if (!isAdmin || busy) return; // ignore edits while a save is in flight
+    setWorking((w) => {
+      const set = new Set(effectiveRoles(type));
+      if (set.has(role)) set.delete(role); else set.add(role);
+      // Canonical order (incl. a preserved 'client' if the default had it).
+      const next = RECIPIENT_ROLES.filter((r) => set.has(r));
+      return { ...w, routes: { ...w.routes, [type]: next } };
+    });
+  }
+  function resetEvent(type: ThreadEventType) {
+    if (!isAdmin || busy) return;
+    setWorking((w) => {
+      const { [type]: _drop, ...rest } = w.routes;
+      return { ...w, routes: rest };
+    });
+  }
+
+  async function save() {
+    if (!dirty || busy) return;
+    setBusy(true); setErr(null); setSaved(false);
+    try {
+      await tenantApi.update({ notificationConfig: notifNormalize(working) });
+      await refreshTenant();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setErr(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (tenant == null) {
+    return <div className="empty" style={{ padding: 40 }}><span className="spin" /></div>;
+  }
+
   return (
-    <Row label={label} sub={channel === 'email' ? 'Email' : 'Slack — #sales-rhud'} last={last}>
-      <Toggle value={v} onChange={setV} />
-    </Row>
+    <>
+      {!isAdmin && (
+        <div className="card" style={{
+          padding: '10px 14px', fontSize: 12, color: 'var(--fg-muted)',
+          marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10,
+          background: 'var(--bg-sunk)',
+        }}>
+          <Icon.Lock size={12} style={{ color: 'var(--fg-subtle)' }} />
+          Read-only — notification routing is workspace-wide and only admins can edit it.
+        </div>
+      )}
+
+      <SectionCard
+        title="Email notifications"
+        desc="Rhud emails your team as opportunities move through the pipeline. Choose who gets emailed for each event; unchanged events use the sensible defaults."
+      >
+        <Row
+          label="Pause all emails"
+          sub="Master switch. When on, Rhud sends no notification emails at all — overrides every row below."
+          last
+        >
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: isAdmin ? 'pointer' : 'not-allowed' }}>
+            <Toggle
+              value={working.disabled}
+              onChange={isAdmin ? (v) => setWorking((w) => ({ ...w, disabled: v })) : () => {}}
+            />
+            <span style={{ fontSize: 12.5, color: working.disabled ? 'var(--danger)' : 'var(--fg-muted)' }}>
+              {working.disabled ? 'All emails paused' : 'Emails active'}
+            </span>
+          </label>
+        </Row>
+      </SectionCard>
+
+      {NOTIF_GROUPS.map((g) => (
+        <SectionCard key={g.title} title={g.title}>
+          {/* Column header */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: `1fr ${NOTIF_VISIBLE_ROLES.map(() => '108px').join(' ')} 64px`,
+            gap: 8, padding: '8px 0 6px', borderBottom: '1px solid var(--divider)',
+            fontSize: 10.5, fontWeight: 600, color: 'var(--fg-subtle)', textTransform: 'uppercase', letterSpacing: 0.4,
+          }}>
+            <span>Event</span>
+            {NOTIF_VISIBLE_ROLES.map((r) => <span key={r.role} style={{ textAlign: 'center' }}>{r.label}</span>)}
+            <span />
+          </div>
+
+          {g.events.map((ev, i) => {
+            const roles = effectiveRoles(ev.type);
+            const custom = isCustom(ev.type);
+            return (
+              <div
+                key={ev.type}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: `1fr ${NOTIF_VISIBLE_ROLES.map(() => '108px').join(' ')} 64px`,
+                  gap: 8, padding: '11px 0', alignItems: 'center',
+                  borderBottom: i === g.events.length - 1 ? 'none' : '1px solid var(--divider)',
+                  opacity: working.disabled ? 0.45 : 1,
+                }}
+              >
+                <div style={{ fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.label}</span>
+                  {custom && (
+                    <span className="chip" style={{ fontSize: 9.5, padding: '1px 5px', background: 'var(--accent-tint)', color: 'var(--accent)', flexShrink: 0 }}>
+                      Custom
+                    </span>
+                  )}
+                </div>
+                {NOTIF_VISIBLE_ROLES.map((r) => (
+                  <div key={r.role} style={{ display: 'grid', placeItems: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={roles.includes(r.role)}
+                      disabled={!isAdmin || working.disabled || busy}
+                      onChange={() => toggleRole(ev.type, r.role)}
+                      style={{ width: 15, height: 15, cursor: isAdmin && !working.disabled && !busy ? 'pointer' : 'not-allowed' }}
+                    />
+                  </div>
+                ))}
+                <div style={{ display: 'grid', placeItems: 'center' }}>
+                  {custom ? (
+                    <button
+                      className="btn xs ghost"
+                      disabled={!isAdmin || busy}
+                      onClick={() => resetEvent(ev.type)}
+                      title="Reset this event to the default recipients"
+                      style={{ padding: '2px 6px', fontSize: 10.5 }}
+                    >
+                      Reset
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: 10, color: 'var(--fg-subtle)' }}>Default</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </SectionCard>
+      ))}
+
+      <div style={{ fontSize: 11, color: 'var(--fg-subtle)', lineHeight: 1.5, marginBottom: 16 }}>
+        Email only — Slack and digest delivery aren&apos;t built yet. Client-facing emails
+        (proposal links) are sent by the rep directly, not routed here.
+      </div>
+
+      {err && (
+        <div className="card" style={{
+          padding: 12, color: 'var(--danger)', fontSize: 12.5, marginBottom: 16,
+          background: 'var(--danger-tint)',
+          borderColor: 'color-mix(in oklch, var(--danger) 22%, transparent)',
+        }}>{err}</div>
+      )}
+
+      {isAdmin && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center' }}>
+          {saved && <span style={{ fontSize: 12, color: 'var(--ok)' }}><Icon.Check size={12} /> Saved</span>}
+          <button className="btn ghost" disabled={!dirty || busy} onClick={() => setWorking(notifFromStored(stored))}>
+            Reset
+          </button>
+          <button className="btn accent" disabled={!dirty || busy} onClick={save}>
+            {busy ? <span className="spin" /> : <><Icon.Check size={12} /> Save changes</>}
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1646,7 +2015,7 @@ function ResetTaxonomyModal({
         style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 1000,
+          zIndex: 'var(--z-modal)',
         }}
       >
         <div

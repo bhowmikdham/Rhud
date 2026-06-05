@@ -134,9 +134,11 @@ export function ComparableDeals({
       <p
         style={{
           margin: '8px 0 0',
-          fontSize: 10.5,
+          // Meaningful caption — must clear the 4.5:1 contrast floor, so
+          // --fg-muted (≈4.6:1 on light) rather than --fg-faint (≈1.9:1).
+          fontSize: 'var(--text-2xs)',
           lineHeight: 1.45,
-          color: 'var(--fg-faint)',
+          color: 'var(--fg-muted)',
         }}
       >
         From the latest price prediction — whole-deal comparables, not per-line.

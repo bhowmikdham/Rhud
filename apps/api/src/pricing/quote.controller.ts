@@ -1,5 +1,4 @@
 import {
-  Body,
   Controller,
   Get,
   HttpCode,
@@ -9,22 +8,17 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsInt, Min } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
 import { QuoteService } from './quote.service.js';
 
-class ApproveQuoteDto {
-  @IsInt()
-  @Min(0)
-  approvedPriceCents!: number;
-}
-
 /**
- * Quote endpoints surface the line-item base price + manager approval
- * for a specific engagement. Reads are open to all authed roles in
- * the tenant; approval is admin / sales_manager.
+ * Quote endpoints surface the line-item base price for a specific
+ * engagement. Reads are open to all authed roles in the tenant;
+ * recompute is admin / sales_manager. Final price approval is NOT here —
+ * it flows through PredictionController.approve, which enforces the
+ * VP/CEO multi-level gating (authz-boundary-2).
  */
 @Controller(['opportunities/:id/quote', 'engagements/:id/quote'])
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -54,17 +48,4 @@ export class QuoteController {
     return this.svc.computeAndPersistForEngagement(req.tenantId, engagementId);
   }
 
-  @Post('approve')
-  @Roles('admin', 'sales_manager')
-  @HttpCode(200)
-  approve(
-    @Req() req: AuthedRequest,
-    @Param('id', new ParseUUIDPipe()) engagementId: string,
-    @Body() dto: ApproveQuoteDto,
-  ) {
-    return this.svc.approve(req.tenantId, engagementId, {
-      approvedPriceCents: dto.approvedPriceCents,
-      approvedBy: req.user.sub,
-    });
-  }
 }

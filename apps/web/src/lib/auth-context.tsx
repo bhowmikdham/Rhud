@@ -18,6 +18,10 @@ export interface AuthUser {
   /** Optional display name. Null when the user hasn't set one — sidebar
    *  / topbar fall back to the email local-part. */
   name?: string | null;
+  /** Short-lived signed GET url for the profile photo, or null/absent.
+   *  Present after /auth/me resolves; absent right after sign-in (the JWT
+   *  doesn't carry it) until the next refresh. */
+  avatarUrl?: string | null;
 }
 
 interface AuthContextValue {

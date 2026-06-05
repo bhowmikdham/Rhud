@@ -329,12 +329,14 @@ export class QuoteService {
       // engagements.predicted_price_cents column the UI used to read.
       // The real Stage-3 modifier writes to the dedicated nullable
       // columns on engagement_quotes once the retargeted ML lands.
-      if (result.totalCents > 0) {
-        await db.engagement.update({
-          where: { id: engagementId },
-          data: { predictedPriceCents: BigInt(result.totalCents) },
-        });
-      }
+      // quotes-5: always mirror the base total (including 0). Previously gated
+      // on > 0, so a re-compute that legitimately dropped to 0 (scope shrank /
+      // tiers now unmatched) left a stale non-zero value on the engagement that
+      // disagreed with engagement_quotes.baseTotalCents.
+      await db.engagement.update({
+        where: { id: engagementId },
+        data: { predictedPriceCents: BigInt(result.totalCents) },
+      });
 
       await this.thread.emitWithin(db, tenantId, {
         engagementId,
@@ -374,6 +376,12 @@ export class QuoteService {
         where: { id: engagementId },
         select: { rateCardId: true, template: { select: { rateCardId: true } } },
       });
+      // quotes-3: baseBreakdown is raw JSON cast from the DB without validation;
+      // a legacy/malformed non-array value would make the .map() calls below
+      // throw and 500 the entire approval-card read. Normalise defensively once.
+      if (!Array.isArray(quote.baseBreakdown)) {
+        quote.baseBreakdown = [];
+      }
       const effectiveRateCardId = eng?.rateCardId ?? eng?.template?.rateCardId ?? null;
       if (effectiveRateCardId) {
         try {
@@ -475,52 +483,11 @@ export class QuoteService {
     });
   }
 
-  async approve(
-    tenantId: string,
-    engagementId: string,
-    args: { approvedPriceCents: number; approvedBy: string },
-  ): Promise<PersistedQuote> {
-    return this.tenantDb.run(tenantId, async (db) => {
-      const row = await db.engagementQuote.findUnique({ where: { engagementId } });
-      if (!row) throw new NotFoundException('quote_not_found');
-      const updated = await db.engagementQuote.update({
-        where: { id: row.id },
-        data: {
-          approvedPriceCents: BigInt(args.approvedPriceCents),
-          approvedAt: new Date(),
-          approvedBy: args.approvedBy,
-        },
-      });
-      // Mirror the approved price onto the engagement so the proposal
-      // and Odoo sync read a single field.
-      await db.engagement.update({
-        where: { id: engagementId },
-        data: { approvedPriceCents: BigInt(args.approvedPriceCents) },
-      });
-      await this.thread.emitWithin(db, tenantId, {
-        engagementId,
-        eventType: 'quote_approved',
-        actorType: 'user',
-        actorId: args.approvedBy,
-        payload: {
-          approvedPriceCents: args.approvedPriceCents,
-          baseTotalCents: Number(row.baseTotalCents),
-          predictedPriceCents:
-            row.predictedPriceCents == null ? null : Number(row.predictedPriceCents),
-        },
-      });
-      void this.thread.dispatchAfterCommit(tenantId, {
-        engagementId,
-        eventType: 'quote_approved',
-        actorType: 'user',
-        actorId: args.approvedBy,
-        payload: {
-          approvedPriceCents: args.approvedPriceCents,
-        },
-      });
-      return rowToDomain(updated);
-    });
-  }
+  // NOTE: quote-level approve was removed (authz-boundary-2). It wrote the
+  // final approvedPriceCents with NO VP/CEO threshold gating, bypassing the
+  // multi-level approval the prediction-based path enforces. All approval now
+  // flows through PredictionController.approve, which reads the tenant
+  // thresholds and routes to pending_vp/ceo_approval as required.
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

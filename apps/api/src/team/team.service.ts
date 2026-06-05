@@ -17,17 +17,77 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { Prisma } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { randomBytes } from 'node:crypto';
-import { ROLES, isRole, type Role } from '@rhud/shared';
+import { randomBytes, randomUUID } from 'node:crypto';
+import {
+  ROLES,
+  isRole,
+  RECIPIENT_ROLES,
+  THREAD_EVENT_TYPES,
+  type Role,
+  type RecipientRole,
+  type ThreadEventType,
+  type TenantNotificationConfig,
+} from '@rhud/shared';
 import { TenantDb } from '../db/with-tenant.js';
 import { UnscopedDb } from '../db/unscoped-db.js';
 import { EmailService } from '../email/email.service.js';
+import { S3Service } from '../storage/s3.service.js';
+import { isAllowedImageType } from '../storage/media.js';
 import type { JwtPayload } from '../auth/auth.types.js';
 
 // 7 days — long enough that reasonable people get to it, short enough
 // that a forgotten invite doesn't hang around forever.
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Signed-GET TTL for the workspace logo. Re-signed on every GET /tenant/me. */
+const LOGO_URL_TTL_SECONDS = 6 * 3600;
+
+const EVENT_TYPE_SET: ReadonlySet<string> = new Set(THREAD_EVENT_TYPES);
+const RECIPIENT_ROLE_SET: ReadonlySet<string> = new Set(RECIPIENT_ROLES);
+
+/**
+ * Deep-validate a tenant notification-config override coming off the wire.
+ * The DTO only guarantees it's an object; here we reject unknown event keys
+ * and unknown recipient roles so a typo can't silently disable a route or
+ * persist garbage into the JSONB column that `resolveRoute` later reads.
+ */
+function validateNotificationConfig(input: unknown): TenantNotificationConfig {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new BadRequestException('notification_config_invalid');
+  }
+  const obj = input as Record<string, unknown>;
+  const out: TenantNotificationConfig = {};
+
+  if (obj.disabled !== undefined) {
+    if (typeof obj.disabled !== 'boolean') {
+      throw new BadRequestException('notification_config_disabled_invalid');
+    }
+    out.disabled = obj.disabled;
+  }
+
+  if (obj.routes !== undefined) {
+    if (typeof obj.routes !== 'object' || obj.routes === null || Array.isArray(obj.routes)) {
+      throw new BadRequestException('notification_config_routes_invalid');
+    }
+    const routes: Partial<Record<ThreadEventType, RecipientRole[]>> = {};
+    for (const [event, roles] of Object.entries(obj.routes as Record<string, unknown>)) {
+      if (!EVENT_TYPE_SET.has(event)) {
+        throw new BadRequestException(`notification_config_unknown_event:${event}`);
+      }
+      if (!Array.isArray(roles) || !roles.every((r) => typeof r === 'string' && RECIPIENT_ROLE_SET.has(r))) {
+        throw new BadRequestException(`notification_config_invalid_roles:${event}`);
+      }
+      // De-dup while preserving the known-role order.
+      const unique = RECIPIENT_ROLES.filter((r) => (roles as string[]).includes(r));
+      routes[event as ThreadEventType] = unique;
+    }
+    out.routes = routes;
+  }
+
+  return out;
+}
 
 // Human-readable role names shown in the invite email body so the
 // recipient knows what they're being granted before they accept. Roles
@@ -85,6 +145,36 @@ export interface TenantConfigDto {
    *  to the UI so the setup-panel nudge can detect a tenant that's
    *  still on the default 'cybersecurity' template. */
   industryTemplateSlug: string;
+  /** Per-tenant notification routing override (null = system defaults).
+   *  The Settings → Notifications panel reads + writes this. */
+  notificationConfig: TenantNotificationConfig | null;
+  /** Short-lived signed GET url for the workspace logo, or null when
+   *  none is set. Frontend renders it in the sidebar / Settings. */
+  logoUrl: string | null;
+}
+
+/** Columns selected for the tenant-config DTO. Shared by read + update so
+ *  the two paths can never drift. */
+const TENANT_CONFIG_SELECT = {
+  id: true, name: true, plan: true,
+  leadSummaryAutoGenerate: true,
+  requiresVpApprovalAboveCents: true,
+  requiresCeoApprovalAboveCents: true,
+  industryTemplateSlug: true,
+  notificationConfig: true,
+  logoKey: true,
+} as const;
+
+interface TenantConfigRow {
+  id: string;
+  name: string;
+  plan: string;
+  leadSummaryAutoGenerate: boolean;
+  requiresVpApprovalAboveCents: bigint | null;
+  requiresCeoApprovalAboveCents: bigint | null;
+  industryTemplateSlug: string;
+  notificationConfig: unknown;
+  logoKey: string | null;
 }
 
 @Injectable()
@@ -97,6 +187,7 @@ export class TeamService {
     private readonly unscoped: UnscopedDb,
     private readonly jwt: JwtService,
     private readonly email: EmailService,
+    private readonly s3: S3Service,
   ) {}
 
   // ── Tenant identity ─────────────────────────────────────────────────────
@@ -105,26 +196,10 @@ export class TeamService {
     return this.tenantDb.run(tenantId, async (db) => {
       const row = await db.tenant.findUnique({
         where: { id: tenantId },
-        select: {
-          id: true, name: true, plan: true,
-          leadSummaryAutoGenerate: true,
-          requiresVpApprovalAboveCents: true,
-          requiresCeoApprovalAboveCents: true,
-          industryTemplateSlug: true,
-        },
+        select: TENANT_CONFIG_SELECT,
       });
       if (!row) throw new NotFoundException('tenant_not_found');
-      return {
-        id: row.id,
-        name: row.name,
-        plan: row.plan,
-        leadSummaryAutoGenerate: row.leadSummaryAutoGenerate,
-        requiresVpApprovalAboveCents: row.requiresVpApprovalAboveCents == null
-          ? null : Number(row.requiresVpApprovalAboveCents),
-        requiresCeoApprovalAboveCents: row.requiresCeoApprovalAboveCents == null
-          ? null : Number(row.requiresCeoApprovalAboveCents),
-        industryTemplateSlug: row.industryTemplateSlug,
-      };
+      return this.toTenantConfigDto(row as TenantConfigRow);
     });
   }
 
@@ -136,6 +211,8 @@ export class TeamService {
       leadSummaryAutoGenerate?: boolean;
       requiresVpApprovalAboveCents?: number | null;
       requiresCeoApprovalAboveCents?: number | null;
+      notificationConfig?: TenantNotificationConfig | null;
+      logoKey?: string | null;
     },
   ): Promise<TenantConfigDto> {
     const data: {
@@ -143,6 +220,8 @@ export class TeamService {
       leadSummaryAutoGenerate?: boolean;
       requiresVpApprovalAboveCents?: bigint | null;
       requiresCeoApprovalAboveCents?: bigint | null;
+      notificationConfig?: TenantNotificationConfig | null;
+      logoKey?: string | null;
     } = {};
     if (args.name !== undefined) {
       const trimmed = args.name.trim();
@@ -167,6 +246,22 @@ export class TeamService {
       }
       data.requiresCeoApprovalAboveCents = v == null ? null : BigInt(Math.round(v));
     }
+    if (args.notificationConfig !== undefined) {
+      data.notificationConfig = args.notificationConfig === null
+        ? null
+        : validateNotificationConfig(args.notificationConfig);
+    }
+    if (args.logoKey !== undefined) {
+      if (args.logoKey === null) {
+        data.logoKey = null;
+      } else {
+        const prefix = S3Service.logoPrefixForTenant({ tenantId });
+        if (!args.logoKey.startsWith(prefix)) {
+          throw new BadRequestException('logo_key_invalid');
+        }
+        data.logoKey = args.logoKey;
+      }
+    }
     // Sanity: CEO threshold must be >= VP threshold if both are set.
     if (
       data.requiresVpApprovalAboveCents != null
@@ -177,31 +272,70 @@ export class TeamService {
     }
     if (Object.keys(data).length === 0) throw new BadRequestException('no_fields_to_update');
 
+    // Split the JSON column out: a nullable Prisma `Json?` field must be
+    // cleared with `Prisma.DbNull`, not JS `null`. Everything else maps
+    // straight onto the update input.
+    const { notificationConfig, ...rest } = data;
+    const prismaData: Prisma.TenantUpdateInput = { ...rest };
+    if ('notificationConfig' in data) {
+      prismaData.notificationConfig = notificationConfig === null || notificationConfig === undefined
+        ? Prisma.DbNull
+        : (notificationConfig as unknown as Prisma.InputJsonValue);
+    }
+
     return this.tenantDb.run(tenantId, async (db) => {
       const updated = await db.tenant.update({
         where: { id: tenantId },
-        data,
-        select: {
-          id: true, name: true, plan: true,
-          leadSummaryAutoGenerate: true,
-          requiresVpApprovalAboveCents: true,
-          requiresCeoApprovalAboveCents: true,
-          industryTemplateSlug: true,
-        },
+        data: prismaData,
+        select: TENANT_CONFIG_SELECT,
       });
       this.logger.log(`tenant ${tenantId} updated by ${actor.sub}`);
-      return {
-        id: updated.id,
-        name: updated.name,
-        plan: updated.plan,
-        leadSummaryAutoGenerate: updated.leadSummaryAutoGenerate,
-        requiresVpApprovalAboveCents: updated.requiresVpApprovalAboveCents == null
-          ? null : Number(updated.requiresVpApprovalAboveCents),
-        requiresCeoApprovalAboveCents: updated.requiresCeoApprovalAboveCents == null
-          ? null : Number(updated.requiresCeoApprovalAboveCents),
-        industryTemplateSlug: updated.industryTemplateSlug,
-      };
+      return this.toTenantConfigDto(updated as TenantConfigRow);
     });
+  }
+
+  /** POST /tenant/logo/presign — signed PUT url for the workspace logo.
+   *  Admin-only (guarded at the controller). */
+  async presignLogo(
+    tenantId: string,
+    args: { contentType: string; filename?: string },
+  ): Promise<{ uploadUrl: string; key: string; expiresAt: string }> {
+    if (!isAllowedImageType(args.contentType)) {
+      throw new BadRequestException('unsupported_image_type');
+    }
+    const key = S3Service.keyForTenantLogo({
+      tenantId,
+      uploadId: randomUUID(),
+      filename: args.filename?.trim() || 'logo',
+    });
+    const { url, expiresAt } = await this.s3.presignPut({ key, contentType: args.contentType });
+    return { uploadUrl: url, key, expiresAt };
+  }
+
+  /** Map a selected tenant row to the public DTO, resolving the logo key
+   *  to a short-lived signed GET url. */
+  private async toTenantConfigDto(row: TenantConfigRow): Promise<TenantConfigDto> {
+    let logoUrl: string | null = null;
+    if (row.logoKey) {
+      try {
+        logoUrl = await this.s3.presignGet({ key: row.logoKey, expiresInSeconds: LOGO_URL_TTL_SECONDS });
+      } catch {
+        logoUrl = null;
+      }
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      plan: row.plan,
+      leadSummaryAutoGenerate: row.leadSummaryAutoGenerate,
+      requiresVpApprovalAboveCents: row.requiresVpApprovalAboveCents == null
+        ? null : Number(row.requiresVpApprovalAboveCents),
+      requiresCeoApprovalAboveCents: row.requiresCeoApprovalAboveCents == null
+        ? null : Number(row.requiresCeoApprovalAboveCents),
+      industryTemplateSlug: row.industryTemplateSlug,
+      notificationConfig: (row.notificationConfig as TenantNotificationConfig | null) ?? null,
+      logoUrl,
+    };
   }
 
   // ── Users ───────────────────────────────────────────────────────────────
@@ -237,7 +371,13 @@ export class TeamService {
         const adminCount = await db.user.count({ where: { role: 'admin' } });
         if (adminCount <= 1) throw new ForbiddenException('cannot_demote_last_admin');
       }
-      const updated = await db.user.update({ where: { id: userId }, data: { role } });
+      // Bump tokenVersion so the target's existing JWTs (carrying the OLD role)
+      // are rejected by JwtAuthGuard — the new role takes effect on next login
+      // instead of lingering for the full token TTL.
+      const updated = await db.user.update({
+        where: { id: userId },
+        data: { role, tokenVersion: { increment: 1 } },
+      });
       this.logger.log(`role change tenant=${tenantId} actor=${actor.sub} target=${userId} -> ${role}`);
       return {
         id: updated.id,
@@ -459,6 +599,7 @@ export class TeamService {
       tid: user.tenantId,
       role: user.role as Role,
       email: user.email,
+      tv: user.tokenVersion,
     };
     return { token: this.jwt.sign(payload), user: payload };
   }

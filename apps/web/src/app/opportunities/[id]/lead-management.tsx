@@ -325,8 +325,8 @@ function TicketTable({
 function PriorityBadge({ priority }: { priority: TicketPriority }) {
   const map: Record<TicketPriority, { bg: string; fg: string; label: string }> = {
     low: { bg: 'var(--bg-sunk)', fg: 'var(--fg-muted)', label: 'Low' },
-    medium: { bg: 'color-mix(in oklch, #aaa 24%, transparent)', fg: 'var(--fg)', label: 'Med' },
-    high: { bg: 'color-mix(in oklch, #c80 28%, transparent)', fg: '#a60', label: 'High' },
+    medium: { bg: 'color-mix(in oklch, var(--fg-subtle) 22%, transparent)', fg: 'var(--fg)', label: 'Med' },
+    high: { bg: 'color-mix(in oklch, var(--warn) 28%, transparent)', fg: 'var(--warn)', label: 'High' },
     urgent: { bg: 'var(--danger-tint)', fg: 'var(--danger)', label: 'Urgent' },
   };
   const s = map[priority];
@@ -403,7 +403,7 @@ function TicketEditorModal({
         style={{
           position: 'fixed', inset: 0,
           background: 'color-mix(in oklch, black 40%, transparent)',
-          display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+          display: 'grid', placeItems: 'center', zIndex: 'var(--z-modal)', padding: 16,
         }}
         onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
       >
@@ -681,7 +681,7 @@ function FollowUpCreateModal({
         style={{
           position: 'fixed', inset: 0,
           background: 'color-mix(in oklch, black 40%, transparent)',
-          display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+          display: 'grid', placeItems: 'center', zIndex: 'var(--z-modal)', padding: 16,
         }}
         onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
       >
@@ -752,7 +752,7 @@ function FollowUpCompleteModal({
         style={{
           position: 'fixed', inset: 0,
           background: 'color-mix(in oklch, black 40%, transparent)',
-          display: 'grid', placeItems: 'center', zIndex: 60, padding: 16,
+          display: 'grid', placeItems: 'center', zIndex: 'var(--z-modal)', padding: 16,
         }}
         onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
       >

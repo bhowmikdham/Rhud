@@ -46,7 +46,7 @@ export function FinalApprovalCard({
     || (level === 'vp' && userRole === 'vp_sales');
 
   const gateLabel = level === 'ceo' ? 'CEO sign-off' : 'VP Sales sign-off';
-  const tone = level === 'ceo' ? '#7c3aed' /* purple */ : '#0e7490' /* teal */;
+  const tone = level === 'ceo' ? 'var(--gate-ceo)' : 'var(--gate-vp)';
 
   async function approve() {
     if (busy) return;

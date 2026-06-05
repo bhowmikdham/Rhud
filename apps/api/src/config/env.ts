@@ -7,9 +7,10 @@ export const envSchema = z.object({
   API_CORS_ORIGIN: z.string().default('http://localhost:3000'),
 
   DATABASE_URL: z.string().url(),
-  // Runtime DB URL — connects as rhud_app (NOBYPASSRLS). Falls back to
-  // DATABASE_URL if unset, which is fine for local first-runs but you'll
-  // see RLS leaks until you set the dedicated runtime URL. CI sets both.
+  // Runtime DB URL — connects as rhud_app (NOBYPASSRLS). Optional in dev/test
+  // (falls back to DATABASE_URL for local first-runs); REQUIRED in production
+  // (enforced by the superRefine below). Falling back to the BYPASSRLS owner in
+  // prod would silently disable every tenant RLS policy. CI sets both.
   APP_DATABASE_URL: z.string().url().optional(),
 
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 chars'),
@@ -42,6 +43,29 @@ export const envSchema = z.object({
   // Region for SES API calls. Defaults to ap-south-1 (where the demo
   // stack lives). The SDK also picks up AWS_REGION if this is unset.
   SES_REGION: z.string().default('ap-south-1'),
+
+  // ── Scheduler ───────────────────────────────────────────────────
+  // Master switch for the nightly audit-chain seal cron (AuditSealService).
+  // Default on; set to 'false' to disable (e.g. when a dedicated worker owns
+  // the sweep, or to silence it on a staging box). The cron also never fires
+  // under NODE_ENV=test. Declared here for discoverability + validation; the
+  // service reads process.env directly (house pattern), treating anything but
+  // the literal 'false' as enabled.
+  AUDIT_SEAL_ENABLED: z.enum(['true', 'false']).default('true'),
+}).superRefine((env, ctx) => {
+  // In production the API must connect as the dedicated rhud_app (NOBYPASSRLS)
+  // role. Without APP_DATABASE_URL the Prisma client falls back to DATABASE_URL
+  // (the BYPASSRLS table owner), which silently voids every tenant RLS policy —
+  // a single missing env var becomes full cross-tenant data exposure.
+  if (env.NODE_ENV === 'production' && !env.APP_DATABASE_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['APP_DATABASE_URL'],
+      message:
+        'APP_DATABASE_URL is required in production (rhud_app / NOBYPASSRLS). ' +
+        'Refusing to fall back to DATABASE_URL, which would disable tenant RLS.',
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -75,6 +75,8 @@ export function FocusJump({
             }}
             type="button"
             role="tab"
+            id={`focus-tab-${item.id}`}
+            aria-controls={`focus-panel-${item.id}`}
             aria-selected={active}
             aria-label={item.label}
             tabIndex={active ? 0 : -1}

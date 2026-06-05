@@ -981,13 +981,13 @@ function InferredEntityRow({
  *  `categorisePoint` for the rules. */
 function CategoryChip({ category }: { category: PointCategory }) {
   const meta: Record<PointCategory, { bg: string; fg: string; label: string }> = {
-    scope:        { bg: 'oklch(0.92 0.05 145)', fg: 'oklch(0.32 0.12 145)', label: 'scope' },
-    methodology:  { bg: 'oklch(0.93 0.04 280)', fg: 'oklch(0.34 0.12 280)', label: 'method' },
-    service_type: { bg: 'oklch(0.92 0.05 240)', fg: 'oklch(0.32 0.12 240)', label: 'service' },
-    identity:     { bg: 'oklch(0.93 0.04 60)',  fg: 'oklch(0.36 0.12 60)',  label: 'identity' },
-    environment:  { bg: 'oklch(0.93 0.04 200)', fg: 'oklch(0.34 0.12 200)', label: 'env' },
-    compliance:   { bg: 'oklch(0.93 0.04 25)',  fg: 'oklch(0.4 0.15 25)',   label: 'compliance' },
-    other:        { bg: 'var(--bg-sunk)',       fg: 'var(--fg-subtle)',     label: 'other' },
+    scope:        { bg: 'var(--cat-scope-bg)',      fg: 'var(--cat-scope-fg)',      label: 'scope' },
+    methodology:  { bg: 'var(--cat-method-bg)',     fg: 'var(--cat-method-fg)',     label: 'method' },
+    service_type: { bg: 'var(--cat-service-bg)',    fg: 'var(--cat-service-fg)',    label: 'service' },
+    identity:     { bg: 'var(--cat-identity-bg)',   fg: 'var(--cat-identity-fg)',   label: 'identity' },
+    environment:  { bg: 'var(--cat-env-bg)',        fg: 'var(--cat-env-fg)',        label: 'env' },
+    compliance:   { bg: 'var(--cat-compliance-bg)', fg: 'var(--cat-compliance-fg)', label: 'compliance' },
+    other:        { bg: 'var(--bg-sunk)',           fg: 'var(--fg-subtle)',         label: 'other' },
   };
   const m = meta[category];
   return (
