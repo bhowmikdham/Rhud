@@ -55,6 +55,14 @@ export function ApprovalCard(props: {
   repredicting: boolean;
   rejectionReason: string | null;
   thread: ThreadEventRow[];
+  /** Pricing extras (travel/tools/discounts) changed AFTER the deal was
+   *  approved, so the frozen approved price no longer reflects them. Re-exposes
+   *  the approve actions and shows the discrepancy. */
+  pricingStale?: boolean | undefined;
+  /** Signed sum of the pricing extras, in cents (discounts negative). */
+  extrasTotalCents?: number | undefined;
+  /** baseTotalCents + extrasTotalCents — the grand total shown in the editor. */
+  grandTotalCents?: number | undefined;
 }) {
   // Phase C split: thin orchestrator. <PriceSummary> is the read-only headline
   // (mountable for any role); <ApprovalActions> holds the interactive pricing
@@ -71,6 +79,7 @@ export function ApprovalCard(props: {
         approvedPriceCents={props.approvedPriceCents}
         rejectionReason={props.rejectionReason}
         thread={props.thread}
+        pricingStale={props.pricingStale}
       />
       <ApprovalActions
         prediction={props.prediction}
@@ -78,12 +87,16 @@ export function ApprovalCard(props: {
         approverRole={props.approverRole}
         approved={props.approved}
         rejected={props.rejected}
+        approvedPriceCents={props.approvedPriceCents}
         onApprove={props.onApprove}
         onReject={props.onReject}
         onRevert={props.onRevert}
         onRepredict={props.onRepredict}
         onTechAdjust={props.onTechAdjust}
         repredicting={props.repredicting}
+        pricingStale={props.pricingStale}
+        extrasTotalCents={props.extrasTotalCents}
+        grandTotalCents={props.grandTotalCents}
       />
     </div>
   );
@@ -99,6 +112,7 @@ export function PriceSummary({
   approvedPriceCents,
   rejectionReason,
   thread,
+  pricingStale,
 }: {
   prediction: Prediction;
   quote: EngagementQuote | null;
@@ -107,6 +121,7 @@ export function PriceSummary({
   approvedPriceCents: number | null;
   rejectionReason: string | null;
   thread: ThreadEventRow[];
+  pricingStale?: boolean | undefined;
 }) {
   const currency = quote?.currency ?? 'INR';
   const fmt = (cents: number) => formatMoney(cents, currency);
@@ -140,7 +155,10 @@ export function PriceSummary({
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <RegimePill regime={prediction.regime} dataQuality={prediction.dataQuality} />
             {approved && approvedPriceCents != null
-              ? <span className="chip ok"><Icon.Check size={11} sw={2.2} />Approved · {fmt(approvedPriceCents)}</span>
+              ? <>
+                  <span className="chip ok"><Icon.Check size={11} sw={2.2} />Approved · {fmt(approvedPriceCents)}</span>
+                  {pricingStale && <span className="chip warn"><Icon.Clock size={10} />Pricing changed</span>}
+                </>
               : rejected
                 ? <span className="chip danger"><Icon.X size={10} />Rejected</span>
                 : <span className="chip warn"><Icon.Clock size={10} />Awaiting approval</span>}
@@ -176,18 +194,23 @@ export function ApprovalActions({
   approverRole,
   approved,
   rejected,
+  approvedPriceCents,
   onApprove,
   onReject,
   onRevert,
   onRepredict,
   onTechAdjust,
   repredicting,
+  pricingStale,
+  extrasTotalCents,
+  grandTotalCents,
 }: {
   prediction: Prediction;
   quote: EngagementQuote | null;
   approverRole: string;
   approved: boolean;
   rejected: boolean;
+  approvedPriceCents?: number | null;
   onApprove(
     choice: ApprovalChoice,
     extras?: { customPriceCents?: number; comment?: string },
@@ -197,6 +220,9 @@ export function ApprovalActions({
   onRepredict(): Promise<void>;
   onTechAdjust(adjustedPriceCents: number, note: string): Promise<void>;
   repredicting: boolean;
+  pricingStale?: boolean | undefined;
+  extrasTotalCents?: number | undefined;
+  grandTotalCents?: number | undefined;
 }) {
   const canApprove = approverRole === 'admin' || approverRole === 'sales_manager';
   const isAdmin = approverRole === 'admin';
@@ -206,9 +232,21 @@ export function ApprovalActions({
   const techAdjustedFresh =
     quote?.techAdjustedPriceCents != null
     && quote.techAdjustedPredictionId === prediction.id;
-  // Approve/reject are mutually exclusive — once a decision is recorded,
-  // hide both action surfaces. Admin gets a "Revert" escape hatch instead.
-  const decisionMade = approved || rejected;
+  // Pricing extras changed after approval → the frozen approved price is stale.
+  // Re-expose the approve actions so a manager can fold the extras in (which
+  // re-runs the VP/CEO threshold gate); the "Approved · X / Pricing changed"
+  // chips up top keep the prior decision visible meanwhile.
+  const reapproveNeeded = approved && !!pricingStale;
+  // Approve/reject are mutually exclusive — once a decision is recorded, hide
+  // both action surfaces. Admin gets a "Revert" escape hatch instead. A stale
+  // approval is treated as not-yet-decided so the tiers come back.
+  const decisionMade = (approved || rejected) && !reapproveNeeded;
+  // Signed sum of the pricing extras (discounts negative). The base/recommended/
+  // aggressive tiers fold these in on approval (custom/tech-adjusted are verbatim
+  // manual totals), so we preview the with-extras result only on those tiers.
+  const extras = extrasTotalCents ?? 0;
+  const foldsExtras = (c: ApprovalChoice) =>
+    c === 'base' || c === 'recommended' || c === 'aggressive';
   const [showReject, setShowReject] = useState(false);
   const [reverting, setReverting] = useState(false);
   const confirm = useConfirm();
@@ -280,6 +318,31 @@ export function ApprovalActions({
 
   return (
     <>
+      {reapproveNeeded && (
+        <div
+          role="status"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            marginTop: 14, padding: '10px 12px', borderRadius: 'var(--radius)',
+            background: 'var(--warn-tint)',
+            border: '1px solid color-mix(in oklch, var(--warn) 22%, transparent)',
+          }}
+        >
+          <Icon.Clock size={14} aria-hidden style={{ color: 'var(--warn)', flexShrink: 0 }} />
+          <span style={{ fontSize: 12.5, color: 'var(--fg)', lineHeight: 1.5 }}>
+            <strong style={{ fontWeight: 600 }}>Pricing changed since approval</strong>
+            <span style={{ color: 'var(--fg-muted)' }}>
+              {' '}—{' '}
+              {approvedPriceCents != null ? `approved at ${fmt(approvedPriceCents)}, ` : ''}
+              but the current grand total is{' '}
+              <b style={{ color: 'var(--fg)', fontVariantNumeric: 'tabular-nums' }}>
+                {grandTotalCents != null ? fmt(grandTotalCents) : '—'}
+              </b>
+              . Re-approve below to fold the extras into the quote &amp; proposal.
+            </span>
+          </span>
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: `repeat(${offers.length}, 1fr)`, gap: 8, marginTop: 14 }}>
         {offers.map((o) => (
           <div
@@ -300,6 +363,16 @@ export function ApprovalActions({
             <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4, letterSpacing: '-0.01em' }}>
               {fmt(o.cents)}
             </div>
+            {/* When extras exist, the foldable tiers approve at tier + extras —
+                preview that so the manager sees the real number they're locking. */}
+            {extras !== 0 && foldsExtras(o.choice) && (
+              <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>
+                with extras →{' '}
+                <b style={{ color: 'var(--fg)', fontVariantNumeric: 'tabular-nums' }}>
+                  {fmt(Math.max(0, o.cents + extras))}
+                </b>
+              </div>
+            )}
             {o.sub && <div style={{ fontSize: 11, color: 'var(--fg-subtle)', marginTop: 2 }}>{o.sub}</div>}
             {canApprove && !decisionMade && (
               <button

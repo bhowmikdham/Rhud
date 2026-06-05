@@ -9,12 +9,14 @@ import {
   opportunities,
   predictions,
   proposalDraft,
+  quoteLineItems,
   quotes,
   type ApprovalChoice,
   type EngagementQuote,
   type EngagementSummary,
   type GatheringLinkInfo,
   type Prediction,
+  type QuoteTotalsBreakdown,
   type ThreadEventRow,
 } from '@/lib/api';
 import { useRequireAuth } from '@/lib/auth-context';
@@ -71,6 +73,9 @@ const EVENT_LABELS: Record<string, string> = {
   engagement_closed: 'Opportunity closed',
   quote_computed: 'Base quote computed',
   quote_approved: 'Quote approved',
+  quote_line_item_added: 'Pricing extra added',
+  quote_line_item_removed: 'Pricing extra removed',
+  quote_line_item_updated: 'Pricing extra updated',
   site_enumerated: 'Site scope crawled',
   site_enumeration_failed: 'Site scope crawl failed',
   mapper_fallback_heuristic: 'Mapper fell back to heuristic',
@@ -96,6 +101,9 @@ const EVENT_ICONS: Partial<Record<string, keyof typeof Icon>> = {
   engagement_closed: 'CheckCircle',
   quote_computed: 'Sparkle',
   quote_approved: 'Check',
+  quote_line_item_added: 'Plus',
+  quote_line_item_removed: 'X',
+  quote_line_item_updated: 'Edit',
   site_enumerated: 'Globe',
   site_enumeration_failed: 'X',
   mapper_fallback_heuristic: 'Sparkle',
@@ -139,6 +147,11 @@ export default function OpportunityDetailPage() {
   const [eng, setEng] = useState<EngagementWithThread | null>(null);
   const [quote, setQuote] = useState<EngagementQuote | null>(null);
   const [prediction, setPrediction] = useState<Prediction | null>(null);
+  // Pricing-extras totals breakdown (base + line items + grand total). Owned
+  // here so the approval card / re-approval prompt read the same numbers the
+  // extras card shows, and so an extras edit can refresh the thread (which is
+  // what tells us the approval went stale).
+  const [breakdown, setBreakdown] = useState<QuoteTotalsBreakdown | null>(null);
   // Fatal load error — the initial opportunities.get() failed, so there's
   // nothing to render. We keep the raw error so the guard can tell a real
   // 404 apart from a transient failure (and offer a Retry).
@@ -175,6 +188,7 @@ export default function OpportunityDetailPage() {
     opportunities.get(id).then(setEng).catch((e) => setLoadErr(e));
     quotes.forEngagement(id).then(setQuote).catch(() => setQuote(null));
     predictions.latest(id).then(setPrediction).catch(() => setPrediction(null));
+    quoteLineItems.list(id).then(setBreakdown).catch(() => setBreakdown(null));
   }, [id]);
 
   useEffect(() => {
@@ -293,14 +307,34 @@ export default function OpportunityDetailPage() {
   }
 
   async function refreshAfterDecision() {
-    const [refreshed, latest, q] = await Promise.all([
+    const [refreshed, latest, q, b] = await Promise.all([
       opportunities.get(id),
       predictions.latest(id),
       quotes.forEngagement(id).catch(() => null),
+      quoteLineItems.list(id).catch(() => null),
     ]);
     setEng(refreshed);
     setPrediction(latest);
     setQuote(q);
+    setBreakdown(b);
+  }
+
+  /** A pricing extra was added/removed. Refetch the breakdown AND the thread —
+   *  the thread is what surfaces the "pricing changed since approval" prompt
+   *  (the approved price is only recomputed when the manager re-approves).
+   *  Unlike refreshAfterDecision this tolerates a missing prediction, since
+   *  extras can be edited before one exists. */
+  async function onLineItemsChanged() {
+    const [refreshed, q, b, p] = await Promise.all([
+      opportunities.get(id),
+      quotes.forEngagement(id).catch(() => null),
+      quoteLineItems.list(id).catch(() => null),
+      predictions.latest(id).catch(() => null),
+    ]);
+    setEng(refreshed);
+    setQuote(q);
+    setBreakdown(b);
+    setPrediction(p);
   }
 
   // Reserve "Not found" for an actual 404 — any other failure (network,
@@ -346,6 +380,10 @@ export default function OpportunityDetailPage() {
   const headerTitle = eng.name ?? eng.clientEmail;
   const { stage: pipelineStage } = stageOf(eng.status);
   const activeFocus: FocusId = focus ?? focusFor(pipelineStage);
+  // Pricing extras were added/removed AFTER the deal was approved, so the frozen
+  // approved price (and any proposal built from it) no longer reflects them.
+  // Derived from the thread so it survives reloads; drives the re-approval prompt.
+  const pricingStale = pricingChangedSinceApproval(eng.thread, eng.status);
 
   return (
     <AppShell crumbs={[{ label: 'Opportunities', href: '/opportunities' }, { label: headerTitle }]}>
@@ -494,6 +532,9 @@ export default function OpportunityDetailPage() {
                 repredicting={predicting}
                 rejectionReason={lastRejectionReason(eng.thread)}
                 thread={eng.thread}
+                pricingStale={pricingStale}
+                extrasTotalCents={breakdown?.lineItemTotalCents}
+                grandTotalCents={breakdown?.grandTotalCents}
               />
             )}
 
@@ -627,6 +668,8 @@ export default function OpportunityDetailPage() {
                 engagementId={eng.id}
                 userRole={user.role}
                 currency={quote.currency}
+                data={breakdown}
+                onChanged={onLineItemsChanged}
               />
             )}
 
@@ -715,6 +758,7 @@ export default function OpportunityDetailPage() {
                   <ProposalSummaryCard
                     engagementId={eng.id}
                     status={eng.status}
+                    pricingStale={pricingStale}
                   />
                 )}
               </div>
@@ -799,6 +843,34 @@ export default function OpportunityDetailPage() {
     </AppShell>
   );
 }
+/** Pricing extras (travel/tools/discounts) were added/removed AFTER the deal
+ *  was approved, so the frozen approved price no longer matches the current
+ *  grand total. Detected from the thread: a line-item mutation event newer than
+ *  the last approval, while the deal is still re-approvable. The approved price
+ *  + proposal are recomputed only on (re-)approval, so this drives the prompt. */
+const REAPPROVABLE_STATUSES = ['approved', 'drafting', 'draft_ready'];
+function pricingChangedSinceApproval(
+  thread: ThreadEventRow[] | undefined,
+  status: string,
+): boolean {
+  if (!thread || !REAPPROVABLE_STATUSES.includes(status)) return false;
+  const ts = (e: ThreadEventRow) => new Date(e.createdAt).getTime();
+  let lastApproval = 0;
+  let lastPricing = 0;
+  for (const e of thread) {
+    if (e.eventType === 'approval_granted' || e.eventType === 'approval_adjusted') {
+      lastApproval = Math.max(lastApproval, ts(e));
+    } else if (
+      e.eventType === 'quote_line_item_added'
+      || e.eventType === 'quote_line_item_removed'
+      || e.eventType === 'quote_line_item_updated'
+    ) {
+      lastPricing = Math.max(lastPricing, ts(e));
+    }
+  }
+  return lastApproval > 0 && lastPricing > lastApproval;
+}
+
 /** Pull the most recent approval_rejected event's comment from the
  *  thread. Returns null if there's no rejection in history. */
 function lastRejectionReason(thread: ThreadEventRow[] | undefined): string | null {
