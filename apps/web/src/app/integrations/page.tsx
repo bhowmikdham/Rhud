@@ -140,6 +140,9 @@ function IntegrationsInner() {
 
   if (!user) return null;
   const isAdmin = user.role === 'admin';
+  // Template-library mutate actions are open to admins + sales managers
+  // (the panel gates the manage controls on this flag); everyone else views.
+  const canManageGamma = user.role === 'admin' || user.role === 'sales_manager';
 
   async function connectOutlook() {
     if (outlookBusy) return;
@@ -363,7 +366,7 @@ function IntegrationsInner() {
           })}
         </div>
 
-        {showGamma && <GammaConnectModal onClose={() => {
+        {showGamma && <GammaConnectModal canManage={canManageGamma} onClose={() => {
           setShowGamma(false);
           gamma.get().then((c) => setGammaCfg(c ?? 'unset')).catch(() => undefined);
         }} />}

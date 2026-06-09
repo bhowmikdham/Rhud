@@ -2,7 +2,14 @@
 
 import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { opportunities, type EngagementSummary, type ThreadEventRow, type GatheringLinkInfo } from '@/lib/api';
+import {
+  gamma,
+  opportunities,
+  type EngagementSummary,
+  type ProposalDriver,
+  type ThreadEventRow,
+  type GatheringLinkInfo,
+} from '@/lib/api';
 import { useRequireAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/app-shell';
 import { ProposalWorkspace } from './proposal-workspace';
@@ -19,11 +26,24 @@ export default function ProposalPage() {
 
   const [eng, setEng] = useState<EngagementWithThread | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // The engagement payload doesn't carry which drafter is active, so the
+  // proposal driver comes from the tenant Gamma config. Default to 'llm'
+  // when Gamma isn't configured (gamma.get() → null) so the workspace
+  // never renders the Gamma-only setup card by mistake.
+  const [proposalDriver, setProposalDriver] = useState<ProposalDriver>('llm');
 
   useEffect(() => {
     if (!user) return;
     opportunities.get(id).then(setEng).catch((e) => setErr(String(e)));
   }, [id, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    gamma
+      .get()
+      .then((cfg) => setProposalDriver(cfg?.proposalDriver ?? 'llm'))
+      .catch(() => setProposalDriver('llm'));
+  }, [user]);
 
   if (err) {
     return (
@@ -60,6 +80,7 @@ export default function ProposalPage() {
             engagementName={headerTitle}
             clientEmail={eng.clientEmail}
             userRole={user.role}
+            proposalDriver={proposalDriver}
             backHref={`/opportunities/${eng.id}`}
           />
         ) : (

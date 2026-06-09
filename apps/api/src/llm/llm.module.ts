@@ -12,7 +12,10 @@ import { TemplateGenController } from './template-gen.controller.js';
 import { RateCardLlmParserService } from './rate-card-parser.service.js';
 import { RateCardLlmParserController } from './rate-card-parser.controller.js';
 import { ProposalDraftService } from './proposal-draft.service.js';
-import { ProposalDraftController } from './proposal-draft.controller.js';
+import {
+  ProposalDraftController,
+  ProposalTemplateController,
+} from './proposal-draft.controller.js';
 
 @Module({
   // PricingModule is forwardRef'd because PricingModule itself
@@ -26,6 +29,7 @@ import { ProposalDraftController } from './proposal-draft.controller.js';
     TemplateGenController,
     RateCardLlmParserController,
     ProposalDraftController,
+    ProposalTemplateController,
   ],
   providers: [
     LlmService,

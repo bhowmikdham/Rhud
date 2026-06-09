@@ -7,13 +7,24 @@ import {
   NotFoundException,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
+  Query,
   Req,
   Res,
   UseGuards,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { IsString, MinLength, MaxLength } from 'class-validator';
+import {
+  IsArray,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  MinLength,
+  ValidateIf,
+} from 'class-validator';
+import type { FieldPreviewResponse, GammaFieldOverride, GenerateDraftRequest } from '@rhud/shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
@@ -39,6 +50,28 @@ class SendViaOutlookDto {
   @MinLength(1)
   @MaxLength(64_000) // generous; the body will hit much smaller limits in practice
   body!: string;
+}
+
+class GenerateDraftDto implements GenerateDraftRequest {
+  // Library entry id (GammaTemplate.id) to use for THIS generation. Optional —
+  // omitted ⇒ resolve via the saved pick / tenant default.
+  @IsOptional() @IsUUID()
+  gammaTemplateId?: string;
+
+  // Phase 2 — accepted + forwarded; not yet consumed by Phase-1 generation.
+  @IsOptional() @IsArray()
+  fieldOverrides?: GammaFieldOverride[];
+
+  @IsOptional() @IsArray() @IsString({ each: true })
+  lockedSections?: string[];
+}
+
+class SetProposalTemplateDto {
+  // null clears the selection (→ default/freeform); a UUID picks a library
+  // entry. Absent is rejected — the picker always sends one or the other.
+  @ValidateIf((_o, v) => v !== null)
+  @IsUUID()
+  gammaTemplateId!: string | null;
 }
 
 /**
@@ -74,8 +107,26 @@ export class ProposalDraftController {
   generate(
     @Req() req: AuthedRequest,
     @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: GenerateDraftDto,
   ): Promise<ProposalDraftResult> {
-    return this.svc.generate(req.tenantId, id, req.user.sub);
+    return this.svc.generate(req.tenantId, id, req.user.sub, body);
+  }
+
+  /**
+   * Data for the "Proposal setup" review form: template options, the resolved
+   * pick, and the computed dynamic field values. Read-only. `gammaTemplateId`
+   * (optional query) previews a specific library entry without persisting it.
+   */
+  @Get('field-preview')
+  @Roles('admin', 'sales_manager', 'sales_employee')
+  fieldPreview(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    // Validate the optional preview id — a malformed value would otherwise hit
+    // Prisma with a non-UUID and 500 (there's no global Prisma exception filter).
+    @Query('gammaTemplateId', new ParseUUIDPipe({ optional: true })) gammaTemplateId?: string,
+  ): Promise<FieldPreviewResponse> {
+    return this.svc.fieldPreview(req.tenantId, id, gammaTemplateId);
   }
 
   /** Manual-mode follow-up: paste the AI's reply, persist it, flip status. */
@@ -178,5 +229,27 @@ export class ProposalDraftController {
     res.setHeader('Content-Disposition', 'attachment; filename="Proposal.pdf"');
     res.setHeader('Content-Length', String(buf.length));
     res.send(buf);
+  }
+}
+
+/**
+ * The per-opportunity Gamma template selection (the "Proposal setup" picker).
+ * Mounted at /opportunities/:id (NOT under /draft) so the choice is a property
+ * of the opportunity. The change sticks (Engagement.selectedGammaTemplateId)
+ * and drives the next generate/regenerate.
+ */
+@Controller(['opportunities/:id', 'engagements/:id'])
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class ProposalTemplateController {
+  constructor(private readonly svc: ProposalDraftService) {}
+
+  @Patch('proposal-template')
+  @Roles('admin', 'sales_manager', 'sales_employee')
+  setTemplate(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: SetProposalTemplateDto,
+  ): Promise<{ selectedGammaTemplateId: string | null }> {
+    return this.svc.setSelectedTemplate(req.tenantId, id, dto.gammaTemplateId);
   }
 }

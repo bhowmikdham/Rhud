@@ -53,6 +53,17 @@ import type {
   OpenTicketSummary,
   UpcomingFollowUp,
   TenantNotificationConfig,
+  GammaTemplate,
+  GammaTemplateManifest,
+  GammaTemplateFormat,
+  GammaTemplateStatus,
+  GammaFieldKey,
+  GammaFieldOverride,
+  CreateGammaTemplate,
+  UpdateGammaTemplate,
+  GammaTemplateTestResult,
+  GenerateDraftRequest,
+  FieldPreviewResponse,
 } from '@rhud/shared';
 
 export type {
@@ -1211,6 +1222,42 @@ export const gamma = {
     request<{ ok: boolean; error?: string }>('/tenant/gamma-config/test', { method: 'POST' }),
 };
 
+// ── Gamma template library (multi-template v2) ──────────────────────────────
+// Re-export the shared shapes so UI components import everything from one place.
+export type {
+  GammaTemplate,
+  GammaTemplateManifest,
+  GammaTemplateFormat,
+  GammaTemplateStatus,
+  GammaFieldKey,
+  GammaFieldOverride,
+  CreateGammaTemplate,
+  UpdateGammaTemplate,
+  GammaTemplateTestResult,
+  GenerateDraftRequest,
+  FieldPreviewResponse,
+};
+
+export const gammaTemplates = {
+  list: () => request<GammaTemplate[]>('/tenant/gamma-templates'),
+  create: (dto: CreateGammaTemplate) =>
+    request<GammaTemplate>('/tenant/gamma-templates', {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }),
+  update: (id: string, dto: UpdateGammaTemplate) =>
+    request<GammaTemplate>(`/tenant/gamma-templates/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(dto),
+    }),
+  archive: (id: string) =>
+    request<void>(`/tenant/gamma-templates/${id}`, { method: 'DELETE' }),
+  test: (id: string) =>
+    request<GammaTemplateTestResult>(`/tenant/gamma-templates/${id}/test`, {
+      method: 'POST',
+    }),
+};
+
 // ── Lead management — tickets, follow-ups, AI summary ──────────────
 
 export const tickets = {
@@ -1295,8 +1342,27 @@ export const leadDashboard = {
 export const proposalDraft = {
   current: (engagementId: string) =>
     request<CurrentProposalDraft>(`/opportunities/${engagementId}/draft`),
-  generate: (engagementId: string) =>
-    request<ProposalDraftResult>(`/opportunities/${engagementId}/draft`, { method: 'POST' }),
+  generate: (engagementId: string, body?: GenerateDraftRequest) =>
+    request<ProposalDraftResult>(`/opportunities/${engagementId}/draft`, {
+      method: 'POST',
+      ...(body && { body: JSON.stringify(body) }),
+    }),
+  /** Read-only data for the "Proposal setup" review form: picker options, the
+   *  resolved pick, computed dynamic field values. `gammaTemplateId` previews a
+   *  specific library entry without persisting it. */
+  fieldPreview: (engagementId: string, gammaTemplateId?: string) =>
+    request<FieldPreviewResponse>(
+      `/opportunities/${engagementId}/draft/field-preview${
+        gammaTemplateId ? `?gammaTemplateId=${encodeURIComponent(gammaTemplateId)}` : ''
+      }`,
+    ),
+  /** Persist the per-opportunity Gamma template pick (the workspace picker).
+   *  `null` clears it (→ resolve to the tenant default / freeform). */
+  setTemplate: (engagementId: string, gammaTemplateId: string | null) =>
+    request<{ selectedGammaTemplateId: string | null }>(
+      `/opportunities/${engagementId}/proposal-template`,
+      { method: 'PATCH', body: JSON.stringify({ gammaTemplateId }) },
+    ),
   acceptManual: (engagementId: string, text: string) =>
     request<{ text: string; draftedAt: string }>(
       `/opportunities/${engagementId}/draft/manual`,
