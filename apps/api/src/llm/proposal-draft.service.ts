@@ -28,9 +28,18 @@ import {
 import { TenantDb } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { GammaService } from '../gamma/gamma.service.js';
+import { GammaTemplateService } from '../gamma/gamma-template.service.js';
 import { OutlookService } from '../integrations/outlook/outlook.service.js';
 import { LlmService } from './llm.service.js';
 import type { ChatMessage } from './llm.types.js';
+import type {
+  FieldPreviewField,
+  FieldPreviewResponse,
+  GammaFieldKey,
+  GammaTemplate,
+  GammaTemplateManifest,
+  GenerateDraftRequest,
+} from '@rhud/shared';
 import {
   nameFromEmail,
   renderScaffold,
@@ -95,6 +104,7 @@ export class ProposalDraftService {
     private readonly llm: LlmService,
     private readonly gamma: GammaService,
     private readonly outlook: OutlookService,
+    private readonly gammaTemplates: GammaTemplateService,
   ) {}
 
   // ── Reads ──────────────────────────────────────────────────────────────
@@ -218,6 +228,7 @@ export class ProposalDraftService {
     tenantId: string,
     engagementId: string,
     actorId: string | null,
+    body?: GenerateDraftRequest,
   ): Promise<ProposalDraftResult> {
     const ctx = await this.loadContext(tenantId, engagementId);
 
@@ -230,6 +241,15 @@ export class ProposalDraftService {
     // Route by tenant's chosen drafter. Gamma path is its own pipeline
     // (deck generation, polling, URL persistence). Falls back to LLM.
     const driver = await this.gamma.getProposalDriver(tenantId);
+
+    // On the Gamma path, resolve which library deck-template this opportunity
+    // uses (explicit override → saved per-opportunity pick → tenant default →
+    // freeform). Resolved once so the scaffold and plain branches share it;
+    // null ⇒ freeform generation. Decoupled from the questionnaire template.
+    const resolvedGamma =
+      driver === 'gamma'
+        ? await this.resolveGammaTemplate(tenantId, engagementId, body?.gammaTemplateId, true)
+        : null;
 
     // Scaffold short-circuit: when the template carries a proposal
     // scaffold, that's the consultancy explicitly saying "use this
@@ -244,7 +264,7 @@ export class ProposalDraftService {
       const renderedText = renderScaffold(ctx.proposalScaffold, this.buildScaffoldContext(ctx));
 
       if (driver === 'gamma') {
-        return this.generateViaGamma(tenantId, engagementId, ctx, actorId, renderedText);
+        return this.generateViaGamma(tenantId, engagementId, ctx, actorId, resolvedGamma, renderedText);
       }
 
       const provider = await this.llm.getProviderName(tenantId);
@@ -269,7 +289,7 @@ export class ProposalDraftService {
     }
 
     if (driver === 'gamma') {
-      return this.generateViaGamma(tenantId, engagementId, ctx, actorId);
+      return this.generateViaGamma(tenantId, engagementId, ctx, actorId, resolvedGamma);
     }
 
     const messages = this.buildMessages(ctx);
@@ -289,7 +309,10 @@ export class ProposalDraftService {
     // to generate, then patch the final result.
     await this.tenantDb.run(tenantId, async (db) => {
       await db.engagement.updateMany({
-        where: { id: engagementId, status: 'approved' },
+        // Re-draftable from draft_ready (regenerate) and sent (re-draft after
+        // delivery — the generate guard already allows 'sent'); else the flip
+        // matches zero rows and the draft silently never starts.
+        where: { id: engagementId, status: { in: ['approved', 'draft_ready', 'sent'] } },
         data: { status: 'drafting' },
       });
       await this.thread.emitWithin(db, tenantId, {
@@ -347,46 +370,50 @@ export class ProposalDraftService {
     engagementId: string,
     ctx: Awaited<ReturnType<typeof this.loadContext>>,
     actorId: string | null,
+    /** The resolved library deck-template, or null for freeform. Sourced from
+     *  the per-opportunity selection (resolveGammaTemplate) — NOT the
+     *  questionnaire template. */
+    resolved: GammaTemplate | null,
     /** When set, the rendered scaffold replaces the AI-style brief —
      *  Gamma uses this verbatim as the prompt so the deck inherits
      *  whatever structure the consultancy wrote. */
     renderedScaffold?: string,
   ): Promise<ProposalDraftResult> {
-    // Kick off generation FIRST — if Gamma rejects (bad key, bad
-    // template id, etc.) we don't want a half-flipped engagement
-    // sitting in `drafting` with nothing happening.
-    let started: { generationId: string };
-    try {
-      // Three-way pick:
-      //   - rendered scaffold → consultancy wrote the prose; pass it
-      //     verbatim. Honour template id if set so layout still inherits.
-      //   - has gammaTemplateId, no scaffold → from-template substitution
-      //     prompt: tells Gamma to swap placeholders in their existing deck.
-      //   - neither → freeform brief: Gamma generates from scratch.
-      let brief: { inputText: string; title: string; gammaTemplateId: string | null };
-      if (renderedScaffold) {
-        brief = {
-          inputText: renderedScaffold,
-          title: ctx.opportunityName?.trim() || `Proposal — ${ctx.serviceLine}`,
-          gammaTemplateId: ctx.gammaTemplateId,
-        };
-      } else if (ctx.gammaTemplateId) {
-        brief = this.buildGammaTemplateBrief(ctx);
-      } else {
-        brief = this.buildGammaBrief(ctx);
-      }
-      started = await this.gamma.startDraftFromBrief(tenantId, brief);
-    } catch (e) {
-      // Pass through gamma_provider_error: prefix unchanged.
-      throw e;
+    // Kick off generation FIRST — if Gamma rejects (bad key, bad template id,
+    // etc.) the gamma_provider_error propagates before we flip status, so we
+    // never leave a half-flipped engagement sitting in `drafting`.
+    //
+    // Three-way pick — the Gamma File ID comes from the resolved library entry
+    // (the per-opportunity selection), never the questionnaire template:
+    //   - rendered scaffold → consultancy wrote the prose; pass it verbatim.
+    //     Honour the resolved deck id if any so layout still inherits.
+    //   - resolved deck, no scaffold → from-template substitution prompt:
+    //     tells Gamma to swap placeholders in their existing deck.
+    //   - neither → freeform brief: Gamma generates from scratch.
+    const gammaId = resolved?.gammaTemplateId ?? null;
+    let brief: { inputText: string; title: string; gammaTemplateId: string | null };
+    if (renderedScaffold) {
+      brief = {
+        inputText: renderedScaffold,
+        title: ctx.opportunityName?.trim() || `Proposal — ${ctx.serviceLine}`,
+        gammaTemplateId: gammaId,
+      };
+    } else if (gammaId) {
+      brief = this.buildGammaTemplateBrief(ctx, gammaId);
+    } else {
+      brief = this.buildGammaBrief(ctx);
     }
+    const started = await this.gamma.startDraftFromBrief(tenantId, brief);
 
     // Now flip status, persist generation tracking, emit thread event.
     // Any subsequent GET /draft poll will hit Gamma's status endpoint
     // via getCurrent() and finalise once the deck is ready.
     await this.tenantDb.run(tenantId, async (db) => {
       await db.engagement.updateMany({
-        where: { id: engagementId, status: 'approved' },
+        // Regenerate from draft_ready (e.g. after switching the picker) and
+        // re-draft from sent (the generate guard allows 'sent') — else the flip
+        // no-ops, Gamma credits are spent, and the new deck is orphaned.
+        where: { id: engagementId, status: { in: ['approved', 'draft_ready', 'sent'] } },
         data: {
           status: 'drafting',
           proposalDraftSource: 'gamma',
@@ -404,6 +431,154 @@ export class ProposalDraftService {
     });
 
     return { mode: 'gamma_pending', generationId: started.generationId };
+  }
+
+  // ── Gamma template resolution + per-opportunity selection (v2) ─────────────
+
+  /**
+   * Resolve which Gamma library deck-template this opportunity's proposal
+   * should clone. Order: explicit request override → the saved per-opportunity
+   * pick → the tenant default → null (freeform). Cross-tenant or archived ids
+   * are never trusted (they fall through), and a resolved default is written
+   * back so the choice is sticky. Fully decoupled from the questionnaire
+   * template — works for template-less (direct-ingest) opportunities too.
+   */
+  private async resolveGammaTemplate(
+    tenantId: string,
+    engagementId: string,
+    explicitId?: string,
+    /** Only the generate path persists the resolved default back onto the
+     *  engagement (making the pick sticky). The field-preview GET resolves
+     *  read-only — a GET must not mutate, and persisting on preview would also
+     *  make an explicit later choice harder to reason about. */
+    persist = false,
+  ): Promise<GammaTemplate | null> {
+    if (explicitId) {
+      const explicit = await this.gammaTemplates.findById(tenantId, explicitId);
+      if (explicit && explicit.status === 'active') return explicit;
+      // Invalid / foreign / archived explicit id → fall through.
+    }
+
+    const saved = await this.tenantDb.run(tenantId, (db) =>
+      db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { selectedGammaTemplateId: true },
+      }),
+    );
+    if (saved?.selectedGammaTemplateId) {
+      const selected = await this.gammaTemplates.findById(tenantId, saved.selectedGammaTemplateId);
+      if (selected && selected.status === 'active') return selected;
+      // Archived/removed selection → fall through to the default (don't clobber
+      // the saved id; the FK SET NULLs only on hard delete).
+    }
+
+    const fallback = await this.gammaTemplates.getDefault(tenantId);
+    // Sticky write-back (generate path only), and only when no pick was saved —
+    // the still-null guard in the WHERE means a concurrent explicit pick is
+    // never clobbered.
+    if (fallback && persist && !saved?.selectedGammaTemplateId) {
+      await this.tenantDb.run(tenantId, async (db) => {
+        await db.engagement.updateMany({
+          where: { id: engagementId, selectedGammaTemplateId: null },
+          data: { selectedGammaTemplateId: fallback.id },
+        });
+      });
+    }
+    return fallback;
+  }
+
+  /**
+   * Persist the per-opportunity Gamma template selection (the workspace
+   * picker). `null` clears it (→ resolve to default/freeform). Validates
+   * ownership + active status so a rep can't point at another tenant's or an
+   * archived template.
+   */
+  async setSelectedTemplate(
+    tenantId: string,
+    engagementId: string,
+    gammaTemplateId: string | null,
+  ): Promise<{ selectedGammaTemplateId: string | null }> {
+    // Coerce undefined → null so a malformed body (missing field) clears the
+    // selection rather than reaching Prisma with `id: undefined` (a 500).
+    const next = gammaTemplateId ?? null;
+    if (next !== null) {
+      const tpl = await this.gammaTemplates.findById(tenantId, next);
+      if (!tpl) throw new NotFoundException('gamma_template_not_found');
+      if (tpl.status !== 'active') throw new BadRequestException('gamma_template_archived');
+    }
+    return this.tenantDb.run(tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { id: true },
+      });
+      if (!eng) throw new NotFoundException('engagement_not_found');
+      await db.engagement.update({
+        where: { id: engagementId },
+        data: { selectedGammaTemplateId: next },
+      });
+      return { selectedGammaTemplateId: next };
+    });
+  }
+
+  /**
+   * Data behind the per-proposal "Proposal setup" review form: the tenant's
+   * template options for the picker, which one this opportunity resolves to,
+   * and the computed dynamic field values (with the resolved template's
+   * manifest overlaying token/label/default-include). Read-only — no generation.
+   */
+  async fieldPreview(
+    tenantId: string,
+    engagementId: string,
+    explicitGammaTemplateId?: string,
+  ): Promise<FieldPreviewResponse> {
+    const ctx = await this.loadContext(tenantId, engagementId);
+    const sc = this.buildScaffoldContext(ctx);
+    const resolved = await this.resolveGammaTemplate(tenantId, engagementId, explicitGammaTemplateId);
+    const templates = (await this.gammaTemplates.list(tenantId)).map((t) => ({
+      id: t.id,
+      label: t.label,
+      isDefault: t.isDefault,
+      serviceLine: t.serviceLine,
+      format: t.format,
+    }));
+    const manifest = resolved?.manifest ?? null;
+    return {
+      templates,
+      resolvedTemplateId: resolved?.id ?? null,
+      fields: this.buildFieldPreviewRows(sc, manifest),
+      lockedSections: manifest?.lockedSections ?? [],
+    };
+  }
+
+  /** Map the computed scaffold context to field-preview rows, overlaying any
+   *  manifest field (token/label/default-include) the resolved template
+   *  declares. */
+  private buildFieldPreviewRows(
+    sc: ScaffoldContext,
+    manifest: GammaTemplateManifest | null,
+  ): FieldPreviewField[] {
+    const catalog: Array<{ key: GammaFieldKey; label: string; value: string }> = [
+      { key: 'clientName', label: 'Client name', value: sc.clientName },
+      { key: 'clientEmail', label: 'Client email', value: sc.clientEmail },
+      { key: 'opportunityName', label: 'Opportunity', value: sc.opportunityName ?? '' },
+      { key: 'serviceLine', label: 'Service line', value: sc.serviceLine },
+      { key: 'tenantName', label: 'Consultancy', value: sc.tenantName },
+      { key: 'investment', label: 'Investment', value: sc.priceFormatted },
+      { key: 'date', label: 'Date', value: sc.dateToday },
+      { key: 'lineItems', label: 'Priced line items', value: sc.lineItems },
+      { key: 'scopeSummary', label: 'Confirmed scope', value: sc.scopeSummary },
+    ];
+    const byKey = new Map((manifest?.fields ?? []).map((f) => [f.fieldKey, f]));
+    return catalog.map((c) => {
+      const m = byKey.get(c.key);
+      return {
+        fieldKey: c.key,
+        label: m?.label ?? c.label,
+        token: m?.token ?? null,
+        computedValue: c.value,
+        include: m ? m.defaultInclude : true,
+      };
+    });
   }
 
   /** Manual-mode follow-up: admin pasted the AI's response back. */
@@ -874,7 +1049,7 @@ export class ProposalDraftService {
       `Tone: professional, confident, concise. No filler. ` +
       `Use "you" voice toward the client. Investment slide should reference the price once.`;
 
-    return { inputText, title, gammaTemplateId: ctx.gammaTemplateId };
+    return { inputText, title, gammaTemplateId: null };
   }
 
   /**
@@ -890,7 +1065,10 @@ export class ProposalDraftService {
    * No title wrapping (`# {title}\n\n…`) here — the template carries
    * its own title; injecting one would just confuse the model.
    */
-  private buildGammaTemplateBrief(ctx: Awaited<ReturnType<typeof this.loadContext>>): {
+  private buildGammaTemplateBrief(
+    ctx: Awaited<ReturnType<typeof this.loadContext>>,
+    gammaTemplateId: string,
+  ): {
     inputText: string;
     title: string;
     gammaTemplateId: string;
@@ -935,7 +1113,7 @@ export class ProposalDraftService {
       `Where it has a price, swap to ${fmtMoney(finalPrice)}. Where it shows a date, ` +
       `swap to ${dateToday}. Maintain the consultancy's existing tone and brand voice.`;
 
-    return { inputText, title, gammaTemplateId: ctx.gammaTemplateId! };
+    return { inputText, title, gammaTemplateId };
   }
 
   private async rollbackToApproved(tenantId: string, engagementId: string): Promise<void> {
@@ -953,7 +1131,7 @@ export class ProposalDraftService {
     return this.tenantDb.run(tenantId, async (db) => {
       const engagement = await db.engagement.findUnique({
         where: { id: engagementId },
-        include: { template: { select: { name: true, serviceLine: true, gammaTemplateId: true, proposalScaffold: true } } },
+        include: { template: { select: { name: true, serviceLine: true, proposalScaffold: true } } },
       });
       if (!engagement) throw new NotFoundException('engagement_not_found');
 
@@ -1000,7 +1178,6 @@ export class ProposalDraftService {
         // hint at service line. Surface that when available; otherwise
         // a generic label that won't show up in customer-visible copy.
         serviceLine: tmpl?.serviceLine ?? engagement.categorySlug ?? 'Engagement',
-        gammaTemplateId: tmpl?.gammaTemplateId ?? null,
         proposalScaffold: tmpl?.proposalScaffold ?? null,
         tenantName: tenant?.name ?? 'Our team',
         currency: quote.currency,

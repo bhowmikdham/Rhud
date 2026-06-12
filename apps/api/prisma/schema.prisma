@@ -62,6 +62,7 @@ model Tenant {
   invites                 Invite[]
   llmConfig               TenantLlmConfig?
   gammaConfigRow          TenantGammaConfig?
+  gammaTemplates          GammaTemplate[]
   userIntegrations        UserIntegration[]
   outlookApp              TenantOutlookApp?
   odooConnection          OdooConnection?
@@ -154,6 +155,45 @@ model Template {
   @@index([tenantId, status])
   @@index([rateCardId])
   @@map("templates")
+}
+
+/// A tenant's reusable Gamma proposal-deck template (multi-template v2).
+/// Decoupled from the questionnaire `Template`: an opportunity selects one of
+/// these via `Engagement.selectedGammaTemplateId`, so it works for
+/// template-less (direct-ingest) opportunities too. `gammaTemplateId` is the
+/// Gamma File ID the deck is cloned from; `manifest` (GammaTemplateManifest in
+/// @rhud/shared) bridges deck placeholder tokens to Rhud fields and names
+/// sections to keep verbatim. The deprecated `Template.gammaTemplateId` binding
+/// is retired in favour of this. See docs/gamma-multi-template-design.md.
+model GammaTemplate {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  label           String
+  // The Gamma File ID this entry clones from (free-form; not a UUID).
+  gammaTemplateId String   @map("gamma_template_id")
+  // presentation | document — CHECK constraint in migration SQL.
+  format          String   @default("presentation")
+  // Label / future per-service-line default hook. Not used for v1 resolution
+  // (the tenant default is the pre-fill).
+  serviceLine     String?  @map("service_line")
+  isDefault       Boolean  @default(false) @map("is_default")
+  // GammaTemplateManifest: { fields[], lockedSections[] }. DB default '{}';
+  // the API normalizes empty → { fields: [], lockedSections: [] }.
+  manifest        Json     @default("{}")
+  // active | archived — CHECK constraint in migration SQL. Archive is soft.
+  status          String   @default("active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  engagements Engagement[]
+
+  // One library entry per (tenant, Gamma File ID) — the one-shot backfill's
+  // ON CONFLICT DO NOTHING relies on this for idempotency.
+  @@unique([tenantId, gammaTemplateId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("gamma_templates")
 }
 
 // ── Sprint 3: engagements, gathering, threads, files ────────────────────────
@@ -304,32 +344,40 @@ model Engagement {
   /// expire after ~7 days (per the public docs); we cache the
   /// approximate expiry so the UI can prompt the rep to regenerate
   /// instead of handing them a dead link.
-  proposalPdfUrl       String?   @map("proposal_pdf_url")
-  proposalPdfExpiresAt DateTime? @map("proposal_pdf_expires_at") @db.Timestamptz
+  proposalPdfUrl          String?   @map("proposal_pdf_url")
+  proposalPdfExpiresAt    DateTime? @map("proposal_pdf_expires_at") @db.Timestamptz
+  /// The Gamma library template selected for THIS opportunity's proposal deck
+  /// (multi-template v2). Decoupled from the questionnaire template; null =
+  /// resolve to the tenant default, else freeform. Set/changed via
+  /// PATCH /opportunities/:id/proposal-template. SetNull on delete so
+  /// archiving a library entry re-resolves the opportunity to the default.
+  selectedGammaTemplateId String?   @map("selected_gamma_template_id") @db.Uuid
 
-  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template        Template?           @relation(fields: [templateId], references: [id])
+  tenant                Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template              Template?            @relation(fields: [templateId], references: [id])
   // Directly-attached rate card (template-independent pricing path).
-  rateCard        RateCard?           @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
+  rateCard              RateCard?            @relation(fields: [rateCardId], references: [id], onDelete: SetNull)
+  // The Gamma deck-template chosen for this opportunity's proposal (v2).
+  selectedGammaTemplate GammaTemplate?       @relation(fields: [selectedGammaTemplateId], references: [id], onDelete: SetNull)
   // The artifact that originated this engagement (direct-ingest only).
   // Named relation because IngestionArtifact also has a back-pointer
   // collection (`artifacts`) — Prisma requires names to disambiguate.
-  originArtifact  IngestionArtifact?  @relation("EngagementOriginArtifact", fields: [ingestionId], references: [id], onDelete: SetNull)
+  originArtifact        IngestionArtifact?   @relation("EngagementOriginArtifact", fields: [ingestionId], references: [id], onDelete: SetNull)
   // All artifacts attached to this engagement. Usually = 1 for paste-text
   // / file-drop / voice; can be N for email-import via the artifact
   // pipeline. Empty for Outlook-add-in engagements (which don't use
   // IngestionArtifact — see sourceMessageId above).
-  artifacts       IngestionArtifact[] @relation("EngagementAttachedArtifacts")
-  tokens          GatheringToken[]
-  answers         EngagementAnswer[]
-  files           EngagementFile[]
-  events          ThreadEvent[]
-  quote           EngagementQuote?
-  predictions     Prediction[]
-  tickets         EngagementTicket[]
-  followUps       EngagementFollowUp[]
-  summary         EngagementSummary?
-  siteEnumeration SiteEnumeration?
+  artifacts             IngestionArtifact[]  @relation("EngagementAttachedArtifacts")
+  tokens                GatheringToken[]
+  answers               EngagementAnswer[]
+  files                 EngagementFile[]
+  events                ThreadEvent[]
+  quote                 EngagementQuote?
+  predictions           Prediction[]
+  tickets               EngagementTicket[]
+  followUps             EngagementFollowUp[]
+  summary               EngagementSummary?
+  siteEnumeration       SiteEnumeration?
 
   // Per-tenant unique on source_message_id. Postgres treats multiple NULLs
   // as distinct, so engagements created natively (sourceMessageId = NULL)
@@ -341,6 +389,7 @@ model Engagement {
   @@index([tenantId, source])
   @@index([salesEmployeeId])
   @@index([rateCardId])
+  @@index([selectedGammaTemplateId])
   @@map("engagements")
 }
 
@@ -586,29 +635,29 @@ model EngagementFile {
 /// (WhatsApp webhook, SES inbound) and sit unassigned until promoted by
 /// a rep through the dashboard. See docs/direct-ingest.md §3.3.
 model IngestionArtifact {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId      String   @map("tenant_id") @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
 
   // Set after promotion. NULL while pending (webhook-arrived; not yet
   // attached to an opportunity). Many artifacts → one engagement.
-  engagementId  String?  @map("engagement_id") @db.Uuid
+  engagementId String? @map("engagement_id") @db.Uuid
 
   // One of ENGAGEMENT_SOURCES in @rhud/shared. CHECK in migration.
-  source        String
+  source String
   // One of ARTIFACT_KINDS in @rhud/shared. CHECK in migration:
   // 'text' | 'file' | 'audio' | 'email'.
-  kind          String
+  kind   String
 
   // Text-shaped artifacts (paste-text, email body, voice transcript).
   // Capped at ~256KB by the application; longer bodies materialise to
   // S3 and live as a `file` artifact alongside this one.
-  rawText       String?  @map("raw_text")
+  rawText String? @map("raw_text")
 
   // Email-specific metadata. Also used for WhatsApp messages where we
   // have an analog of "from" / "subject" (e.g. phone number, contact
   // name). NULL for non-message artifacts.
-  emailSubject  String?  @map("email_subject")
-  emailFrom     String?  @map("email_from")
+  emailSubject String?   @map("email_subject")
+  emailFrom    String?   @map("email_from")
   // Empty-array default is REQUIRED: the column is NOT NULL, but the
   // presign + paste-text create paths never set emailTo (only the
   // email-import path does). Without @default([]) here, Prisma treats
@@ -616,48 +665,48 @@ model IngestionArtifact {
   // `migrate dev` / `db push` DROPS it — after which every file/text
   // ingest 500s on a null-constraint violation. See migration
   // 20260807000000_ingestion_email_to_default.
-  emailTo       String[] @default([]) @map("email_to")
-  emailDate     DateTime? @map("email_date") @db.Timestamptz
-  emailHeaders  Json?    @map("email_headers")
+  emailTo      String[]  @default([]) @map("email_to")
+  emailDate    DateTime? @map("email_date") @db.Timestamptz
+  emailHeaders Json?     @map("email_headers")
   /// Provider-side message identifier — RFC 5322 Message-ID for email,
   /// `wamid` for WhatsApp, etc. Used to deduplicate inbound webhooks
   /// that may fire multiple times for the same message.
-  externalId    String?  @map("external_id")
+  externalId   String?   @map("external_id")
 
   // File-shaped artifacts (file, audio). Standalone uploads OR
   // attachments to an `email` artifact. The artifact row's s3Key is
   // the primary storage location; once promoted, the matching
   // EngagementFile row is created and references this artifact via
   // its `originArtifactId`.
-  s3Key         String?  @map("s3_key")
-  contentType   String?  @map("content_type")
-  sizeBytes     Int?     @map("size_bytes")
-  originalName  String?  @map("original_name")
+  s3Key        String? @map("s3_key")
+  contentType  String? @map("content_type")
+  sizeBytes    Int?    @map("size_bytes")
+  originalName String? @map("original_name")
 
   // Lifecycle. One of INGESTION_STATUSES in @rhud/shared. CHECK in
   // migration: 'received' | 'processing' | 'promoted' | 'failed'.
-  status        String   @default("received")
-  failureReason String?  @map("failure_reason")
+  status        String  @default("received")
+  failureReason String? @map("failure_reason")
 
-  receivedAt    DateTime @default(now()) @map("received_at") @db.Timestamptz
-  receivedBy    String?  @map("received_by") @db.Uuid
-  promotedAt    DateTime? @map("promoted_at") @db.Timestamptz
+  receivedAt DateTime  @default(now()) @map("received_at") @db.Timestamptz
+  receivedBy String?   @map("received_by") @db.Uuid
+  promotedAt DateTime? @map("promoted_at") @db.Timestamptz
 
-  engagement     Engagement?      @relation("EngagementAttachedArtifacts", fields: [engagementId], references: [id], onDelete: SetNull)
+  engagement    Engagement?      @relation("EngagementAttachedArtifacts", fields: [engagementId], references: [id], onDelete: SetNull)
   // Inverse of Engagement.originArtifact. Usually 0 or 1 engagements
   // point to a given artifact as their origin.
-  originatedFor  Engagement[]     @relation("EngagementOriginArtifact")
+  originatedFor Engagement[]     @relation("EngagementOriginArtifact")
   // Files materialised from this artifact (1:1 for text/file/audio;
   // 0 or more for email — though attachments are usually separate
   // `file` artifacts).
-  files          EngagementFile[]
+  files         EngagementFile[]
 
-  @@index([tenantId])
-  @@index([tenantId, status])
   // Unique (not just indexed): the dedup key for inbound webhook redeliveries.
   // NULL external_id rows (manual uploads) are exempt — Postgres NULLs are
   // distinct in a unique index. Backs the P2002-on-race dedup in receive().
   @@unique([tenantId, externalId], map: "ingestion_artifacts_tenant_external_uniq")
+  @@index([tenantId])
+  @@index([tenantId, status])
   @@index([engagementId])
   @@map("ingestion_artifacts")
 }

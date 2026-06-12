@@ -7,8 +7,10 @@ import {
   integrations,
   proposalDraft,
   type CurrentProposalDraft,
+  type FieldPreviewResponse,
   type OutlookConnectionStatus,
   type ProposalDraftResult,
+  type ProposalDriver,
 } from '@/lib/api';
 import { Icon } from '@/components/icon';
 import { Portal } from '@/components/portal';
@@ -19,12 +21,14 @@ export function ProposalWorkspace({
   engagementName,
   clientEmail,
   userRole,
+  proposalDriver,
   backHref,
 }: {
   engagementId: string;
   engagementName: string;
   clientEmail: string;
   userRole: string;
+  proposalDriver: ProposalDriver;
   backHref: string;
 }) {
   const confirm = useConfirm();
@@ -38,6 +42,60 @@ export function ProposalWorkspace({
 
   const canSend =
     userRole === 'admin' || userRole === 'sales_manager' || userRole === 'sales_employee';
+
+  const isGammaDriver = proposalDriver === 'gamma';
+
+  // ── Proposal setup (Gamma multi-template, Phase 1) ──────────────────────────
+  // Field-preview powers the template picker. `fields` (the computed dynamic
+  // values) is fetched here but the full editable field-review list is Phase 2 —
+  // we only consume `templates` + `resolvedTemplateId` for now.
+  const [preview, setPreview] = useState<FieldPreviewResponse | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  // Local mirror of the server-persisted pick so the picker stays controlled
+  // and regenerate() can forward the current choice to generate().
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [templateSaved, setTemplateSaved] = useState(false);
+  const [templateErr, setTemplateErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isGammaDriver) return;
+    let cancelled = false;
+    setPreviewLoading(true);
+    proposalDraft
+      .fieldPreview(engagementId)
+      .then((p) => {
+        if (cancelled) return;
+        setPreview(p);
+        setSelectedTemplateId(p.resolvedTemplateId);
+      })
+      .catch((e) => {
+        if (!cancelled) setTemplateErr(describeError(e));
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [isGammaDriver, engagementId]);
+
+  async function changeTemplate(nextId: string | null) {
+    const prev = selectedTemplateId;
+    // Optimistic — flip the picker immediately, revert on failure.
+    setSelectedTemplateId(nextId);
+    setTemplateSaving(true);
+    setTemplateSaved(false);
+    setTemplateErr(null);
+    try {
+      await proposalDraft.setTemplate(engagementId, nextId);
+      setTemplateSaved(true);
+      setTimeout(() => setTemplateSaved(false), 2_000);
+    } catch (e) {
+      setSelectedTemplateId(prev);
+      setTemplateErr(describeError(e));
+    } finally {
+      setTemplateSaving(false);
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -69,7 +127,13 @@ export function ProposalWorkspace({
     if (busy) return;
     setBusy(true); setErr(null); setManualPrompt(null);
     try {
-      const res: ProposalDraftResult = await proposalDraft.generate(engagementId);
+      // Selection is persisted server-side via setTemplate(), so the body is
+      // optional — but forwarding the local pick keeps generate() correct even
+      // if a setTemplate() write is still settling.
+      const res: ProposalDraftResult = await proposalDraft.generate(
+        engagementId,
+        isGammaDriver && selectedTemplateId ? { gammaTemplateId: selectedTemplateId } : undefined,
+      );
       if (res.mode === 'manual') {
         setManualPrompt(res.prompt);
       } else {
@@ -266,6 +330,18 @@ export function ProposalWorkspace({
           </div>
         )}
 
+        {isGammaDriver && current?.status !== 'drafting' && !regenerating && !manualPrompt && (
+          <ProposalSetupCard
+            loading={previewLoading}
+            templates={preview?.templates ?? []}
+            selectedTemplateId={selectedTemplateId}
+            saving={templateSaving}
+            saved={templateSaved}
+            error={templateErr}
+            onChange={changeTemplate}
+          />
+        )}
+
         <DraftBody
           kind={
             regenerating
@@ -327,9 +403,19 @@ export function ProposalWorkspace({
                 Generate a client-ready proposal draft from this engagement&apos;s scope + approved price.
                 For manual AI mode you&apos;ll get a prompt to paste into ChatGPT / Claude / Gemini.
               </p>
-              <button onClick={generate} disabled={busy} className="btn accent">
-                {busy ? <span className="spin" /> : <><Icon.Sparkles size={12} /> Generate draft</>}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <button onClick={generate} disabled={busy} className="btn accent">
+                  {busy ? <span className="spin" /> : <><Icon.Sparkles size={12} /> Generate draft</>}
+                </button>
+                {isGammaDriver && (
+                  <span style={{
+                    fontSize: 11.5, color: 'var(--fg-subtle)',
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                  }}>
+                    <Icon.Zap size={11} /> Uses Gamma credits
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </DraftBody>
@@ -353,6 +439,124 @@ export function ProposalWorkspace({
             setShowSend(false);
           }}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase 1 "Proposal setup" card — Gamma multi-template picker.
+ *
+ * Lets the rep choose which library template Gamma adapts for this
+ * opportunity. Phase 2 will extend this with the editable field-review list
+ * (FieldPreviewResponse.fields), which we deliberately don't render yet.
+ */
+function ProposalSetupCard({
+  loading,
+  templates,
+  selectedTemplateId,
+  saving,
+  saved,
+  error,
+  onChange,
+}: {
+  loading: boolean;
+  templates: FieldPreviewResponse['templates'];
+  selectedTemplateId: string | null;
+  saving: boolean;
+  saved: boolean;
+  error: string | null;
+  onChange(id: string | null): void;
+}) {
+  const selectId = 'proposal-template-select';
+  return (
+    <div style={{
+      padding: 18, borderRadius: 10, marginBottom: 14,
+      background: 'var(--bg-sunk)',
+      border: '1px solid var(--divider)',
+      // Reserve a stable footprint so the card doesn't jump when the picker
+      // resolves from skeleton → real options.
+      minHeight: 132,
+    }}>
+      <div style={{
+        fontSize: 11, color: 'var(--fg-subtle)', letterSpacing: '.06em',
+        textTransform: 'uppercase', fontWeight: 600, marginBottom: 12,
+        display: 'flex', alignItems: 'center', gap: 6,
+      }}>
+        <Icon.Settings size={11} /> Proposal setup
+      </div>
+
+      {loading ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{
+            height: 13, width: 120, borderRadius: 5,
+            background: 'var(--divider)', opacity: 0.7,
+          }} />
+          <div style={{
+            height: 34, width: '100%', maxWidth: 420, borderRadius: 8,
+            background: 'var(--divider)', opacity: 0.5,
+          }} />
+        </div>
+      ) : templates.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: 'var(--fg-muted)', lineHeight: 1.55 }}>
+          Using freeform generation.{' '}
+          <Link href="/integrations" style={{ color: 'var(--accent)' }}>
+            Add a template
+          </Link>{' '}
+          in Settings → Integrations → Gamma.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label
+            htmlFor={selectId}
+            style={{ fontSize: 12.5, color: 'var(--fg-muted)', fontWeight: 500 }}
+          >
+            Proposal template
+          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <select
+              id={selectId}
+              className="input"
+              value={selectedTemplateId ?? ''}
+              disabled={saving}
+              // Only real template ids are selectable — there is no "freeform"
+              // option, because the resolver treats an unset pick as "use the
+              // tenant default". Freeform only happens when the tenant has no
+              // templates at all (the empty-state branch above).
+              onChange={(e) => {
+                if (e.target.value) onChange(e.target.value);
+              }}
+              style={{ maxWidth: 420, minWidth: 240, cursor: saving ? 'default' : 'pointer' }}
+            >
+              {selectedTemplateId == null && (
+                <option value="" disabled>
+                  Select a template…
+                </option>
+              )}
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}{t.isDefault ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
+            {saving ? (
+              <span className="spin" />
+            ) : saved ? (
+              <span className="chip ok"><Icon.Check size={10} /> Saved</span>
+            ) : null}
+          </div>
+          {error && (
+            <div style={{ fontSize: 12, color: 'var(--danger)' }}>{error}</div>
+          )}
+          <div style={{ fontSize: 11.5, color: 'var(--fg-subtle)', lineHeight: 1.5, marginTop: 2 }}>
+            Gamma applies these as instructions to adapt your template — review the deck before sending.
+          </div>
+        </div>
+      )}
+
+      {/* Show the load error even when there are no options to render. */}
+      {!loading && templates.length === 0 && error && (
+        <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}>{error}</div>
       )}
     </div>
   );

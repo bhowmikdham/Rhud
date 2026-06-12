@@ -14,3 +14,4 @@ export * from './reviewer-actions.js';
 export * from './classification.js';
 export * from './client-info.js';
 export * from './ingestion.js';
+export * from './gamma.js';
