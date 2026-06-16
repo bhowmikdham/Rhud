@@ -1440,8 +1440,10 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         });
       }
     } catch (e) {
+      const err = e as { message?: string; code?: string; name?: string };
       this.logger.warn(
-        `source-code contradiction check failed engagement=${engagementId}: ${(e as Error).message}`,
+        `source-code contradiction check failed engagement=${engagementId}: ` +
+          `${err?.name ?? ''} ${err?.code ?? ''} ${err?.message || String(e)}`.trim(),
       );
     }
   }
