@@ -108,6 +108,15 @@ const CONFIDENCE_THRESHOLD = 0.6;
 const MAPPER_MAX_OUTPUT_TOKENS = 32_768;
 
 /**
+ * Version tag for the mapper's behaviour (system kernel + prompt build +
+ * dedup/pooling logic). It is folded into the content-addressed inference
+ * cache key (see extraction.service.ts runAndCacheInference): bump it whenever
+ * a change here should invalidate cached results and force re-inference on the
+ * next run. Keeps "same doc → same quote" honest across deploys.
+ */
+export const MAPPER_PROMPT_VERSION = 'v2-2026-06-dedup-pool';
+
+/**
  * One slug the LLM explicitly evaluated and rejected, with a short
  * reason. Used by `inferEntities` to gate heuristic backfill: we never
  * paper over the LLM's "no" with a regex match.

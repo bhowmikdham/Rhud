@@ -602,6 +602,12 @@ model EngagementFile {
   /// Computed once at extraction time so Re-predict doesn't re-call
   /// the LLM. Null until the mapper has run.
   inferredEntities    Json?     @map("inferred_entities")
+  /// Content-addressed cache key for `inferredEntities` — hash of the
+  /// inference INPUTS (sorted extracted points + rate-card version + mapper
+  /// prompt version). A re-run whose inputs hash-match this short-circuits
+  /// the non-deterministic LLM call and reuses the cached entities, so the
+  /// same document always re-prices to the same quote.
+  inferenceInputHash  String?   @map("inference_input_hash")
   /// Canonical Layer-1.5 RhudDocument representation: every cell from
   /// xlsx, every page from PDF, every heading-bounded block from docx —
   /// captured BEFORE any LLM step runs. Used by the admin-review UI to

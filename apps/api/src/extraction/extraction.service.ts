@@ -43,9 +43,11 @@ import { S3Service } from '../storage/s3.service.js';
 import { LlmService } from '../llm/llm.service.js';
 import { MlService } from '../ml/ml.service.js';
 import { QuoteService } from '../pricing/quote.service.js';
+import { createHash } from 'node:crypto';
 import { PricingService } from '../pricing/pricing.service.js';
 import {
   RateCardFieldMapperService,
+  MAPPER_PROMPT_VERSION,
   type InferredEntity,
 } from '../pricing/rate-card-mapper.service.js';
 import { ThreadService } from '../thread/thread.service.js';
@@ -1285,6 +1287,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
     rateCardId: string,
     points: ExtractedPoint[],
     filename: string | null,
+    force = false,
   ): Promise<void> {
     try {
       const card = await this.pricing.getById(tenantId, rateCardId);
@@ -1294,6 +1297,48 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         ...(p.sheet != null ? { sheet: p.sheet } : {}),
         ...(p.appId != null ? { appId: p.appId } : {}),
       }));
+
+      // ── Content-addressed inference cache ────────────────────────────
+      // The LLM mapper is non-deterministic (a thinking model drifts even at
+      // temperature 0), so re-running the SAME document used to yield a
+      // different quote each time. Hash the INPUTS — the points, the rate-card
+      // version, and the mapper prompt version — and reuse the cached entities
+      // when nothing has changed. `force` (an explicit re-infer) bypasses it.
+      const inputHash = createHash('sha256')
+        .update(
+          JSON.stringify({
+            points: [...mapperPoints].sort((a, b) =>
+              `${a.appId ?? ''}|${a.key}|${a.value}`.localeCompare(
+                `${b.appId ?? ''}|${b.key}|${b.value}`,
+              ),
+            ),
+            rateCardId,
+            rateCardVersion: card.version,
+            promptVersion: MAPPER_PROMPT_VERSION,
+          }),
+        )
+        .digest('hex');
+
+      if (!force) {
+        const cached = await this.tenantDb.run(tenantId, (db) =>
+          db.engagementFile.findUnique({
+            where: { id: fileId },
+            select: { inferenceInputHash: true, inferredEntities: true },
+          }),
+        );
+        if (
+          cached?.inferenceInputHash === inputHash &&
+          Array.isArray(cached.inferredEntities) &&
+          cached.inferredEntities.length > 0
+        ) {
+          this.logger.log(
+            `inference cache HIT file=${fileId} — inputs unchanged, reusing ` +
+              `${(cached.inferredEntities as unknown[]).length} cached entities ` +
+              `(skipping LLM; same doc → same quote)`,
+          );
+          return; // entities unchanged; the caller recomputes the quote from them
+        }
+      }
       // Capture mapper-fallback signal so we can emit a thread event
       // *after* the cache write commits. We can't emit during the
       // mapper call because we don't have an engagementId / db handle
@@ -1324,7 +1369,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         const all = [...manual, ...fresh];
         await db.engagementFile.update({
           where: { id: fileId },
-          data: { inferredEntities: all as unknown as object },
+          data: { inferredEntities: all as unknown as object, inferenceInputHash: inputHash },
         });
         return all;
       });
@@ -1878,7 +1923,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
     return { filename: row.filename, document: doc ?? null };
   }
 
-  async rerunInference(tenantId: string, fileId: string): Promise<{ rerun: 'mapper_only' | 'full_extract' }> {
+  async rerunInference(tenantId: string, fileId: string, force = false): Promise<{ rerun: 'mapper_only' | 'full_extract' }> {
     const file = await this.tenantDb.run(tenantId, async (db) =>
       db.engagementFile.findUnique({
         where: { id: fileId },
@@ -1904,7 +1949,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       return { rerun: 'full_extract' };
     }
 
-    await this.runAndCacheInference(tenantId, fileId, rateCardId, points, file.filename);
+    await this.runAndCacheInference(tenantId, fileId, rateCardId, points, file.filename, force);
     // After inference settles, re-run the answer-promotion so any new
     // entities flow into the gathering form's pre-fills.
     try {

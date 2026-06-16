@@ -17,6 +17,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -89,9 +90,12 @@ export class ExtractionController {
     @Req() req: AuthedRequest,
     @Param('id', new ParseUUIDPipe()) _engagementId: string,
     @Param('fileId', new ParseUUIDPipe()) fileId: string,
+    @Query('force') force?: string,
   ): Promise<{ rerun: 'mapper_only' | 'full_extract' }> {
     void _engagementId;
-    return this.svc.rerunInference(req.tenantId, fileId);
+    // `?force=true` bypasses the content-addressed inference cache for a fresh
+    // LLM pass; default is cache-aware so an unchanged doc re-prices identically.
+    return this.svc.rerunInference(req.tenantId, fileId, force === 'true' || force === '1');
   }
 
   /**
