@@ -818,6 +818,10 @@ model RateCardServiceLine {
   // packages/shared/src/pricing.ts (RateCardServiceLine.inferenceHint).
   inferenceHint     String? @map("inference_hint")
   inferenceExamples Json    @default("[]") @map("inference_examples")
+  // When true (per_unit lines only): multiple application instances sharing
+  // this slug price on their COMBINED scope (one volume tier for the whole
+  // opportunity). See packages/shared/src/pricing.ts → computeBasePrice.
+  poolAcrossEntities Boolean @default(false) @map("pool_across_entities")
 
   rateCard RateCard       @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
   tiers    RateCardTier[]

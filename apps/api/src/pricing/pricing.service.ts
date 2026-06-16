@@ -52,6 +52,8 @@ export interface CreateRateCardInput {
     /** Layer-3 mapper hint for THIS slug. See RateCardServiceLine.inferenceHint. */
     inferenceHint?: string | null;
     inferenceExamples?: string[];
+    /** Pool volume across multi-app instances (per_unit lines). */
+    poolAcrossEntities?: boolean;
     tiers: Array<{
       rangeMin: number;
       rangeMax: number | null;
@@ -124,6 +126,7 @@ export class PricingService {
             position: sl.position ?? 0,
             inferenceHint: sl.inferenceHint ?? null,
             inferenceExamples: sl.inferenceExamples ?? [],
+            poolAcrossEntities: sl.poolAcrossEntities ?? false,
           },
         });
         if (sl.tiers.length > 0) {
@@ -395,6 +398,7 @@ export class PricingService {
             position: sl.position,
             inferenceHint: sl.inferenceHint ?? null,
             inferenceExamples: sl.inferenceExamples ?? [],
+            poolAcrossEntities: sl.poolAcrossEntities ?? false,
           },
         });
         if (sl.tiers.length > 0) {
@@ -451,6 +455,7 @@ export class PricingService {
         position: sl.position,
         inferenceHint: sl.inferenceHint ?? null,
         inferenceExamples: parseStringArray(sl.inferenceExamples),
+        poolAcrossEntities: sl.poolAcrossEntities ?? false,
         tiers: sl.tiers.map((t): RateCardTier => ({
           id: t.id,
           rangeMin: t.rangeMin,
