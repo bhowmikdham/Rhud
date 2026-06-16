@@ -1918,6 +1918,17 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         `rerunInference: post-mapper promote failed engagement=${engagementId}: ${(e as Error).message}`,
       );
     }
+    // Re-runing the mapper changes the inferred entities, so the priced
+    // quote must be recomputed too — otherwise the rep re-runs mapping, sees
+    // new scope, but the PRICE stays stale (the multi-app / pooled-pricing
+    // bug that made June's quote not reflect the per-app pooled total).
+    try {
+      await this.quotes.computeAndPersistForEngagement(tenantId, engagementId);
+    } catch (e) {
+      this.logger.warn(
+        `rerunInference: quote re-compute failed engagement=${engagementId}: ${(e as Error).message}`,
+      );
+    }
     return { rerun: 'mapper_only' };
   }
 
