@@ -322,13 +322,33 @@ export class RateCardFieldMapperService {
     ];
 
     const result = await this.llm.chat(tenantId, messages, {
-      maxTokens: 2_000,
+      // Generous output budget. Gemini 2.5/3.x "flash" (and most current
+      // frontier models) are THINKING models: hidden reasoning tokens count
+      // against max_tokens, so the old 2_000 cap was almost entirely consumed
+      // by reasoning and the JSON answer truncated mid-array. parseLlmEntities
+      // cannot recover a truncated object, so EVERY call silently fell back to
+      // the keyword heuristic (observed in prod: 0 LLM successes, 4/4 "zero
+      // entities" from unterminated JSON). 8k leaves room for both reasoning
+      // and a full multi-entity answer on a 30+ line rate card.
+      maxTokens: 8_192,
       temperature: 0,
       // 90s budget — leaves room for a single 429 retry that waits
       // ~35s across a minute boundary (Gemini's bucket reset point)
       // plus the actual LLM round-trip on the second attempt.
       timeoutMs: 90_000,
     });
+
+    // Surface truncation explicitly. Without this, a hit output cap looks
+    // identical to "the doc genuinely had nothing to map" — the failure mode
+    // that hid the prod heuristic-fallback regression for weeks.
+    if (result.finishReason === 'length') {
+      this.logger.warn(
+        `field-mapper LLM response hit the output-token cap ` +
+          `(finish_reason=length, output_tokens=${result.outputTokens ?? '?'}, maxTokens=8192). ` +
+          `JSON is likely truncated and will fail to parse — raise maxTokens or pick a model ` +
+          `with a smaller/disabled thinking budget.`,
+      );
+    }
 
     return this.parseLlmEntities(result.text, rateCard);
   }
@@ -552,9 +572,17 @@ export class RateCardFieldMapperService {
 
     // ── Pass 1: standard "mentioned + numeric" heuristic ────────────
     for (const sl of rateCard.serviceLines) {
-      if (!isServiceLineMentioned(sl, points)) continue;
+      // Flat-priced slugs (IDS/IPS/DLP/IAM) are binary toggles, not counts —
+      // a numeric inventory field must never price them. They are emitted
+      // ONLY from an affirmative flag in Pass 2 (per the rate card's own
+      // "IDS: Yes/No" hints). This stops a count like "user IDs: 4200" or
+      // "IP addresses: 5" from phantom-emitting a flat network line.
+      if (sl.pricingModel === 'flat') continue;
 
-      const numeric = pickScopeValue(points, sl.scopeUnit, sl.slug, sl.displayName);
+      const group = matchingKeywordGroup(sl);
+      if (!group || !groupMentionedIn(group, points)) continue;
+
+      const numeric = pickScopeValue(points, sl.scopeUnit, group.aliases);
       if (numeric == null) continue;
 
       const methodology = autoPickMethodology(sl, customerType);
@@ -758,8 +786,9 @@ const SCOPE_UNIT_NOUN: Record<ScopeUnit, string> = {
 //   • Domain tokens (web, mobile, api, network, …) cover legacy slugs
 //     like `vapt_web_app` that don't carry a driver suffix.
 //
-// `isServiceLineMentioned` picks the LONGEST matching token so a
-// driver-specific group wins over a domain group when both could match.
+// `matchingKeywordGroup` prefers a driver-specific group over a domain
+// group whenever both could match (see DOMAIN_TOKENS), so a slug is gated
+// on its own driver keyword rather than its broad domain.
 const SERVICE_LINE_KEYWORDS: Array<{ token: string; aliases: string[] }> = [
   // Driver-specific (preferred for Prophaze-style granular slugs).
   { token: 'input_fields',     aliases: ['input field', 'form field', 'form input'] },
@@ -806,23 +835,80 @@ const SERVICE_LINE_KEYWORDS_BY_LENGTH = [...SERVICE_LINE_KEYWORDS].sort(
   (a, b) => b.token.length - a.token.length,
 );
 
-function isServiceLineMentioned(sl: RateCardServiceLine, points: ExtractedPointInput[]): boolean {
+// The broad DOMAIN tokens (the "Domain" section above). Their aliases are
+// deliberately wide — e.g. `network` aliases include "firewall"/"router" —
+// so they're only safe as a fallback for legacy single-axis slugs that
+// carry no driver-specific token. A driver-level slug (e.g. IDS/IPS/DLP)
+// must NEVER be gated by a domain token: see the precedence rule in
+// matchingKeywordGroup.
+const DOMAIN_TOKENS = new Set<string>([
+  'web', 'mobile', 'android', 'ios', 'api', 'thick', 'network', 'cloud',
+]);
+
+interface KeywordGroup {
+  token: string;
+  aliases: string[];
+}
+
+// Short aliases that are common substrings of unrelated words. They are
+// matched as WHOLE tokens (non-letter boundaries) instead of substrings, so
+// "user_ids"/"tooltips"/"miami"/"scada"/"average" don't phantom-trigger a
+// flat-priced network/cloud line. Mirrors the boundary discipline already
+// used by BINARY_TRIGGERS. P0 follow-up to the driver-precedence fix below:
+// promoting these short driver tokens to win the gate also exposed their
+// bare-substring aliases, so we tighten the alias match in lock-step.
+const AMBIGUOUS_ALIASES = new Set<string>([
+  'ids', 'ips', 'dlp', 'iam', 'sca', 'av', 'db', 'sso', 'rds',
+]);
+
+/** True when `alias` appears in `haystack` (caller passes it lowercased).
+ *  Ambiguous short aliases match as whole tokens with an optional plural
+ *  's' — so "SCAs"/"SSOs"/"DBs"/"AVs" (legitimate acronym plurals) still
+ *  match, while "scada"/"scan"/"miami"/"average" (the alias embedded in a
+ *  longer word) still don't. */
+function aliasMatches(alias: string, haystack: string): boolean {
+  const a = alias.trim();
+  if (AMBIGUOUS_ALIASES.has(a)) {
+    return new RegExp(`(?:^|[^a-z])${a}s?(?:[^a-z]|$)`, 'i').test(haystack);
+  }
+  return haystack.includes(alias);
+}
+
+/**
+ * The keyword group that NAMES this service line. Driver-specific tokens
+ * take precedence over the broad DOMAIN tokens REGARDLESS of length.
+ *
+ * The old rule was "longest token wins", which mis-fired for the short
+ * driver tokens `ids`/`ips`/`dlp` (3 chars): they lost the tie-break to the
+ * broad `network` domain token (7 chars), whose aliases include
+ * "firewall"/"router". A doc that merely listed a firewall then
+ * phantom-matched IDS/IPS/DLP, each priced flat (10k/10k/50k) — inflating the
+ * quote by 70k. So: prefer the most-specific DRIVER token that names this
+ * slug; only fall back to a domain token when the slug has no driver token.
+ *
+ * Shared by `isServiceLineMentioned` (does the doc name this slug at all?)
+ * and `pickScopeValue` (which point carries this slug's count?) so both
+ * reason from the SAME evidence — a slug's scope can only come from a point
+ * that names that slug's own driver, never a sibling's count.
+ */
+function matchingKeywordGroup(sl: RateCardServiceLine): KeywordGroup | null {
   const slText = `${sl.slug} ${sl.displayName}`.toLowerCase();
-
-  // Pick the most specific token that matches this slug+name. Granular
-  // tokens (longer) win over domain tokens so the gate is strict for
-  // driver-level slugs. Domain tokens stay reachable for legacy
-  // single-axis slugs.
-  const matchingGroup = SERVICE_LINE_KEYWORDS_BY_LENGTH.find((g) =>
-    slText.includes(g.token),
+  return (
+    SERVICE_LINE_KEYWORDS_BY_LENGTH.find(
+      (g) => !DOMAIN_TOKENS.has(g.token) && slText.includes(g.token),
+    ) ??
+    SERVICE_LINE_KEYWORDS_BY_LENGTH.find(
+      (g) => DOMAIN_TOKENS.has(g.token) && slText.includes(g.token),
+    ) ??
+    null
   );
-  if (!matchingGroup) return false;
+}
 
+/** True when any of the group's aliases is named by some extracted point. */
+function groupMentionedIn(group: KeywordGroup, points: ExtractedPointInput[]): boolean {
   for (const p of points) {
     const haystack = `${p.key} ${p.label ?? ''} ${p.value}`.toLowerCase();
-    for (const alias of matchingGroup.aliases) {
-      if (haystack.includes(alias)) return true;
-    }
+    if (group.aliases.some((alias) => aliasMatches(alias, haystack))) return true;
   }
   return false;
 }
@@ -881,11 +967,9 @@ interface DetectedNumeric {
 function pickScopeValue(
   points: ExtractedPointInput[],
   scopeUnit: ScopeUnit,
-  slSlug: string,
-  slDisplayName: string,
+  driverAliases: string[],
 ): DetectedNumeric | null {
   const patterns = SCOPE_PATTERNS[scopeUnit];
-  const slTokens = tokenise(`${slSlug} ${slDisplayName}`);
 
   let best: DetectedNumeric | null = null;
   let bestScore = -1;
@@ -895,13 +979,26 @@ function pickScopeValue(
     if (num == null || num <= 0) continue;
 
     const haystack = `${p.key} ${p.label ?? ''}`;
-    const matches = patterns.filter((re) => re.test(haystack)).length;
-    if (matches === 0) continue;
 
-    const ptTokens = tokenise(haystack);
-    const tokenOverlap = [...slTokens].filter((t) => ptTokens.has(t)).length;
+    // The scope MUST come from a point that names THIS slug's own driver
+    // (the same keyword group that proved the slug was mentioned) — never a
+    // sibling device's count. The old code scored any point matching the
+    // broad scopeUnit pattern set (shared by every device slug) plus a weak
+    // token-overlap that leaked the domain word "network", so "1 firewall" +
+    // "500 endpoint devices on network" priced 500 firewalls (₹2.5M). The
+    // earlier mention-gate fix governs WHICH slugs appear; this governs the
+    // count they carry. The driver name may live in the answer VALUE
+    // ("What network devices? → 2 firewalls"), so check key+label+value —
+    // matching groupMentionedIn — not just key+label.
+    const driverHay = `${p.key} ${p.label ?? ''} ${p.value}`.toLowerCase();
+    if (!driverAliases.some((alias) => aliasMatches(alias, driverHay))) {
+      continue;
+    }
 
-    const score = matches * 10 + tokenOverlap * 5;
+    // Among the driver-naming points, prefer the one that also matches the
+    // scopeUnit pattern (e.g. /firewall/ for devices); a driver-naming point
+    // with no pattern hit (score 0) is still eligible over nothing.
+    const score = patterns.filter((re) => re.test(haystack)).length * 10;
     if (score > bestScore) {
       bestScore = score;
       best = { point: p, numericValue: num };
@@ -938,6 +1035,12 @@ function detectCustomerType(points: ExtractedPointInput[]): CustomerType {
 // `[\W_]ids[\W_]` would be safer. We tighten with explicit non-letter
 // boundaries on each side, plus a minimum-length sanity check on the
 // positive-value match (P1-9 in see-that-is-self-sunny-honey.md).
+//
+// positiveValues deliberately EXCLUDES the bare numeric "1": these are
+// yes/no toggles, and "1" is ambiguous with a count. "Number of public
+// IPs: 1" was firing a phantom IPS line (₹10k) because "IPs" trips the
+// /ips/ boundary and "1" read as "yes". Affirmatives are word flags
+// (yes/true/enabled/present/deployed); a count of 1 is not one of them.
 const BINARY_TRIGGERS: Array<{
   slug: string;
   patterns: RegExp[];
@@ -946,22 +1049,22 @@ const BINARY_TRIGGERS: Array<{
   {
     slug: 'vapt_cloud_iam',
     patterns: [/(?:^|[^a-z])iam(?:[^a-z]|$)/i, /identity.*access/i],
-    positiveValues: /^(yes|true|enabled|y|1|present)$/i,
+    positiveValues: /^(yes|true|enabled|y|present)$/i,
   },
   {
     slug: 'vapt_network_ids',
     patterns: [/(?:^|[^a-z])ids(?:[^a-z]|$)/i, /intrusion.*detection/i],
-    positiveValues: /^(yes|true|enabled|y|1|present|deployed)$/i,
+    positiveValues: /^(yes|true|enabled|y|present|deployed)$/i,
   },
   {
     slug: 'vapt_network_ips',
     patterns: [/(?:^|[^a-z])ips(?:[^a-z]|$)/i, /intrusion.*prevention/i],
-    positiveValues: /^(yes|true|enabled|y|1|present|deployed)$/i,
+    positiveValues: /^(yes|true|enabled|y|present|deployed)$/i,
   },
   {
     slug: 'vapt_network_dlp',
     patterns: [/(?:^|[^a-z])dlp(?:[^a-z]|$)/i, /data.*loss.*prevention/i],
-    positiveValues: /^(yes|true|enabled|y|1|present|deployed)$/i,
+    positiveValues: /^(yes|true|enabled|y|present|deployed)$/i,
   },
 ];
 
@@ -1056,16 +1159,6 @@ function parseNumber(value: string): number | null {
   if (!m) return null;
   const n = Number(m[0]);
   return Number.isFinite(n) ? n : null;
-}
-
-function tokenise(s: string): Set<string> {
-  return new Set(
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9 ]+/g, ' ')
-      .split(/\s+/)
-      .filter((t) => t.length >= 3),
-  );
 }
 
 function isValidMethodology(v: unknown): v is Methodology {

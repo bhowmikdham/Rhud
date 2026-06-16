@@ -463,6 +463,18 @@ const SERVICE_LINES: FixtureServiceLine[] = [
     scopeUnit: 'devices',
     pricingModel: 'per_unit',
     position: 42,
+    inferenceHint:
+      'End-user / host computing devices that are themselves the test targets — desktops, ' +
+      'laptops, PCs, notebooks, workstations, and end-user/host servers ALL count as endpoint ' +
+      'devices, however the doc phrases them (e.g. "Windows PCs", "MacBooks", "user machines"). ' +
+      'Emit with the TOTAL device count, summing across types/OSes if the doc lists several ' +
+      '(e.g. "PC/Laptop windows (8)" → 8; "40 desktops + 10 laptops" → 50). Network APPLIANCES ' +
+      'are NOT endpoints — firewalls, routers, switches, IDS/IPS/DLP each have their own line; ' +
+      'do not double-count them here.',
+    inferenceExamples: [
+      '"PC/Laptop windows (8)" → vapt_network_endpoints scope=8',
+      '"approx 250 desktops and laptops across 3 offices" → vapt_network_endpoints scope=250',
+    ],
     tiers: flatBoth([
       { rangeMin: 1,    rangeMax: 49,    priceRupees: 1_500, displayLabel: '1–50 devices' },
       { rangeMin: 50,   rangeMax: 99,    priceRupees: 1_000, displayLabel: '50–100 devices' },
