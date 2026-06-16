@@ -37,6 +37,19 @@ export interface ChatOptions {
    * transparently retries WITHOUT it, so it can never break a call.
    */
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
+  /**
+   * Constrain the model to emit JSON matching this schema (OpenAI-compat
+   * `response_format: { type: 'json_schema', json_schema }`; Gemini honours it
+   * via its OpenAI-compat layer). Eliminates markdown fences / prose preamble /
+   * hallucinated slugs so the response always parses. Self-healing: if the
+   * provider rejects the schema (4xx) it is stripped and the call retried, so
+   * it can never break inference — worst case is the prior unstructured path.
+   */
+  responseSchema?: { name: string; schema: Record<string, unknown> };
+  /** Best-effort determinism seed. Honoured by some providers; ignored by
+   *  others (Gemini ignores it for hidden thinking tokens). Also stripped +
+   *  retried on a 4xx. */
+  seed?: number;
 }
 
 export interface ChatResult {

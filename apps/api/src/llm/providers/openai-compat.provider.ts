@@ -83,7 +83,20 @@ export class OpenAiCompatProvider implements LlmProvider {
     if (this.name === 'gemini' && opts.reasoningEffort != null) {
       body.reasoning_effort = opts.reasoningEffort;
     }
-    let strippedReasoning = false;
+    // Structured output (constrained JSON) + determinism seed. Both are
+    // optional "extras": if the provider rejects them with a 4xx we strip ALL
+    // extras and retry once (see `strippedExtras`), so they can only help,
+    // never break a call.
+    if (opts.responseSchema != null) {
+      body.response_format = {
+        type: 'json_schema',
+        json_schema: { name: opts.responseSchema.name, schema: opts.responseSchema.schema },
+      };
+    }
+    if (opts.seed != null) {
+      body.seed = opts.seed;
+    }
+    let strippedExtras = false;
 
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.apiKey) {
@@ -165,12 +178,17 @@ export class OpenAiCompatProvider implements LlmProvider {
 
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        // Resilience: a 4xx caused by the optional Gemini `reasoning_effort`
-        // control must never break the call — strip it and retry once. The
-        // call then behaves exactly as before this option existed.
-        if (res.status >= 400 && res.status < 500 && 'reasoning_effort' in body && !strippedReasoning) {
+        // Resilience: a 4xx caused by an OPTIONAL extra (reasoning_effort,
+        // response_format/json_schema, seed) must never break the call — strip
+        // them all and retry once. The call then behaves exactly as before
+        // these options existed (unstructured, unconstrained).
+        const hasExtras =
+          'reasoning_effort' in body || 'response_format' in body || 'seed' in body;
+        if (res.status >= 400 && res.status < 500 && hasExtras && !strippedExtras) {
           delete body.reasoning_effort;
-          strippedReasoning = true;
+          delete body.response_format;
+          delete body.seed;
+          strippedExtras = true;
           continue;
         }
         throw new Error(`llm http ${res.status}: ${text.slice(0, 300)}`);

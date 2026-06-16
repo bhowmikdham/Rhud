@@ -114,7 +114,7 @@ const MAPPER_MAX_OUTPUT_TOKENS = 32_768;
  * a change here should invalidate cached results and force re-inference on the
  * next run. Keeps "same doc → same quote" honest across deploys.
  */
-export const MAPPER_PROMPT_VERSION = 'v2-2026-06-dedup-pool';
+export const MAPPER_PROMPT_VERSION = 'v3-2026-06-structured-output';
 
 /**
  * One slug the LLM explicitly evaluated and rejected, with a short
@@ -394,6 +394,14 @@ export class RateCardFieldMapperService {
       // dynamic thinking budget (≤24,576 on 2.5-flash) AND a large answer.
       maxTokens: MAPPER_MAX_OUTPUT_TOKENS,
       temperature: 0,
+      // Constrain the output to the exact JSON shape with serviceLineSlug
+      // restricted to THIS rate card's slugs — kills markdown-fence/prose
+      // parse failures and hallucinated slugs. Self-healing in the provider
+      // (stripped + retried on 4xx), so it can only help.
+      responseSchema: buildMapperResponseSchema(rateCard),
+      // Best-effort determinism (Gemini ignores it for thinking tokens, but it
+      // helps other providers and is free here).
+      seed: 1,
       // Field mapping is mechanical extraction, not deep reasoning. Cap
       // Gemini's thinking budget ("low") so a call uses ~a few thousand
       // tokens instead of ~32k of mostly-hidden reasoning. Gemini-only +
@@ -810,6 +818,57 @@ const SYSTEM_KERNEL = [
   '',
   ' 8. Output strict JSON. No preamble, no markdown fences.',
 ].join('\n');
+
+/**
+ * JSON schema mirroring OUTPUT_SCHEMA_INSTRUCTIONS, with serviceLineSlug
+ * pinned to THIS rate card's slugs. Passed as the LLM's response_format so the
+ * model can't return prose, markdown fences, or a slug that isn't real.
+ * Lenient (no `strict`): methodology/appId stay optional. The provider strips
+ * + retries if a given backend rejects the schema, so this never breaks a call.
+ */
+function buildMapperResponseSchema(rateCard: RateCard): { name: string; schema: Record<string, unknown> } {
+  const slugs = rateCard.serviceLines.map((s) => s.slug);
+  return {
+    name: 'rhud_field_mapping',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        entities: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              serviceLineSlug: slugs.length > 0 ? { type: 'string', enum: slugs } : { type: 'string' },
+              scopeValue: { type: 'integer' },
+              methodology: { type: 'string' },
+              customerType: { type: 'string', enum: ['internal', 'external'] },
+              appId: { type: 'string' },
+              confidence: { type: 'number' },
+              reasoning: { type: 'string' },
+              sourceQuote: { type: 'string' },
+            },
+            required: ['serviceLineSlug', 'scopeValue', 'customerType', 'confidence'],
+          },
+        },
+        considered: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              serviceLineSlug: { type: 'string' },
+              reason: { type: 'string' },
+            },
+            required: ['serviceLineSlug', 'reason'],
+          },
+        },
+      },
+      required: ['entities', 'considered'],
+    },
+  };
+}
 
 const OUTPUT_SCHEMA_INSTRUCTIONS = [
   'OUTPUT — return JSON exactly:',
