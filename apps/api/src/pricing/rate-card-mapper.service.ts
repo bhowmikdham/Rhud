@@ -101,6 +101,12 @@ export interface InferredEntity {
  *  speculative ones the LLM admits to. */
 const CONFIDENCE_THRESHOLD = 0.6;
 
+/** Output-token budget for the field-mapper LLM call. Must comfortably fit
+ *  a THINKING model's hidden reasoning (≤24,576 tokens on Gemini 2.5-flash)
+ *  PLUS the full JSON answer — otherwise the answer truncates mid-array and
+ *  the whole call silently falls back to the keyword heuristic. */
+const MAPPER_MAX_OUTPUT_TOKENS = 32_768;
+
 /**
  * One slug the LLM explicitly evaluated and rejected, with a short
  * reason. Used by `inferEntities` to gate heuristic backfill: we never
@@ -329,13 +335,15 @@ export class RateCardFieldMapperService {
     const result = await this.llm.chat(tenantId, messages, {
       // Generous output budget. Gemini 2.5/3.x "flash" (and most current
       // frontier models) are THINKING models: hidden reasoning tokens count
-      // against max_tokens, so the old 2_000 cap was almost entirely consumed
-      // by reasoning and the JSON answer truncated mid-array. parseLlmEntities
-      // cannot recover a truncated object, so EVERY call silently fell back to
-      // the keyword heuristic (observed in prod: 0 LLM successes, 4/4 "zero
-      // entities" from unterminated JSON). 8k leaves room for both reasoning
-      // and a full multi-entity answer on a 30+ line rate card.
-      maxTokens: 8_192,
+      // against max_tokens. A tight cap is consumed almost entirely by
+      // reasoning and the JSON answer truncates mid-array; parseLlmEntities
+      // cannot recover a truncated object, so the call silently falls back to
+      // the keyword heuristic. 8k was enough for a tiny single-app doc but a
+      // wide multi-application questionnaire (≈145 points → ~15 entities)
+      // makes the model think harder — prod logged finish_reason=length with
+      // only 327 visible output tokens. 32k leaves room for the model's full
+      // dynamic thinking budget (≤24,576 on 2.5-flash) AND a large answer.
+      maxTokens: MAPPER_MAX_OUTPUT_TOKENS,
       temperature: 0,
       // 90s budget — leaves room for a single 429 retry that waits
       // ~35s across a minute boundary (Gemini's bucket reset point)
@@ -349,9 +357,9 @@ export class RateCardFieldMapperService {
     if (result.finishReason === 'length') {
       this.logger.warn(
         `field-mapper LLM response hit the output-token cap ` +
-          `(finish_reason=length, output_tokens=${result.outputTokens ?? '?'}, maxTokens=8192). ` +
-          `JSON is likely truncated and will fail to parse — raise maxTokens or pick a model ` +
-          `with a smaller/disabled thinking budget.`,
+          `(finish_reason=length, output_tokens=${result.outputTokens ?? '?'}, ` +
+          `maxTokens=${MAPPER_MAX_OUTPUT_TOKENS}). JSON is likely truncated and will fail to ` +
+          `parse — raise maxTokens further or pick a model with a smaller/disabled thinking budget.`,
       );
     }
 
