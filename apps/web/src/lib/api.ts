@@ -799,6 +799,12 @@ export interface BasePriceLine {
   entityId: string;
   serviceLineSlug: string;
   serviceLineName: string;
+  /** Application instance (multi-app questionnaires) — drives per-app
+   *  grouping/labels in the priced table. Absent for single-app docs. */
+  appId?: string;
+  /** When set, this line's tier was chosen on the COMBINED scope of N
+   *  pooled application instances — show a "pooled across N apps" hint. */
+  pooledAcross?: number;
   scopeUnit: string;
   scopeValue: number;
   methodology: string | null;

@@ -41,6 +41,14 @@ type OverrideTarget = { fileId: string; slug: string };
 // the Method cell renders an editable <select> instead of the read-only chip.
 type ScopeLine = BasePriceLine & { allowedMethodologies?: string[] };
 
+/** Turn an appId slug ("crm_frontend", "app_2") into a readable label. */
+function humanizeAppId(appId: string): string {
+  return appId
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\bApp (\d+)\b/, 'Application $1');
+}
+
 export function ScopePricingTable({
   engagementId,
   baseBreakdown,
@@ -222,28 +230,66 @@ export function ScopePricingTable({
                 fetched, so we don't yet know which rows are editable. Render
                 those rows with a disabled input (stable shape) so resolution
                 only toggles `disabled`, never the layout — see ScopeRow. */}
-            {baseBreakdown.map((line) => {
-              const loading = editableSlugs === null;
-              const target = editableSlugs?.get(line.serviceLineSlug) ?? null;
-              const editable = canEdit && !!target;
-              return (
-                <ScopeRow
-                  key={line.entityId}
-                  line={line}
-                  currency={currency}
-                  editable={editable}
-                  canEdit={canEdit}
-                  loading={loading}
-                  target={target}
-                  optimisticValue={optimistic[line.entityId]}
-                  saving={savingId === line.entityId}
-                  saved={savedId === line.entityId}
-                  error={errorByRow[line.entityId] ?? null}
-                  onSave={saveScope}
-                  onSaveMethodology={saveMethodology}
-                />
+            {(() => {
+              const renderRow = (line: ScopeLine) => {
+                const loading = editableSlugs === null;
+                const target = editableSlugs?.get(line.serviceLineSlug) ?? null;
+                const editable = canEdit && !!target;
+                return (
+                  <ScopeRow
+                    key={line.entityId}
+                    line={line}
+                    currency={currency}
+                    editable={editable}
+                    canEdit={canEdit}
+                    loading={loading}
+                    target={target}
+                    optimisticValue={optimistic[line.entityId]}
+                    saving={savingId === line.entityId}
+                    saved={savedId === line.entityId}
+                    error={errorByRow[line.entityId] ?? null}
+                    onSave={saveScope}
+                    onSaveMethodology={saveMethodology}
+                  />
+                );
+              };
+
+              // Multi-application questionnaires produce several lines per
+              // app; group + label them so the rep can tell QMS from CRM
+              // instead of seeing anonymous repeated rows.
+              const multiApp =
+                new Set(baseBreakdown.map((l) => l.appId).filter(Boolean)).size >= 2;
+              if (!multiApp) return baseBreakdown.map(renderRow);
+
+              const groups = new Map<string, ScopeLine[]>();
+              for (const l of baseBreakdown) {
+                const k = l.appId ?? '';
+                const g = groups.get(k);
+                if (g) g.push(l);
+                else groups.set(k, [l]);
+              }
+              const entries = [...groups.entries()].sort(([a], [b]) =>
+                a === '' ? 1 : b === '' ? -1 : a.localeCompare(b),
               );
-            })}
+              return entries.flatMap(([appId, lines]) => [
+                <tr key={`hdr-${appId || '__shared__'}`}>
+                  <td colSpan={5} style={{
+                    paddingTop: 12, paddingBottom: 4,
+                    fontSize: 10.5, fontWeight: 700, letterSpacing: '0.04em',
+                    textTransform: 'uppercase', color: 'var(--fg-muted)',
+                    borderBottom: '1px solid var(--divider)',
+                  }}>
+                    {appId ? humanizeAppId(appId) : 'Shared / infrastructure'}
+                    {lines.some((l) => l.pooledAcross) && (
+                      <span style={{ fontWeight: 500, textTransform: 'none', marginLeft: 8 }}>
+                        · volume-pooled across {lines.find((l) => l.pooledAcross)!.pooledAcross} apps
+                      </span>
+                    )}
+                  </td>
+                </tr>,
+                ...lines.map(renderRow),
+              ]);
+            })()}
           </tbody>
           {/* Total moved to the unified pricing footer below (base + extras + grand). */}
         </table>

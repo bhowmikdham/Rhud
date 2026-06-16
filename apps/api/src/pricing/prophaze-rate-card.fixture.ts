@@ -699,6 +699,13 @@ export function buildProphazeRateCardFixture(opts: {
     position: sl.position ?? slIdx,
     inferenceHint: sl.inferenceHint ?? null,
     inferenceExamples: sl.inferenceExamples ?? [],
+    // Pool volume across application instances for the per-app, per_unit
+    // volume-tiered lines (web app / API / mobile) so a multi-application
+    // opportunity earns one combined volume discount instead of each app
+    // hitting its own (smaller) tier. Network / cloud are infra-wide
+    // (single instance, no appId) so they never pool in practice.
+    poolAcrossEntities:
+      sl.pricingModel === 'per_unit' && /^vapt_(web_app|api|mobile)_/.test(sl.slug),
     tiers: sl.tiers.map((t, tIdx): RateCardTier => ({
       id: det ? `t-${sl.slug}-${tIdx}` : crypto.randomUUID(),
       rangeMin: t.rangeMin,

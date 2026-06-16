@@ -77,6 +77,16 @@ export interface RateCardServiceLine {
   inferenceHint?: string | null;
   /** 0–3 worked examples ("23 endpoints" → scope=23) shown to the LLM. */
   inferenceExamples?: string[];
+  /**
+   * When true and this is a `per_unit` line, multiple application instances
+   * (entities with the same slug + methodology + customerType but different
+   * appId) are priced on their COMBINED scope — one volume tier for the
+   * whole opportunity — instead of each app hitting its own tier. The line
+   * is still emitted per app at the pooled unit rate, so per-app scope stays
+   * visible and editable. Off by default → single-app + non-poolable lines
+   * are unaffected. Only meaningful for `per_unit` volume-tiered slugs.
+   */
+  poolAcrossEntities?: boolean;
 }
 
 export interface RateCardOpenPricedService {
@@ -156,6 +166,10 @@ export interface ScopedEntity {
   };
   methodology?: Methodology;
   customerType: CustomerType;
+  /** Application instance this scope belongs to (wide multi-app
+   *  questionnaires). Carried so the priced quote can group + label lines
+   *  per application and pool volume across same-slug apps. */
+  appId?: string;
 }
 
 // ── Stage 2: base price ────────────────────────────────────────────────────
@@ -169,6 +183,14 @@ export interface BasePriceLine {
   entityId: string;
   serviceLineSlug: string;
   serviceLineName: string;
+  /** Application instance, when this line came from a multi-app
+   *  questionnaire. Lets the price table group + label rows per app. */
+  appId?: string;
+  /** Set when this line's tier was chosen on the COMBINED scope of N
+   *  pooled application instances (see RateCardServiceLine.poolAcrossEntities):
+   *  the number of apps pooled. Lets the UI show a "volume-pooled across N
+   *  apps" hint. Absent for normally-priced lines. */
+  pooledAcross?: number;
   scopeUnit: ScopeUnit;
   scopeValue: number;
   methodology: Methodology;
@@ -230,6 +252,39 @@ export function computeBasePrice(
   let hasManualQuoteRequired = false;
   let hasUnmatched = false;
 
+  // ── Volume pooling pre-pass (opt-in per slug via poolAcrossEntities) ──
+  // When several application instances share a per_unit, volume-tiered
+  // service line, price their COMBINED scope at one tier so a multi-app
+  // opportunity earns the same volume discount a single large app would.
+  // We still emit one line PER app (allocating the pooled unit rate back),
+  // so per-app scope stays visible + editable. Pool key includes
+  // methodology + customerType because pickTier filters on both — mixing
+  // them would price against a tier that matches neither.
+  const pooledByEntity = new Map<string, { tier: RateCardTier; count: number }>();
+  {
+    const groups = new Map<string, ScopedEntity[]>();
+    for (const e of entities) {
+      const sl = linesByService.get(e.serviceLineSlug);
+      if (!sl || sl.pricingModel !== 'per_unit' || !sl.poolAcrossEntities) continue;
+      const key = `${e.serviceLineSlug}::${e.methodology ?? ''}::${e.customerType}`;
+      const g = groups.get(key);
+      if (g) g.push(e);
+      else groups.set(key, [e]);
+    }
+    for (const group of groups.values()) {
+      if (group.length < 2) continue; // singletons price normally
+      const sl = linesByService.get(group[0]!.serviceLineSlug)!;
+      const pooledScope = group.reduce((s, e) => s + (e.dimensions[sl.scopeUnit] ?? 0), 0);
+      const tier = pickTier(sl.tiers, {
+        scopeValue: pooledScope,
+        methodology: group[0]!.methodology ?? null,
+        customerType: group[0]!.customerType,
+      });
+      if (!tier) continue; // no pooled tier → each app falls through to its own pricing
+      for (const e of group) pooledByEntity.set(e.entityId, { tier, count: group.length });
+    }
+  }
+
   for (const e of entities) {
     if (openPricedSlugs.has(e.serviceLineSlug)) {
       const op = rateCard.openPricedServices.find((s) => s.slug === e.serviceLineSlug)!;
@@ -237,6 +292,7 @@ export function computeBasePrice(
         entityId: e.entityId,
         serviceLineSlug: e.serviceLineSlug,
         serviceLineName: op.displayName,
+        ...(e.appId ? { appId: e.appId } : {}),
         scopeUnit: 'other',
         scopeValue: 0,
         methodology: e.methodology ?? null,
@@ -259,16 +315,23 @@ export function computeBasePrice(
 
     const scopeValue = e.dimensions[sl.scopeUnit] ?? 0;
 
-    const tier = pickTier(sl.tiers, {
-      scopeValue,
-      methodology: e.methodology ?? null,
-      customerType: e.customerType,
-    });
+    // When pooled, this app uses the COMBINED-volume tier (so a small app
+    // benefits from the opportunity's total scope); otherwise it picks its
+    // own tier on its own scope.
+    const pooled = pooledByEntity.get(e.entityId);
+    const tier = pooled
+      ? pooled.tier
+      : pickTier(sl.tiers, {
+          scopeValue,
+          methodology: e.methodology ?? null,
+          customerType: e.customerType,
+        });
     if (!tier) {
       lines.push({
         entityId: e.entityId,
         serviceLineSlug: e.serviceLineSlug,
         serviceLineName: sl.displayName,
+        ...(e.appId ? { appId: e.appId } : {}),
         scopeUnit: sl.scopeUnit,
         scopeValue,
         methodology: e.methodology ?? null,
@@ -296,6 +359,8 @@ export function computeBasePrice(
       entityId: e.entityId,
       serviceLineSlug: e.serviceLineSlug,
       serviceLineName: sl.displayName,
+      ...(e.appId ? { appId: e.appId } : {}),
+      ...(pooled ? { pooledAcross: pooled.count } : {}),
       scopeUnit: sl.scopeUnit,
       scopeValue,
       methodology: tier.methodology,
@@ -325,6 +390,7 @@ function unmatchedLine(e: ScopedEntity, reason: string): BasePriceLine {
     entityId: e.entityId,
     serviceLineSlug: e.serviceLineSlug,
     serviceLineName: e.serviceLineSlug,
+    ...(e.appId ? { appId: e.appId } : {}),
     scopeUnit: 'other',
     scopeValue: 0,
     methodology: e.methodology ?? null,

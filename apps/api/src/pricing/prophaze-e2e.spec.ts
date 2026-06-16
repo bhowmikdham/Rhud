@@ -111,20 +111,23 @@ describe('Prophaze E2E — mapper to quote', () => {
     const scope = mapper.toScopedEntities(inferred, RATE_CARD);
     const result = computeBasePrice(RATE_CARD, scope);
 
-    // Hand calculation against the rate card fixture:
-    //   web_app_dynamic_pages: 29 pages @ Low (15-49) = ₹100/page → ₹2,900   (× black_box external)
-    //                          50 pages @ Mid (50-99) = ₹70/page  → ₹3,500
-    //   web_app_input_fields: 60 fields × ₹70/field   → wait: 60 falls in 25+ extrapolation tier @ ₹70/field = ₹4,200
-    //                         120 fields × ₹70/field  → ₹8,400
+    // Hand calculation against the rate card fixture. NOTE: dynamic_pages
+    // and input_fields are poolAcrossEntities (per_unit volume tiers), so the
+    // two web apps price on their COMBINED page/field counts:
+    //   web_app_dynamic_pages: POOLED 29+50 = 79 pages → Mid (50-99) @ ₹70
+    //                          → 29×₹70 + 50×₹70 = ₹2,030 + ₹3,500 = ₹5,530
+    //                          (vs ₹6,400 discrete — pooling saves ₹870)
+    //   web_app_input_fields: POOLED 60+120 = 180 → 25+ tier @ ₹70/field
+    //                          → 60×₹70 + 120×₹70 = ₹4,200 + ₹8,400 = ₹12,600 (unchanged: both already at ₹70)
     //   web_app_roles (grey, internal): 8 roles × ₹4,000 (5-8 bracket) = ₹32,000
-    //   api_endpoints: 23 × ₹1,300 (16-25 bracket) = ₹29,900
+    //   api_endpoints: 23 × ₹1,300 (16-25 bracket) = ₹29,900 (single app → no pooling)
     //   network_ids: flat ₹10,000
     //   cloud_iam: flat ₹30,000
     //   source_code_backend (1 lakh LOC, white_box): ₹60,000 (first lakh)
     //                                       ──────
-    //   Total                                       ₹180,900 = 18,090,000 cents
+    //   Total                                       ₹180,030 = 18,003,000 cents
     expect(result.hasUnmatched).toBe(false);
-    expect(result.totalCents).toBe(180_900_00);
+    expect(result.totalCents).toBe(180_030_00);
   });
 
   it('mapper preserves multi-app entityIds (no slug collisions)', () => {
@@ -144,7 +147,7 @@ describe('Prophaze E2E — mapper to quote', () => {
     ]);
   });
 
-  it('three same-slug entities all price separately (no implicit dedup)', () => {
+  it('pools volume across same-slug apps — one line per app, combined tier (no dedup)', () => {
     const inferred: InferredEntity[] = [
       entity({ serviceLineSlug: 'vapt_web_app_dynamic_pages', scopeValue: 29, appId: 'web_app_1' }),
       entity({ serviceLineSlug: 'vapt_web_app_dynamic_pages', scopeValue: 50, appId: 'web_app_2' }),
@@ -152,13 +155,22 @@ describe('Prophaze E2E — mapper to quote', () => {
     ];
     const scope = mapper.toScopedEntities(inferred, RATE_CARD);
     const result = computeBasePrice(RATE_CARD, scope);
-    // 29 × ₹100 = ₹2,900   (Low bracket 1-49)
-    // 50 × ₹70  = ₹3,500   (Mid bracket 50-99)
-    // 100 × ₹50 = ₹5,000   (High bracket 100-249)
-    // ─────
-    // ₹11,400 = 1,140,000 cents
-    expect(result.totalCents).toBe(11_400_00);
+    // dynamic_pages has poolAcrossEntities=true (per_unit volume tiers), so
+    // the three apps price on their COMBINED scope:
+    //   29 + 50 + 100 = 179 pages → High bracket (100-249) @ ₹50/page
+    //   29 × ₹50 = ₹1,450 ; 50 × ₹50 = ₹2,500 ; 100 × ₹50 = ₹5,000
+    //   ───── ₹8,950 = 895,000 cents (vs ₹11,400 if each hit its own tier)
+    expect(result.totalCents).toBe(8_950_00);
+    // Still ONE line per application (pooling allocates the rate back; it is
+    // NOT a dedup/merge) — each app stays individually visible + editable.
     expect(result.lines).toHaveLength(3);
+    // Every pooled line is tagged with the pool size + its appId.
+    expect(result.lines.every((l) => l.pooledAcross === 3)).toBe(true);
+    expect(new Set(result.lines.map((l) => l.appId))).toEqual(
+      new Set(['web_app_1', 'web_app_2', 'web_app_3']),
+    );
+    // All allocated at the pooled ₹50/page unit rate.
+    expect(result.lines.every((l) => l.unitPriceCents === 50_00)).toBe(true);
   });
 
   it('source code methodology auto-resolves to white_box (suffix matching)', () => {

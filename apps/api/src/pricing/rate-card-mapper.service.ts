@@ -305,6 +305,7 @@ export class RateCardFieldMapperService {
         dimensions,
         ...(methodology != null ? { methodology } : {}),
         customerType: e.customerType,
+        ...(e.appId ? { appId: e.appId } : {}),
       });
     }
     if (droppedConfidence + droppedUnknownSlug + droppedStale > 0) {

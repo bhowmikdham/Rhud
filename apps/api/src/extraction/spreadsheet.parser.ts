@@ -449,7 +449,7 @@ export function documentToRawPoints(doc: RhudDocument): RawPoint[] | null {
     // same question across apps doesn't collapse to one point.
     const multiApp = cols.valueCols.length >= 2;
     const appIds = cols.valueCols.map((c, i) =>
-      multiApp ? deriveAppId(sheet, cellLookup, cols.label, c, i) : undefined,
+      multiApp ? deriveAppId(sheet, cellLookup, cols.label, cols.valueCols, i) : undefined,
     );
 
     for (const row of sheet.rows) {
@@ -485,17 +485,41 @@ function deriveAppId(
   sheet: DocumentSheet,
   lookup: Map<string, string>,
   labelCol: number,
-  valueCol: number,
-  index: number,
+  valueCols: number[],
+  vi: number,
 ): string {
+  const valueCol = valueCols[vi]!;
+  // Find the row that NAMES each application. It must VARY across the
+  // answer columns — a repeated sheet-title header ("Web Application
+  // Security Testing Questionnaire" in every column) has the same value
+  // everywhere and would collapse all apps to one id (and dedup their
+  // shared-value rows together). Prefer an explicit name row, then a
+  // description row, then any "application" row.
+  const candidates: Array<{ score: number; rowIndex: number }> = [];
   for (const row of sheet.rows) {
     const l = (lookup.get(`${row.index}:${labelCol}`) ?? '').toLowerCase();
-    if (!/\bname\b|description|application/.test(l)) continue;
-    const v = compactSpaces(lookup.get(`${row.index}:${valueCol}`) ?? '').trim();
+    const score = /name.*application|application.*name|\bname\b/.test(l)
+      ? 3
+      : /description/.test(l)
+        ? 2
+        : /application/.test(l)
+          ? 1
+          : 0;
+    if (score === 0) continue;
+    const vals = valueCols.map((c) =>
+      compactSpaces(lookup.get(`${row.index}:${c}`) ?? '').trim().toLowerCase(),
+    );
+    // Require genuine per-column variation (≥2 distinct non-empty values).
+    if (new Set(vals.filter(Boolean)).size < 2) continue;
+    candidates.push({ score, rowIndex: row.index });
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  for (const cand of candidates) {
+    const v = compactSpaces(lookup.get(`${cand.rowIndex}:${valueCol}`) ?? '').trim();
     const slug = makeKey(v).slice(0, 40);
     if (slug && !/^n_?a$|^not_applicable/.test(slug)) return slug;
   }
-  return `app_${index + 1}`;
+  return `app_${vi + 1}`;
 }
 
 /**
