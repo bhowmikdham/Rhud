@@ -326,11 +326,19 @@ const SERVICE_LINES: FixtureServiceLine[] = [
     pricingModel: 'per_unit',
     position: 10,
     inferenceHint:
-      'Emit when the doc names a count of API endpoints / routes / paths. Group all endpoints of one ' +
-      'API surface under one appId (api_1, api_2, …). REST/SOAP/GraphQL all count. Where the doc ' +
-      'lists endpoints individually, count distinct paths. "API: Yes" without a count → scope=1, ' +
-      'confidence 0.5.',
-    inferenceExamples: ['"Total API endpoints: 23" → scope=23, appId=api_1', '"API: Yes" without count → scope=1 confidence 0.5'],
+      'Emit when an API is itself a TEST TARGET and the doc names its endpoint / route / path count ' +
+      '(usually the dedicated API questionnaire/section). Group one API surface under one appId. ' +
+      'REST/SOAP/GraphQL all count; count distinct paths when listed individually. CRITICAL — do NOT ' +
+      'emit a separate entry for a web app that merely CONSUMES / uses / is built on an API that is ' +
+      'already scoped on its own: that double-counts the same endpoints (e.g. a frontend "uses the ' +
+      'CRM REST API ~50 endpoints" while the CRM backend API is also scoped — count the 50 ONCE). ' +
+      'Only count a consumed API here when it is scoped nowhere else. "API: Yes" without a count → ' +
+      'scope=1, confidence 0.5.',
+    inferenceExamples: [
+      '"Total API endpoints: 23" → scope=23, appId=api_1',
+      '"Frontend uses REST API (~50 endpoints)" AND a backend API with ~50 endpoints is scoped separately → emit the 50 ONCE (for the API), do NOT add another for the frontend',
+      '"API: Yes" without count → scope=1 confidence 0.5',
+    ],
     tiers: symmetric(
       [
         { rangeMin: 1,   rangeMax: 15,   priceRupees: 1_500, displayLabel: '1–15 endpoints' },
