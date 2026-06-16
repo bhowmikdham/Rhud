@@ -211,7 +211,7 @@ export class RateCardFieldMapperService {
     // positives via substring keyword overlap.
     const llmSucceeded = !llmThrew && llmEntities.length > 0;
     if (llmSucceeded) {
-      return llmEntities;
+      return this.dedupeConsumedApis(llmEntities);
     }
 
     // Fallback path: emit heuristic entities, but suppress any slug the
@@ -232,7 +232,46 @@ export class RateCardFieldMapperService {
       );
     }
 
-    return [...llmEntities, ...supplemental];
+    return this.dedupeConsumedApis([...llmEntities, ...supplemental]);
+  }
+
+  /**
+   * Deterministic safety net for the consumed-API double-count. A web
+   * application that "uses" / "consumes" / "is built on" an API gets
+   * vapt_api_* entities (endpoints, roles, …) for APIs it does not own —
+   * but those APIs are already scoped under their OWN application instances
+   * (the dedicated API questionnaire). The SYSTEM_KERNEL instructs the LLM to
+   * dedupe, but it is not 100% consistent run-to-run, so we enforce it here:
+   *   - an appId that carries any vapt_web_app_* driver is a WEB APP;
+   *   - drop its vapt_api_* entities ONLY when ≥1 standalone API instance
+   *     exists (an appId with vapt_api_* and no web-app driver), so we never
+   *     delete the sole record of an API that lives only inside a web app.
+   * Order-independent and idempotent. This is what makes the count correct on
+   * EVERY opportunity rather than only when the LLM happens to dedupe.
+   */
+  private dedupeConsumedApis(entities: InferredEntity[]): InferredEntity[] {
+    const webAppIds = new Set(
+      entities.filter((e) => e.appId && /^vapt_web_app_/.test(e.serviceLineSlug)).map((e) => e.appId!),
+    );
+    const standaloneApiAppIds = new Set(
+      entities
+        .filter((e) => e.appId && /^vapt_api_/.test(e.serviceLineSlug) && !webAppIds.has(e.appId!))
+        .map((e) => e.appId!),
+    );
+    if (standaloneApiAppIds.size === 0) return entities;
+    const kept: InferredEntity[] = [];
+    const dropped: InferredEntity[] = [];
+    for (const e of entities) {
+      if (e.appId && webAppIds.has(e.appId) && /^vapt_api_/.test(e.serviceLineSlug)) dropped.push(e);
+      else kept.push(e);
+    }
+    if (dropped.length > 0) {
+      this.logger.log(
+        `field-mapper dropped ${dropped.length} consumed-API duplicate(s) on web-app instances ` +
+          `(${dropped.map((e) => `${e.serviceLineSlug}@${e.appId}=${e.scopeValue}`).join(', ')})`,
+      );
+    }
+    return kept;
   }
 
   /**

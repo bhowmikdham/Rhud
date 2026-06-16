@@ -48,6 +48,37 @@ describe('mapper LLM path — canned responses', () => {
     expect(out.filter((e) => e.appId === 'web_app_2')).toHaveLength(1);
   });
 
+  it('drops a web app\'s consumed-API endpoints when the API is scoped standalone (dedup)', async () => {
+    const llm = makeMockLlm(JSON.stringify({
+      entities: [
+        // Standalone API instance (the real API).
+        { serviceLineSlug: 'vapt_api_endpoints', scopeValue: 91, customerType: 'external', confidence: 0.9, reasoning: '', sourceQuote: '~91 REST endpoints', appId: 'api_qms_backend' },
+        // Web app that CONSUMES that API: its own pages + a DUPLICATE api_endpoints.
+        { serviceLineSlug: 'vapt_web_app_dynamic_pages', scopeValue: 44, customerType: 'external', confidence: 0.9, reasoning: '', sourceQuote: '', appId: 'qms_web' },
+        { serviceLineSlug: 'vapt_api_endpoints', scopeValue: 91, customerType: 'external', confidence: 0.9, reasoning: '', sourceQuote: 'uses the QMS backend API ~91 endpoints', appId: 'qms_web' },
+      ],
+    }));
+    const mapper = new RateCardFieldMapperService(llm);
+    const out = await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
+    const api = out.filter((e) => e.serviceLineSlug === 'vapt_api_endpoints');
+    expect(api).toHaveLength(1); // the web app's duplicate is dropped
+    expect(api[0]!.appId).toBe('api_qms_backend'); // the standalone API survives
+    // the web app's own pages are untouched
+    expect(out.some((e) => e.serviceLineSlug === 'vapt_web_app_dynamic_pages' && e.appId === 'qms_web')).toBe(true);
+  });
+
+  it('keeps a web app\'s api_endpoints when NO standalone API is scoped (only record)', async () => {
+    const llm = makeMockLlm(JSON.stringify({
+      entities: [
+        { serviceLineSlug: 'vapt_web_app_dynamic_pages', scopeValue: 44, customerType: 'external', confidence: 0.9, reasoning: '', sourceQuote: '', appId: 'qms_web' },
+        { serviceLineSlug: 'vapt_api_endpoints', scopeValue: 30, customerType: 'external', confidence: 0.9, reasoning: '', sourceQuote: '', appId: 'qms_web' },
+      ],
+    }));
+    const mapper = new RateCardFieldMapperService(llm);
+    const out = await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
+    expect(out.filter((e) => e.serviceLineSlug === 'vapt_api_endpoints')).toHaveLength(1);
+  });
+
   it('clamps confidence > 1 to 1.0', async () => {
     const llm = makeMockLlm(JSON.stringify({
       entities: [
