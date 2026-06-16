@@ -40,6 +40,7 @@ import type {
 import { LlmService } from '../llm/llm.service.js';
 import type { ChatMessage } from '../llm/llm.types.js';
 import { enrichPoints } from './point-enrichment.js';
+import { resolveCanonicalScope } from './scope-graph.js';
 
 export interface ExtractedPointInput {
   key: string;
@@ -114,7 +115,7 @@ const MAPPER_MAX_OUTPUT_TOKENS = 32_768;
  * a change here should invalidate cached results and force re-inference on the
  * next run. Keeps "same doc → same quote" honest across deploys.
  */
-export const MAPPER_PROMPT_VERSION = 'v3-2026-06-structured-output';
+export const MAPPER_PROMPT_VERSION = 'v4-2026-06-scope-graph';
 
 /**
  * One slug the LLM explicitly evaluated and rejected, with a short
@@ -220,7 +221,7 @@ export class RateCardFieldMapperService {
     // positives via substring keyword overlap.
     const llmSucceeded = !llmThrew && llmEntities.length > 0;
     if (llmSucceeded) {
-      return this.dedupeConsumedApis(llmEntities);
+      return this.resolveScope(llmEntities);
     }
 
     // Fallback path: emit heuristic entities, but suppress any slug the
@@ -241,46 +242,29 @@ export class RateCardFieldMapperService {
       );
     }
 
-    return this.dedupeConsumedApis([...llmEntities, ...supplemental]);
+    return this.resolveScope([...llmEntities, ...supplemental]);
   }
 
   /**
-   * Deterministic safety net for the consumed-API double-count. A web
-   * application that "uses" / "consumes" / "is built on" an API gets
-   * vapt_api_* entities (endpoints, roles, …) for APIs it does not own —
-   * but those APIs are already scoped under their OWN application instances
-   * (the dedicated API questionnaire). The SYSTEM_KERNEL instructs the LLM to
-   * dedupe, but it is not 100% consistent run-to-run, so we enforce it here:
-   *   - an appId that carries any vapt_web_app_* driver is a WEB APP;
-   *   - drop its vapt_api_* entities ONLY when ≥1 standalone API instance
-   *     exists (an appId with vapt_api_* and no web-app driver), so we never
-   *     delete the sole record of an API that lives only inside a web app.
-   * Order-independent and idempotent. This is what makes the count correct on
-   * EVERY opportunity rather than only when the LLM happens to dedupe.
+   * Phase-2 canonical scope resolution. Delegates to the pure
+   * `resolveCanonicalScope` (scope-graph.ts): classify each appId's asset kind,
+   * drop consumed-dependency duplicates (a web app's vapt_api_* drivers for an
+   * API that is separately scoped), and collapse duplicate mentions of the same
+   * asset+driver via deterministic survivorship. One general mechanism instead
+   * of one regex per double-count pattern; correct on EVERY opportunity, not
+   * only when the LLM happens to dedupe.
    */
-  private dedupeConsumedApis(entities: InferredEntity[]): InferredEntity[] {
-    const webAppIds = new Set(
-      entities.filter((e) => e.appId && /^vapt_web_app_/.test(e.serviceLineSlug)).map((e) => e.appId!),
-    );
-    const standaloneApiAppIds = new Set(
-      entities
-        .filter((e) => e.appId && /^vapt_api_/.test(e.serviceLineSlug) && !webAppIds.has(e.appId!))
-        .map((e) => e.appId!),
-    );
-    if (standaloneApiAppIds.size === 0) return entities;
-    const kept: InferredEntity[] = [];
-    const dropped: InferredEntity[] = [];
-    for (const e of entities) {
-      if (e.appId && webAppIds.has(e.appId) && /^vapt_api_/.test(e.serviceLineSlug)) dropped.push(e);
-      else kept.push(e);
-    }
+  private resolveScope(entities: InferredEntity[]): InferredEntity[] {
+    const { entities: resolved, dropped } = resolveCanonicalScope(entities);
     if (dropped.length > 0) {
       this.logger.log(
-        `field-mapper dropped ${dropped.length} consumed-API duplicate(s) on web-app instances ` +
-          `(${dropped.map((e) => `${e.serviceLineSlug}@${e.appId}=${e.scopeValue}`).join(', ')})`,
+        `field-mapper scope-resolver dropped ${dropped.length} entit(ies) ` +
+          `(${dropped
+            .map((d) => `${d.entity.serviceLineSlug}@${d.entity.appId ?? '—'}=${d.entity.scopeValue}:${d.reason}`)
+            .join(', ')})`,
       );
     }
-    return kept;
+    return resolved;
   }
 
   /**
