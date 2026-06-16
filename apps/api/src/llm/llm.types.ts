@@ -29,6 +29,14 @@ export interface ChatOptions {
   maxTokens?: number;
   /** Per-call timeout in ms. Hard ceiling — provider call is aborted on miss. */
   timeoutMs?: number;
+  /**
+   * Gemini-only: cap the model's hidden "thinking" tokens (which otherwise
+   * run a large DYNAMIC budget and dominate token usage even on a mechanical
+   * JSON-mapping task). Maps to the OpenAI-compat `reasoning_effort` field.
+   * IGNORED by every other provider. If Gemini rejects it the provider
+   * transparently retries WITHOUT it, so it can never break a call.
+   */
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
 }
 
 export interface ChatResult {

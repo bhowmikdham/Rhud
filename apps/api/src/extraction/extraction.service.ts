@@ -1362,52 +1362,87 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
-      // Source-code-review contradiction flag. White-box source-code review
-      // is only priced on a white/grey-box engagement, so when a client
-      // selects Black Box the mapper (correctly) suppresses it. But clients
-      // sometimes ALSO paste a real source-code line count — a contradiction
-      // the rep should resolve, not have silently dropped. Surface it.
+      // Source-code-review contradiction flag — evaluated ENGAGEMENT-WIDE
+      // (the LOC count and the Black-Box selection can live in different
+      // sheets/files) so it fires reliably.
+      const ecf = await this.tenantDb.run(tenantId, (db) =>
+        db.engagementFile.findUnique({ where: { id: fileId }, select: { engagementId: true } }),
+      );
+      if (ecf) await this.flagSourceCodeContradiction(tenantId, ecf.engagementId);
+    } catch (e) {
+      this.logger.warn(`inference cache write failed file=${fileId}: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * Flag the "Black Box but a source-code line count was given" contradiction.
+   * White-box source-code review is correctly NOT priced on a Black-Box
+   * engagement, but a client who pastes a real LOC count almost certainly
+   * wants a code review — surface it for the rep instead of silently dropping
+   * it. Evaluated across ALL the engagement's files (the LOC and the
+   * methodology can sit in different sheets), idempotent (won't re-emit if an
+   * unresolved flag already exists), and always logs its decision so it is
+   * never a silent no-op again.
+   */
+  private async flagSourceCodeContradiction(tenantId: string, engagementId: string): Promise<void> {
+    try {
+      const { points, inferred, alreadyFlagged } = await this.tenantDb.run(tenantId, async (db) => {
+        const files = await db.engagementFile.findMany({
+          where: { engagementId },
+          select: { extractedPoints: true, inferredEntities: true },
+        });
+        const points: ExtractedPoint[] = [];
+        const inferred: InferredEntity[] = [];
+        for (const f of files) {
+          if (Array.isArray(f.extractedPoints)) points.push(...(f.extractedPoints as unknown as ExtractedPoint[]));
+          if (Array.isArray(f.inferredEntities)) inferred.push(...(f.inferredEntities as unknown as InferredEntity[]));
+        }
+        const prior = await db.threadEvent.findFirst({
+          where: { engagementId, eventType: 'source_code_review_skipped' },
+          select: { id: true },
+        });
+        return { points, inferred, alreadyFlagged: prior != null };
+      });
+
       const locPoint = points.find((p) => {
-        const keyHit = /source.?code.?line|lines.?of.?code|\bsloc\b/i.test(p.key);
-        const valHit = /source.?code.?line|lines.?of.?code/i.test(p.value);
+        const keyHit = /source[\s_-]?code[\s_-]?line|lines?[\s_-]?of[\s_-]?code|\bk?loc\b|\bsloc\b/i.test(p.key);
+        const valHit = /source[\s_-]?code[\s_-]?line|lines?[\s_-]?of[\s_-]?code|\bk?loc\b/i.test(p.value);
         if (!keyHit && !valHit) return false;
-        if (/\bn\/?a\b|not applicable/i.test(p.value)) return false;
+        if (/\bn\/?a\b|not applicable|not required|none\b/i.test(p.value)) return false;
         return /\d{2,}/.test(p.value.replace(/,/g, '')); // a real count, not "0"/blank
       });
       const blackBox = points.some(
         (p) =>
-          /testing.?type|black.?grey.?white|white.?box|grey.?box|methodolog/i.test(p.key) &&
-          /black\s*box/i.test(p.value),
+          /testing[\s_-]?type|black[\s_-]?grey[\s_-]?white|white[\s_-]?box|grey[\s_-]?box|methodolog/i.test(p.key) &&
+          /black[\s_-]*box/i.test(p.value),
       );
-      const emittedSourceCode = inferred.some((e: InferredEntity) =>
-        /source_code|_sca$/.test(e.serviceLineSlug),
+      const emittedSourceCode = inferred.some((e) => /source_code|_sca$/.test(e.serviceLineSlug));
+      const shouldFlag = !!locPoint && blackBox && !emittedSourceCode;
+
+      this.logger.log(
+        `source-code contradiction check engagement=${engagementId}: ` +
+          `loc=${!!locPoint} blackBox=${blackBox} emittedSourceCode=${emittedSourceCode} ` +
+          `→ flag=${shouldFlag} (alreadyFlagged=${alreadyFlagged})`,
       );
-      if (locPoint && blackBox && !emittedSourceCode) {
+
+      if (shouldFlag && !alreadyFlagged) {
         await this.tenantDb.run(tenantId, async (db) => {
-          const fileRow = await db.engagementFile.findUnique({
-            where: { id: fileId },
-            select: { engagementId: true },
-          });
-          if (!fileRow) return;
           await this.thread.emitWithin(db, tenantId, {
-            engagementId: fileRow.engagementId,
+            engagementId,
             eventType: 'source_code_review_skipped',
             actorType: 'system',
             actorId: null,
             payload: {
-              fileId,
               testingType: 'black_box',
-              sample: locPoint.sourceQuote.slice(0, 300),
+              sample: locPoint!.sourceQuote.slice(0, 300),
             },
           });
         });
-        this.logger.log(
-          `source-code-review contradiction flagged file=${fileId} ` +
-            `(LOC provided but Black Box selected)`,
-        );
       }
     } catch (e) {
-      this.logger.warn(`inference cache write failed file=${fileId}: ${(e as Error).message}`);
+      this.logger.warn(
+        `source-code contradiction check failed engagement=${engagementId}: ${(e as Error).message}`,
+      );
     }
   }
 

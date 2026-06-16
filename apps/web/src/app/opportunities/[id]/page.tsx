@@ -743,6 +743,31 @@ export default function OpportunityDetailPage() {
                 aria-labelledby="focus-tab-documents"
                 tabIndex={0}
               >
+                {(() => {
+                  const flag = eng.thread?.find(
+                    (t) => t.eventType === 'source_code_review_skipped',
+                  );
+                  if (!flag) return null;
+                  const sample = (flag.payload as { sample?: string } | null)?.sample ?? '';
+                  return (
+                    <div style={{
+                      marginBottom: 12, padding: '10px 12px', borderRadius: 8, fontSize: 12.5,
+                      background: 'color-mix(in oklch, #d97706 12%, var(--bg))',
+                      border: '1px solid color-mix(in oklch, #d97706 38%, transparent)',
+                      color: 'var(--fg)',
+                    }}>
+                      <strong>Source-code review not priced.</strong> The client selected{' '}
+                      <b>Black Box</b> but provided a source-code line count — so white-box
+                      source-code review was left out of the quote. Add it manually if a code
+                      review is actually in scope.
+                      {sample && (
+                        <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--fg-muted)' }}>
+                          {sample}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 <ExtractedPointsCard engagementId={eng.id} />
               </div>
             )}

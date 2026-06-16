@@ -67,12 +67,23 @@ export class OpenAiCompatProvider implements LlmProvider {
   }
 
   async chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatResult> {
-    const body = {
+    const body: Record<string, unknown> = {
       model: opts.model ?? this.model,
       messages,
       ...(opts.temperature != null && { temperature: opts.temperature }),
       ...(opts.maxTokens != null && { max_tokens: opts.maxTokens }),
     };
+
+    // Gemini-only thinking control. gemini-2.5/3.x flash run a large DYNAMIC
+    // thinking budget that dominates token usage even on mechanical JSON
+    // mapping. `reasoning_effort` caps it. HARD-GATED to provider==='gemini'
+    // — OpenAI/openai_compat targets 400 on unknown params. If Gemini itself
+    // rejects it we strip it and retry (see `strippedReasoning` below), so a
+    // bad param can never make a call fail; maxTokens stays the safety net.
+    if (this.name === 'gemini' && opts.reasoningEffort != null) {
+      body.reasoning_effort = opts.reasoningEffort;
+    }
+    let strippedReasoning = false;
 
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.apiKey) {
@@ -154,6 +165,14 @@ export class OpenAiCompatProvider implements LlmProvider {
 
       if (!res.ok) {
         const text = await res.text().catch(() => '');
+        // Resilience: a 4xx caused by the optional Gemini `reasoning_effort`
+        // control must never break the call — strip it and retry once. The
+        // call then behaves exactly as before this option existed.
+        if (res.status >= 400 && res.status < 500 && 'reasoning_effort' in body && !strippedReasoning) {
+          delete body.reasoning_effort;
+          strippedReasoning = true;
+          continue;
+        }
         throw new Error(`llm http ${res.status}: ${text.slice(0, 300)}`);
       }
 

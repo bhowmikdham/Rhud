@@ -346,6 +346,12 @@ export class RateCardFieldMapperService {
       // dynamic thinking budget (≤24,576 on 2.5-flash) AND a large answer.
       maxTokens: MAPPER_MAX_OUTPUT_TOKENS,
       temperature: 0,
+      // Field mapping is mechanical extraction, not deep reasoning. Cap
+      // Gemini's thinking budget ("low") so a call uses ~a few thousand
+      // tokens instead of ~32k of mostly-hidden reasoning. Gemini-only +
+      // self-healing (the provider retries without it if rejected), and
+      // maxTokens above stays the safety net.
+      reasoningEffort: 'low',
       // 90s budget — leaves room for a single 429 retry that waits
       // ~35s across a minute boundary (Gemini's bucket reset point)
       // plus the actual LLM round-trip on the second attempt.
