@@ -38,6 +38,12 @@ export interface RawPoint {
   value: string;
   /** Sheet the pair was lifted from — surfaced in `sourceQuote`. */
   sheetName: string;
+  /** Set when this sheet is a WIDE multi-application questionnaire
+   *  (questions in one column, each application's answers in its own
+   *  column). Tags which application instance this answer belongs to so
+   *  the mapper prices every app separately instead of collapsing to the
+   *  first column. Undefined for ordinary single-answer-column sheets. */
+  appId?: string;
 }
 
 /** Workbook size cap. Rejects files that would dominate the API
@@ -425,31 +431,71 @@ export function documentToRawPoints(doc: RhudDocument): RawPoint[] | null {
   for (const sheet of doc.sheets) {
     // Build a (row,col) → value lookup for the cell-pair detection.
     const cellLookup = new Map<string, string>();
+    let maxCol = 0;
     for (const row of sheet.rows) {
       for (const cell of row.cells) {
         cellLookup.set(`${row.index}:${cell.column}`, cell.value);
+        if (cell.column > maxCol) maxCol = cell.column;
       }
     }
-    const cols = detectQAColumnsFromDocument(sheet, cellLookup);
+    const cols = detectQAColumnsFromDocument(sheet, cellLookup, maxCol);
     if (!cols) continue;
+
+    // Multi-application questionnaires keep the questions in one column and
+    // put EACH application's answers in its own column (App 1 = col B, App 2
+    // = col C, …). Tag each answer column with a distinct appId so every app
+    // is priced separately; a single answer column gets no appId (unchanged
+    // single-app behaviour). appId is also folded into the dedup key so the
+    // same question across apps doesn't collapse to one point.
+    const multiApp = cols.valueCols.length >= 2;
+    const appIds = cols.valueCols.map((c, i) =>
+      multiApp ? deriveAppId(sheet, cellLookup, cols.label, c, i) : undefined,
+    );
 
     for (const row of sheet.rows) {
       const labelRaw = cellLookup.get(`${row.index}:${cols.label}`) ?? '';
-      const valueRaw = cellLookup.get(`${row.index}:${cols.value}`) ?? '';
-      if (!isPlausibleQAPair(labelRaw, valueRaw)) continue;
-      const label = compactSpaces(labelRaw).trim();
-      const value = compactSpaces(valueRaw).trim();
-      const key = makeKey(label);
-      if (!key) continue;
-      const dedup = `${key}::${value.toLowerCase()}`;
-      if (seenKeys.has(dedup)) continue;
-      seenKeys.add(dedup);
-      points.push({ key, label, value, sheetName: sheet.name });
+      for (let vi = 0; vi < cols.valueCols.length; vi++) {
+        const valueRaw = cellLookup.get(`${row.index}:${cols.valueCols[vi]!}`) ?? '';
+        if (!isPlausibleQAPair(labelRaw, valueRaw)) continue;
+        const label = compactSpaces(labelRaw).trim();
+        const value = compactSpaces(valueRaw).trim();
+        const key = makeKey(label);
+        if (!key) continue;
+        const appId = appIds[vi];
+        const dedup = `${appId ?? ''}::${key}::${value.toLowerCase()}`;
+        if (seenKeys.has(dedup)) continue;
+        seenKeys.add(dedup);
+        points.push({ key, label, value, sheetName: sheet.name, ...(appId ? { appId } : {}) });
+      }
     }
   }
 
   if (points.length < 3) return null;
   return points;
+}
+
+/**
+ * Derive a stable, human-ish appId for one answer column of a wide
+ * multi-app questionnaire. Prefers the application's own name (from a
+ * "name/description of application" row in that column); falls back to a
+ * positional `app_<n>`. The mapper is told to reuse this exact id, so it
+ * flows through to the per-app scope display.
+ */
+function deriveAppId(
+  sheet: DocumentSheet,
+  lookup: Map<string, string>,
+  labelCol: number,
+  valueCol: number,
+  index: number,
+): string {
+  for (const row of sheet.rows) {
+    const l = (lookup.get(`${row.index}:${labelCol}`) ?? '').toLowerCase();
+    if (!/\bname\b|description|application/.test(l)) continue;
+    const v = compactSpaces(lookup.get(`${row.index}:${valueCol}`) ?? '').trim();
+    const slug = makeKey(v).slice(0, 40);
+    if (slug && !/^n_?a$|^not_applicable/.test(slug)) return slug;
+  }
+  return `app_${index + 1}`;
 }
 
 /**
@@ -529,26 +575,42 @@ function detectSheetShape(
 function detectQAColumnsFromDocument(
   sheet: DocumentSheet,
   lookup: Map<string, string>,
-): { label: number; value: number } | null {
-  const candidates: Array<{ label: number; value: number }> = [
-    { label: 0, value: 1 },
-    { label: 1, value: 2 },
-    { label: 0, value: 2 },
-  ];
-  let best: { label: number; value: number; hits: number } | null = null;
+  maxCol: number,
+): { label: number; valueCols: number[] } | null {
   const sampleRows = Math.min(sheet.rows.length, 40);
-  for (const cand of candidates) {
+  const hitsFor = (labelCol: number, valueCol: number): number => {
     let hits = 0;
     for (let i = 0; i < sampleRows; i++) {
       const row = sheet.rows[i]!;
-      const l = lookup.get(`${row.index}:${cand.label}`) ?? '';
-      const v = lookup.get(`${row.index}:${cand.value}`) ?? '';
+      const l = lookup.get(`${row.index}:${labelCol}`) ?? '';
+      const v = lookup.get(`${row.index}:${valueCol}`) ?? '';
       if (isPlausibleQAPair(l, v)) hits += 1;
     }
-    if (!best || hits > best.hits) {
-      best = { ...cand, hits };
+    return hits;
+  };
+
+  const MIN_HITS = 7;
+  // Try the usual label columns (0, then 1 for sheets with a leading
+  // index/section column). For the first label column that yields any
+  // qualifying answer column, collect EVERY answer column to its right.
+  for (const labelCol of [0, 1]) {
+    const colHits: Array<{ col: number; hits: number }> = [];
+    for (let c = labelCol + 1; c <= maxCol; c++) {
+      const h = hitsFor(labelCol, c);
+      if (h >= MIN_HITS) colHits.push({ col: c, hits: h });
     }
+    if (colHits.length === 0) continue;
+
+    // The densest answer column is always kept. Additional columns are
+    // treated as parallel APPLICATION columns only when they're similarly
+    // dense (>=70% of the best column's hit count) — this guards a normal
+    // single-app sheet that happens to carry an incidental notes/example
+    // column from being mis-read as a multi-app questionnaire.
+    const best = Math.max(...colHits.map((x) => x.hits));
+    const valueCols = colHits
+      .filter((x) => x.hits >= Math.max(MIN_HITS, Math.ceil(best * 0.7)))
+      .map((x) => x.col);
+    return { label: labelCol, valueCols };
   }
-  if (!best || best.hits < 7) return null;
-  return { label: best.label, value: best.value };
+  return null;
 }

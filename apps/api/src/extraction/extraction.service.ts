@@ -136,6 +136,11 @@ export interface ExtractedPoint {
    *  Surfaces in the UI as a per-sheet count breakdown so the rep can
    *  verify every tab contributed signal. */
   sheet?: string | null;
+  /** Application instance this point belongs to, for WIDE multi-app
+   *  questionnaires (questions in one column, each app's answers in its
+   *  own column). Lets the mapper price every app separately and the UI
+   *  show per-app scope. Undefined for ordinary single-app sheets. */
+  appId?: string;
   /** Layer-2 semantic classification. Computed by `categorisePoint`
    *  at extraction time. Surfaces as a chip in the UI so the rep can
    *  spot misclassifications (e.g. an identity field mistakenly
@@ -707,6 +712,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         sourceQuote: `${r.label} | ${r.value}`.slice(0, 500),
         relatedQuestion,
         sheet: r.sheetName || null,
+        ...(r.appId ? { appId: r.appId } : {}),
       };
     });
   }
@@ -1286,6 +1292,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         key: p.key,
         value: p.value,
         ...(p.sheet != null ? { sheet: p.sheet } : {}),
+        ...(p.appId != null ? { appId: p.appId } : {}),
       }));
       // Capture mapper-fallback signal so we can emit a thread event
       // *after* the cache write commits. We can't emit during the
@@ -1353,6 +1360,51 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
             },
           });
         });
+      }
+
+      // Source-code-review contradiction flag. White-box source-code review
+      // is only priced on a white/grey-box engagement, so when a client
+      // selects Black Box the mapper (correctly) suppresses it. But clients
+      // sometimes ALSO paste a real source-code line count — a contradiction
+      // the rep should resolve, not have silently dropped. Surface it.
+      const locPoint = points.find((p) => {
+        const keyHit = /source.?code.?line|lines.?of.?code|\bsloc\b/i.test(p.key);
+        const valHit = /source.?code.?line|lines.?of.?code/i.test(p.value);
+        if (!keyHit && !valHit) return false;
+        if (/\bn\/?a\b|not applicable/i.test(p.value)) return false;
+        return /\d{2,}/.test(p.value.replace(/,/g, '')); // a real count, not "0"/blank
+      });
+      const blackBox = points.some(
+        (p) =>
+          /testing.?type|black.?grey.?white|white.?box|grey.?box|methodolog/i.test(p.key) &&
+          /black\s*box/i.test(p.value),
+      );
+      const emittedSourceCode = inferred.some((e: InferredEntity) =>
+        /source_code|_sca$/.test(e.serviceLineSlug),
+      );
+      if (locPoint && blackBox && !emittedSourceCode) {
+        await this.tenantDb.run(tenantId, async (db) => {
+          const fileRow = await db.engagementFile.findUnique({
+            where: { id: fileId },
+            select: { engagementId: true },
+          });
+          if (!fileRow) return;
+          await this.thread.emitWithin(db, tenantId, {
+            engagementId: fileRow.engagementId,
+            eventType: 'source_code_review_skipped',
+            actorType: 'system',
+            actorId: null,
+            payload: {
+              fileId,
+              testingType: 'black_box',
+              sample: locPoint.sourceQuote.slice(0, 300),
+            },
+          });
+        });
+        this.logger.log(
+          `source-code-review contradiction flagged file=${fileId} ` +
+            `(LOC provided but Black Box selected)`,
+        );
       }
     } catch (e) {
       this.logger.warn(`inference cache write failed file=${fileId}: ${(e as Error).message}`);

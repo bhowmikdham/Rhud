@@ -46,6 +46,11 @@ export interface ExtractedPointInput {
   value: string;
   label?: string;
   sheet?: string | null;
+  /** Application instance this point belongs to (wide multi-app
+   *  questionnaires). When set, the LLM is told to reuse it verbatim as
+   *  the entity's `appId` so every application is priced + shown
+   *  separately. */
+  appId?: string;
 }
 
 /** Optional context the mapper uses for deterministic heuristics —
@@ -409,7 +414,11 @@ export class RateCardFieldMapperService {
       .map((p) => {
         const labelPart = p.label && p.label.trim() && p.label.trim() !== p.key ? ` [Q: ${p.label.trim()}]` : '';
         const sheetPart = p.sheet ? ` [sheet: ${p.sheet}]` : '';
-        return `- ${p.key}: ${p.value}${labelPart}${sheetPart}`;
+        // Wide multi-app questionnaires pre-tag each point with the
+        // application it belongs to. Surface it so the LLM groups entities
+        // per application instead of merging them (see SYSTEM_KERNEL rule 2).
+        const appPart = p.appId ? ` [app: ${p.appId}]` : '';
+        return `- ${p.key}: ${p.value}${labelPart}${sheetPart}${appPart}`;
       })
       .join('\n');
     blocks.push(`EXTRACTED POINTS:\n${pointLines}`);
@@ -684,6 +693,10 @@ const SYSTEM_KERNEL = [
   '    {domain}_{n} — e.g. web_app_1, web_app_2, ios_app_1, site_1.',
   '    Single-occurrence service lines (network, cloud-as-a-whole, IAM)',
   '    leave appId null.',
+  '    IMPORTANT: when a point is pre-tagged "[app: X]", that point already',
+  '    belongs to a known application instance — reuse X VERBATIM as the',
+  '    appId for every entity you derive from it. Never merge points that',
+  '    carry different [app: ...] tags into one entity.',
   '',
   ' 3. Evidence priority — the doc IS your only source of truth:',
   '    a. Stated count for the driver           → use it, confidence ≥0.8',

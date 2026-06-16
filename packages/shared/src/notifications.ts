@@ -41,6 +41,9 @@ export const DEFAULT_NOTIFICATION_ROUTES: Record<ThreadEventType, RecipientRole[
   // notifications, but the opportunity detail page surfaces it as a
   // re-run prompt so the rep can retry once the rate limit clears.
   mapper_fallback_heuristic: [],
+  // Source-code-review contradiction is an advisory for the rep — surfaced
+  // in the UI thread (and as a banner), not emailed.
+  source_code_review_skipped: [],
   scope_submitted:           ['sales_employee', 'sales_manager'],
   price_predicted:           ['sales_employee', 'sales_manager'],
   price_tech_adjusted:       ['sales_employee', 'sales_manager'],

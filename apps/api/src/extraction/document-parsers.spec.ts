@@ -148,6 +148,98 @@ describe('documentToRawPoints', () => {
   });
 });
 
+describe('documentToRawPoints — wide multi-application questionnaire', () => {
+  // col 0 = question, cols 1..N = each application's answers.
+  function wideSheet(name: string, rows: string[][]) {
+    return {
+      name,
+      index: 0,
+      rowCount: rows.length,
+      columnCount: rows[0]!.length,
+      rows: rows.map((r, i) => ({
+        index: i,
+        cells: r.map((value, column) => ({ column, value })),
+      })),
+      detectedShape: 'qa' as const,
+    };
+  }
+
+  it('captures EACH application column as a distinct appId (not just the first)', () => {
+    // Reproduces the "June" bug: 3 apps as columns, only App 1 was kept.
+    const doc = blankDoc();
+    doc.sheets = [
+      wideSheet('Web App Questionnaire', [
+        ['Name of the application', 'QMS', 'CRM Backend', 'CRM Frontend'],
+        ['Penetration testing type', 'Black Box', 'Black Box', 'Black Box'],
+        ['Number of static pages', '5', 'N/A', '6'],
+        ['Number of dynamic pages', '44', 'N/A', '20'],
+        ['How many roles', '7', '7', '4'],
+        ['Hosting environment', 'AWS', 'AWS', 'AWS'],
+        ['Web server in use', 'Nginx', 'Nginx', 'Nginx'],
+        ['Backend database', 'MongoDB', 'MySQL', 'Postgres'],
+      ]),
+    ];
+    const out = documentToRawPoints(doc);
+    expect(out).not.toBeNull();
+
+    const appIds = new Set(out!.map((p) => p.appId).filter(Boolean));
+    expect(appIds.size).toBe(3); // all three apps, not one
+    expect(appIds.has('qms')).toBe(true); // appId derived from the name row
+
+    // Each app's dynamic-pages answer is preserved separately (not collapsed).
+    const dyn = out!.filter((p) => p.key.includes('dynamic_pages'));
+    expect(new Set(dyn.map((p) => p.value))).toEqual(new Set(['44', 'N/A', '20']));
+  });
+
+  it('leaves appId undefined for an ordinary single-answer-column sheet', () => {
+    const doc = blankDoc();
+    doc.sheets = [
+      qaSheet('Web App Q', [
+        { label: 'Name of company', value: 'Acme' },
+        { label: 'Contact phone', value: '555-0100' },
+        { label: 'Application name', value: 'Dashboard' },
+        { label: 'Penetration testing type', value: 'Black Box' },
+        { label: 'Hosting environment', value: 'AWS' },
+        { label: 'Number of dynamic pages', value: '29' },
+        { label: 'Number of static pages', value: '0' },
+        { label: 'Number of roles', value: 'Admin' },
+      ]),
+    ];
+    const out = documentToRawPoints(doc);
+    expect(out!.every((p) => p.appId === undefined)).toBe(true);
+  });
+
+  it('does not mistake a sparse incidental column for a second application', () => {
+    const rows = [
+      ['Name of the application', 'Dashboard', 'see note'],
+      ['Penetration testing type', 'Black Box', 'tbd'],
+      ['Number of static pages', '5', ''],
+      ['Number of dynamic pages', '44', ''],
+      ['How many roles', '7', ''],
+      ['Hosting environment', 'AWS', ''],
+      ['Web server in use', 'Nginx', ''],
+      ['Backend database', 'MongoDB', ''],
+    ];
+    const doc = blankDoc();
+    doc.sheets = [
+      {
+        name: 'S',
+        index: 0,
+        rowCount: rows.length,
+        columnCount: 3,
+        rows: rows.map((r, i) => ({
+          index: i,
+          cells: r.map((value, column) => ({ column, value })).filter((c) => c.value !== ''),
+        })),
+        detectedShape: 'qa' as const,
+      },
+    ];
+    const out = documentToRawPoints(doc);
+    // col 2 has only 2 populated cells (< 7-hit floor) → single app.
+    expect(out!.every((p) => p.appId === undefined)).toBe(true);
+  });
+});
+
 describe('documentToLlmText', () => {
   it('formats a sheet-only Document with row-major dump', () => {
     const doc = blankDoc();

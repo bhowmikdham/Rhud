@@ -79,6 +79,7 @@ const EVENT_LABELS: Record<string, string> = {
   site_enumerated: 'Site scope crawled',
   site_enumeration_failed: 'Site scope crawl failed',
   mapper_fallback_heuristic: 'Mapper fell back to heuristic',
+  source_code_review_skipped: 'Source-code review not priced — client chose Black Box but gave a code-line count',
   loop_iteration_removed: 'Iteration removed',
 };
 
@@ -107,6 +108,7 @@ const EVENT_ICONS: Partial<Record<string, keyof typeof Icon>> = {
   site_enumerated: 'Globe',
   site_enumeration_failed: 'X',
   mapper_fallback_heuristic: 'Sparkle',
+  source_code_review_skipped: 'Bell',
   loop_iteration_removed: 'X',
 };
 

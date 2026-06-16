@@ -714,20 +714,62 @@ function InferredEntitiesSection({
   entities: InferredEntity[];
   onChange(): void;
 }) {
-  const [editingSlug, setEditingSlug] = useState<string | null>(null);
-  const [busySlug, setBusySlug] = useState<string | null>(null);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  // Composite row identity: the same service line can appear under several
+  // applications (e.g. dynamic_pages for Web App 1 and Web App 3), so a
+  // slug alone is no longer unique.
+  const rowKey = (e: InferredEntity) => `${e.appId ?? 'solo'}::${e.serviceLineSlug}`;
+
   // Sort: high-confidence first (the priced ones), low-confidence at the
-  // bottom (rep needs to bump them to make them count). Stable within
-  // each bucket so the list doesn't jitter on every refresh.
-  const sorted = [...entities].sort((a, b) => {
+  // bottom (rep needs to bump them). Stable within each bucket.
+  const sortFn = (a: InferredEntity, b: InferredEntity) => {
     const aHi = a.confidence >= 0.6 ? 1 : 0;
     const bHi = b.confidence >= 0.6 ? 1 : 0;
     if (aHi !== bHi) return bHi - aHi;
     return b.confidence - a.confidence;
-  });
-  const high = sorted.filter((e) => e.confidence >= 0.6).length;
+  };
+  const high = entities.filter((e) => e.confidence >= 0.6).length;
+
+  // Group by application instance. Multi-application questionnaires (each
+  // app a column in the uploaded sheet) carry a per-entity appId, so we
+  // show per-app scope instead of one cumulative list. Entities with no
+  // appId (network / cloud / infra-wide) cluster under "Shared".
+  const groups = new Map<string, InferredEntity[]>();
+  for (const e of entities) {
+    const k = e.appId ?? '';
+    const bucket = groups.get(k);
+    if (bucket) bucket.push(e);
+    else groups.set(k, [e]);
+  }
+  const appIds = [...groups.keys()].filter((k) => k !== '');
+  const multiApp = appIds.length >= 2;
+
+  const renderRow = (e: InferredEntity) => (
+    <InferredEntityRow
+      key={rowKey(e)}
+      entity={e}
+      editing={editingKey === rowKey(e)}
+      busy={busyKey === rowKey(e)}
+      onEdit={() => setEditingKey(rowKey(e))}
+      onCancel={() => setEditingKey(null)}
+      onSave={async (patch) => {
+        setBusyKey(rowKey(e));
+        setErr(null);
+        try {
+          await extraction.overrideEntity(engagementId, fileId, e.serviceLineSlug, patch);
+          setEditingKey(null);
+          onChange();
+        } catch (caught) {
+          setErr(describeError(caught));
+        } finally {
+          setBusyKey(null);
+        }
+      }}
+    />
+  );
 
   return (
     <div style={{
@@ -744,7 +786,7 @@ function InferredEntitiesSection({
           </span>
         </div>
         <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-          {high} of {entities.length} will price
+          {multiApp ? `${appIds.length} applications · ` : ''}{high} of {entities.length} will price
         </span>
       </div>
 
@@ -757,33 +799,40 @@ function InferredEntitiesSection({
         }}>{err}</div>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {sorted.map((e) => (
-          <InferredEntityRow
-            key={e.serviceLineSlug}
-            entity={e}
-            editing={editingSlug === e.serviceLineSlug}
-            busy={busySlug === e.serviceLineSlug}
-            onEdit={() => setEditingSlug(e.serviceLineSlug)}
-            onCancel={() => setEditingSlug(null)}
-            onSave={async (patch) => {
-              setBusySlug(e.serviceLineSlug);
-              setErr(null);
-              try {
-                await extraction.overrideEntity(engagementId, fileId, e.serviceLineSlug, patch);
-                setEditingSlug(null);
-                onChange();
-              } catch (caught) {
-                setErr(describeError(caught));
-              } finally {
-                setBusySlug(null);
-              }
-            }}
-          />
-        ))}
-      </div>
+      {multiApp ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {[...groups.entries()]
+            .sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)))
+            .map(([appId, list]) => (
+              <div key={appId || '__shared__'}>
+                <div style={{
+                  fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
+                  color: 'var(--fg-muted)', marginBottom: 6,
+                }}>
+                  {appId ? humanizeAppId(appId) : 'Shared / infrastructure'}
+                  <span style={{ fontWeight: 500, marginLeft: 6 }}>· {list.length}</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {[...list].sort(sortFn).map(renderRow)}
+                </div>
+              </div>
+            ))}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {[...entities].sort(sortFn).map(renderRow)}
+        </div>
+      )}
     </div>
   );
+}
+
+/** Turn an appId slug ("crm_backend", "app_2") into a readable label. */
+function humanizeAppId(appId: string): string {
+  return appId
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\bApp (\d+)\b/, 'Application $1');
 }
 
 function InferredEntityRow({

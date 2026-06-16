@@ -22,6 +22,13 @@ export const THREAD_EVENT_TYPES = [
   /// list is heuristic-only instead of LLM-driven. Used by the opportunity
   /// detail page to render a "Re-run mapping" hint.
   'mapper_fallback_heuristic',
+  /// The questionnaire supplied an explicit source-code line count (a
+  /// white-box signal) but the engagement/application selected Black Box,
+  /// so white-box source-code review (`vapt_*_source_code_*`) was NOT
+  /// priced. Surfaced so the rep can decide whether a code review is
+  /// actually in scope rather than have the contradiction silently dropped.
+  /// Payload: `{ fileId, sample, testingType }`.
+  'source_code_review_skipped',
   'scope_submitted',
   'price_predicted',
   'price_tech_adjusted',

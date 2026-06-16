@@ -1469,6 +1469,10 @@ export interface InferredEntity {
   sourceQuote: string;
   /** Where this inference came from. `manual` means a rep override. */
   source: 'llm' | 'heuristic' | 'manual';
+  /** Application instance, for multi-application questionnaires (each app
+   *  is a column in the uploaded sheet). Drives the per-app scope grouping
+   *  in the "Inferred for pricing" panel. Absent for single-app docs. */
+  appId?: string;
 }
 
 export interface FileExtraction {
