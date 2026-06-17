@@ -140,7 +140,7 @@ const MAPPER_PARSE_ATTEMPTS = 3;
  * a change here should invalidate cached results and force re-inference on the
  * next run. Keeps "same doc → same quote" honest across deploys.
  */
-export const MAPPER_PROMPT_VERSION = 'v6-2026-06-label-category-handoff';
+export const MAPPER_PROMPT_VERSION = 'v7-2026-06-completeness-implied-scope';
 
 /**
  * One slug the LLM explicitly evaluated and rejected, with a short
@@ -853,6 +853,26 @@ const SYSTEM_KERNEL = [
   '    the consumer when that system is NOT separately scoped anywhere else',
   '    in the document. Match by the system\'s identity (same name, same',
   '    technology, same endpoint/line count) — not by which sheet it sits on.',
+  '',
+  ' 3.6 COMPLETENESS — map EVERY quantified driver for EVERY application, not',
+  '    just the first app or the most obvious driver. If two applications each',
+  '    state a count for the same driver (pages, APIs, screens, roles, …),',
+  '    emit that driver for BOTH — never map one app\'s drivers while silently',
+  '    skipping another\'s. Before finishing, re-scan each application instance:',
+  '    for every driver the doc gave it a count for, did you emit an entity?',
+  '    A WEB app that lists "10 APIs" needs an api_endpoints entity exactly as',
+  '    a mobile app or a standalone API would — do not drop it just because the',
+  '    app is primarily a web app. (This is the inverse of rule 3.5: 3.5 stops',
+  '    DOUBLE counting one shared system; 3.6 stops UNDER counting distinct',
+  '    per-app drivers. Both must hold.)',
+  '',
+  ' 3.7 IMPLIED SCOPE — a slug need not be named as its own count to be in',
+  '    scope. When a slug\'s "emit when" hint says to emit it for a given',
+  '    assessment type or app trait (e.g. "for every grey-box Android app also',
+  '    emit static analysis, scope = the app\'s screen count"), emit it for each',
+  '    qualifying application even though the document never lists that slug',
+  '    explicitly. Drive this ONLY from the slug hints — never invent scope the',
+  '    hints don\'t call for.',
   '',
   ' 4. The rate card carries domain framing in DOMAIN CONTEXT and slug-',
   '    specific guidance under each slug\'s "emit when" hint. READ THE',

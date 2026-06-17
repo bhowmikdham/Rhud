@@ -326,16 +326,19 @@ const SERVICE_LINES: FixtureServiceLine[] = [
     pricingModel: 'per_unit',
     position: 10,
     inferenceHint:
-      'Emit when an API is itself a TEST TARGET and the doc names its endpoint / route / path count ' +
-      '(usually the dedicated API questionnaire/section). Group one API surface under one appId. ' +
-      'REST/SOAP/GraphQL all count; count distinct paths when listed individually. CRITICAL — do NOT ' +
-      'emit a separate entry for a web app that merely CONSUMES / uses / is built on an API that is ' +
-      'already scoped on its own: that double-counts the same endpoints (e.g. a frontend "uses the ' +
-      'CRM REST API ~50 endpoints" while the CRM backend API is also scoped — count the 50 ONCE). ' +
-      'Only count a consumed API here when it is scoped nowhere else. "API: Yes" without a count → ' +
-      'scope=1, confidence 0.5.',
+      'Emit when an API is a TEST TARGET and the doc names its endpoint / route / path count. ' +
+      'This INCLUDES an application\'s OWN integrated APIs: when a web app, mobile app, or API row ' +
+      'states a "No. of Web Services / APIs" count, emit api_endpoints for THAT application under its ' +
+      'own appId — one entity PER application that lists an API count (rule 3.6 completeness). Do not ' +
+      'map one app\'s APIs and skip another\'s. Group one API surface under one appId; REST/SOAP/GraphQL ' +
+      'all count; count distinct paths when listed individually. The ONLY case to skip (rule 3.5): a ' +
+      'web app that merely CONSUMES / uses / is built on an API that is the SAME system already scoped ' +
+      'separately — count those shared endpoints ONCE (e.g. a frontend "uses the CRM REST API ~50 ' +
+      'endpoints" while the CRM backend API is also scoped → the 50 once). "API: Yes" without a count ' +
+      '→ scope=1, confidence 0.5.',
     inferenceExamples: [
       '"Total API endpoints: 23" → scope=23, appId=api_1',
+      'App table: "App: HES (Web) … No of APIs: 10" AND "App: WFM (Web) … No of APIs: 10" → emit api_endpoints scope=10 appId=hes AND api_endpoints scope=10 appId=wfm (one per app — do NOT drop the web apps\' APIs)',
       '"Frontend uses REST API (~50 endpoints)" AND a backend API with ~50 endpoints is scoped separately → emit the 50 ONCE (for the API), do NOT add another for the frontend',
       '"API: Yes" without count → scope=1 confidence 0.5',
     ],
