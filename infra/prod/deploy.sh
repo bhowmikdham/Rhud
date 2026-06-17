@@ -59,6 +59,27 @@ apply_s3_cors() {
   fi
 }
 
+# ── Reclaim Docker disk before building (idempotent) ─────────────────
+# The 30GB root disk fills up across deploys: each rebuild leaves behind
+# build-cache layers and dangling (untagged) image layers that nothing
+# references. Left unbounded this ENOSPC's the next `docker compose
+# build` (observed 2026-06-17: build failed during `pnpm --filter
+# @rhud/api build` after ~7 rebuilds in one session).
+#
+# `--reserved-space 10GB` keeps the most-recently-used cache so warm
+# rebuilds stay fast (~1 min) while capping growth. (This is the
+# successor to the old `--keep-storage` flag, which is deprecated on the
+# box's Docker 25.0.14 and prints a warning on every run.) We prune ONLY
+# build cache and dangling images — never `docker volume prune`, which
+# would destroy the postgres data volume. Never fail the deploy on a
+# prune error (e.g. an older Docker lacking --reserved-space); log and
+# continue so the build still runs.
+reclaim_docker_space() {
+  log "reclaiming Docker disk (build cache over 10GB + dangling images)"
+  docker builder prune -f --reserved-space 10GB || warn "docker builder prune failed (continuing)"
+  docker image prune -f || warn "docker image prune failed (continuing)"
+}
+
 # ── fetch a single SSM parameter, fail loudly if missing ─────────────
 get_param() {
   local name="$1"
@@ -108,6 +129,9 @@ if [[ "$COMMAND" == "restart" ]]; then
   docker compose ps
   exit 0
 fi
+
+# Free disk before the build so a layer accumulation can't ENOSPC it.
+reclaim_docker_space
 
 log "building images (first run: ~5-10 min; cached rebuilds: ~1 min)"
 docker compose build
