@@ -144,6 +144,43 @@ export interface RateCard {
    * examples without us building a structured form yet.
    */
   inferenceExamples?: string[];
+  /**
+   * Drives the DETERMINISTIC heuristic fallback (used when the LLM mapper is
+   * unavailable / rate-limited / returns bad JSON) the same way inferenceHint
+   * drives the LLM prompt. WITHOUT this, the fallback uses built-in VAPT
+   * defaults — which are inert for a non-VAPT card (they key on the card's own
+   * slugs/tokens) but give a non-VAPT tenant no offline coverage. Authoring it
+   * makes the offline path domain-correct for ANY industry: each field, when
+   * present, REPLACES the corresponding VAPT default wholesale. All pattern
+   * fields are regex source strings (case-insensitive); invalid regex is
+   * treated as a literal. See rate-card-mapper.service.ts resolveHeuristicConfig.
+   */
+  heuristicConfig?: RateCardHeuristicConfig | null;
+}
+
+/** Per-rate-card configuration for the deterministic heuristic fallback. Every
+ *  field is optional; an omitted field falls back to the built-in VAPT default.
+ *  This is what makes "all domain knowledge lives in the rate card" true on the
+ *  fallback path, not only the LLM-happy path. */
+export interface RateCardHeuristicConfig {
+  /** token (matched against a service line's slug+displayName) → answer aliases
+   *  that count as "this line is mentioned". `domain: true` marks a broad token
+   *  that may only gate a slug carrying no driver-specific token. */
+  keywordTokens?: Array<{ token: string; aliases: string[]; domain?: boolean }>;
+  /** scopeUnit → regex sources that identify the point carrying a line's count. */
+  scopeUnitPatterns?: Record<string, string[]>;
+  /** Flat/binary lines emitted on an affirmative mention (not a count). */
+  binaryTriggers?: Array<{ slug: string; patterns: string[]; positiveValues?: string }>;
+  /** Short aliases matched as whole tokens only (avoid substring false hits). */
+  ambiguousAliases?: string[];
+  /** Service-line slug emitted from a URL-count signal (cloud-instance style). */
+  urlCountSlug?: string | null;
+  /** Regex sources marking a "strong" (e.g. cloud-provider) URL host. */
+  urlStrongHostPatterns?: string[];
+  /** Regex sources on the filename that allow generic URLs to count. */
+  urlFilenameHintPatterns?: string[];
+  /** customerType → methodology fallback when the doc doesn't state one. */
+  customerTypeMethodology?: { external?: string; internal?: string };
 }
 
 // ── Stage 1: scope normalisation ────────────────────────────────────────────

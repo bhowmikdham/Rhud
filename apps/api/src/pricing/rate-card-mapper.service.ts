@@ -33,6 +33,7 @@ import type {
   CustomerType,
   Methodology,
   RateCard,
+  RateCardHeuristicConfig,
   RateCardServiceLine,
   ScopedEntity,
   ScopeUnit,
@@ -307,6 +308,7 @@ export class RateCardFieldMapperService {
     rateCard: RateCard,
   ): ScopedEntity[] {
     const slBySlug = new Map(rateCard.serviceLines.map((s) => [s.slug, s]));
+    const hc = resolveHeuristicConfig(rateCard);
     // Per-slug counter so multiple inferred entities targeting the same
     // slug get unique entity ids ("extracted-llm:slug:0", ":1", …).
     // Without this, downstream code that keys on entityId (line-item
@@ -353,7 +355,7 @@ export class RateCardFieldMapperService {
       // line-item methodology label.
       const methodology = e.methodology
         ? resolveServiceLineMethodology(sl, e.methodology)
-        : autoPickMethodology(sl, e.customerType);
+        : autoPickMethodology(sl, e.customerType, hc);
 
       const dimensions: ScopedEntity['dimensions'] = {};
       dimensions[sl.scopeUnit] = e.scopeValue;
@@ -587,6 +589,7 @@ export class RateCardFieldMapperService {
     }
 
     const slBySlug = new Map(rateCard.serviceLines.map((s) => [s.slug, s]));
+    const hc = resolveHeuristicConfig(rateCard);
     const out: InferredEntity[] = [];
     let droppedHallucinated = 0;
     let droppedBadScope = 0;
@@ -608,14 +611,16 @@ export class RateCardFieldMapperService {
       }
       const customerType = r.customerType === 'internal' ? 'internal' : 'external';
 
-      // Auto-pick methodology from customer type + slug. The LLM may
-      // emit something that doesn't exist in this rate card's tier
-      // methodologies (e.g. canonical `black_box` when tiers carry
-      // `black_box_apk`). autoPickMethodology resolves that.
-      const methodology =
-        isValidMethodology(r.methodology) && r.methodology !== null
-          ? resolveServiceLineMethodology(sl, r.methodology)
-          : autoPickMethodology(sl, customerType);
+      // Methodology is rate-card-driven, not a fixed enum: TRUST any non-empty
+      // methodology the LLM emits and validate it against THIS card's own tier
+      // methodologies (resolveServiceLineMethodology). If it maps, use it; if
+      // it doesn't (or the LLM gave none), fall back to the customer-type
+      // auto-pick. This removes the hardcoded grey/black/white/va/pt enum so a
+      // non-VAPT card's methodology vocabulary works.
+      const llmMethodology = typeof r.methodology === 'string' && r.methodology.trim() ? r.methodology.trim() : null;
+      const methodology = llmMethodology
+        ? resolveServiceLineMethodology(sl, llmMethodology) ?? autoPickMethodology(sl, customerType, hc)
+        : autoPickMethodology(sl, customerType, hc);
 
       const rawConfidence = Number(r.confidence);
       const reasoning = typeof r.reasoning === 'string' ? r.reasoning.slice(0, 300) : '';
@@ -690,6 +695,10 @@ export class RateCardFieldMapperService {
     ctx: InferContext = {},
   ): InferredEntity[] {
     const customerType = detectCustomerType(points);
+    // Resolve the heuristic vocabulary from THIS rate card (VAPT defaults when
+    // unconfigured). Every gate below reads it, so the offline path is as
+    // domain-driven as the LLM prompt.
+    const hc = resolveHeuristicConfig(rateCard);
     const out: InferredEntity[] = [];
 
     // ── Pass 1: standard "mentioned + numeric" heuristic ────────────
@@ -701,13 +710,13 @@ export class RateCardFieldMapperService {
       // "IP addresses: 5" from phantom-emitting a flat network line.
       if (sl.pricingModel === 'flat') continue;
 
-      const group = matchingKeywordGroup(sl);
-      if (!group || !groupMentionedIn(group, points)) continue;
+      const group = matchingKeywordGroup(sl, hc);
+      if (!group || !groupMentionedIn(group, points, hc)) continue;
 
-      const numeric = pickScopeValue(points, sl.scopeUnit, group.aliases);
+      const numeric = pickScopeValue(points, sl.scopeUnit, group.aliases, hc);
       if (numeric == null) continue;
 
-      const methodology = autoPickMethodology(sl, customerType);
+      const methodology = autoPickMethodology(sl, customerType, hc);
 
       // Skip slugs whose only methodology variants don't match the
       // detected customer type — e.g. `vapt_web_app_roles` is grey-box-
@@ -740,7 +749,7 @@ export class RateCardFieldMapperService {
       if (out.some((e) => e.serviceLineSlug === hit.slug)) continue; // dedup
       const sl = rateCard.serviceLines.find((s) => s.slug === hit.slug);
       if (!sl) continue;
-      const methodology = autoPickMethodology(sl, customerType);
+      const methodology = autoPickMethodology(sl, customerType, hc);
       out.push({
         serviceLineSlug: hit.slug,
         scopeValue: 1,
@@ -753,21 +762,23 @@ export class RateCardFieldMapperService {
       });
     }
 
-    // ── Pass 3: URL counting → cloud_instances ───────────────────────
-    // The headline case: client supplies a list of AWS/Azure URLs.
-    // Each URL becomes one cloud instance to audit. We count, never
-    // duplicate (LLM may have already emitted vapt_cloud_instances).
-    const urlCount = countCloudUrls(points, ctx.filename ?? null);
-    if (urlCount.count > 0 && !out.some((e) => e.serviceLineSlug === 'vapt_cloud_instances')) {
-      const sl = rateCard.serviceLines.find((s) => s.slug === 'vapt_cloud_instances');
+    // ── Pass 3: URL counting → cloud-instance-style line ─────────────
+    // The headline case: client supplies a list of cloud URLs. Each URL
+    // becomes one instance to audit. The target slug is rate-card-driven
+    // (hc.urlCountSlug); a card without that slug — including any non-VAPT
+    // card — never emits here. We count, never duplicate.
+    const urlSlug = hc.urlCountSlug;
+    const urlCount = urlSlug ? countCloudUrls(points, ctx.filename ?? null, hc) : { count: 0, confidence: 0, flavor: 'none', sample: '' };
+    if (urlSlug && urlCount.count > 0 && !out.some((e) => e.serviceLineSlug === urlSlug)) {
+      const sl = rateCard.serviceLines.find((s) => s.slug === urlSlug);
       if (sl) {
-        const methodology = autoPickMethodology(sl, customerType);
+        const methodology = autoPickMethodology(sl, customerType, hc);
         out.push({
-          serviceLineSlug: 'vapt_cloud_instances',
+          serviceLineSlug: urlSlug,
           scopeValue: urlCount.count,
           methodology,
           customerType,
-          // AWS-domain URLs are stronger signals than generic https://
+          // Strong-host URLs are stronger signals than generic https://
           confidence: urlCount.confidence,
           reasoning: `URL-count heuristic: ${urlCount.count} ${urlCount.flavor} URL(s) detected`,
           sourceQuote: urlCount.sample.slice(0, 300),
@@ -1059,9 +1070,9 @@ const AMBIGUOUS_ALIASES = new Set<string>([
  *  's' — so "SCAs"/"SSOs"/"DBs"/"AVs" (legitimate acronym plurals) still
  *  match, while "scada"/"scan"/"miami"/"average" (the alias embedded in a
  *  longer word) still don't. */
-function aliasMatches(alias: string, haystack: string): boolean {
+function aliasMatches(alias: string, haystack: string, ambiguous: Set<string> = AMBIGUOUS_ALIASES): boolean {
   const a = alias.trim();
-  if (AMBIGUOUS_ALIASES.has(a)) {
+  if (ambiguous.has(a)) {
     return new RegExp(`(?:^|[^a-z])${a}s?(?:[^a-z]|$)`, 'i').test(haystack);
   }
   return haystack.includes(alias);
@@ -1084,24 +1095,24 @@ function aliasMatches(alias: string, haystack: string): boolean {
  * reason from the SAME evidence — a slug's scope can only come from a point
  * that names that slug's own driver, never a sibling's count.
  */
-function matchingKeywordGroup(sl: RateCardServiceLine): KeywordGroup | null {
+function matchingKeywordGroup(sl: RateCardServiceLine, hc: ResolvedHeuristicConfig): KeywordGroup | null {
   const slText = `${sl.slug} ${sl.displayName}`.toLowerCase();
   return (
-    SERVICE_LINE_KEYWORDS_BY_LENGTH.find(
-      (g) => !DOMAIN_TOKENS.has(g.token) && slText.includes(g.token),
+    hc.keywordsByLength.find(
+      (g) => !hc.domainTokens.has(g.token) && slText.includes(g.token),
     ) ??
-    SERVICE_LINE_KEYWORDS_BY_LENGTH.find(
-      (g) => DOMAIN_TOKENS.has(g.token) && slText.includes(g.token),
+    hc.keywordsByLength.find(
+      (g) => hc.domainTokens.has(g.token) && slText.includes(g.token),
     ) ??
     null
   );
 }
 
 /** True when any of the group's aliases is named by some extracted point. */
-function groupMentionedIn(group: KeywordGroup, points: ExtractedPointInput[]): boolean {
+function groupMentionedIn(group: KeywordGroup, points: ExtractedPointInput[], hc: ResolvedHeuristicConfig): boolean {
   for (const p of points) {
     const haystack = `${p.key} ${p.label ?? ''} ${p.value}`.toLowerCase();
-    if (group.aliases.some((alias) => aliasMatches(alias, haystack))) return true;
+    if (group.aliases.some((alias) => aliasMatches(alias, haystack, hc.ambiguousAliases))) return true;
   }
   return false;
 }
@@ -1161,8 +1172,9 @@ function pickScopeValue(
   points: ExtractedPointInput[],
   scopeUnit: ScopeUnit,
   driverAliases: string[],
+  hc: ResolvedHeuristicConfig,
 ): DetectedNumeric | null {
-  const patterns = SCOPE_PATTERNS[scopeUnit];
+  const patterns = hc.scopePatterns[scopeUnit] ?? [];
 
   let best: DetectedNumeric | null = null;
   let bestScore = -1;
@@ -1190,7 +1202,7 @@ function pickScopeValue(
     // ("What network devices? → 2 firewalls"), so check key+label+value —
     // matching groupMentionedIn — not just key+label.
     const driverHay = `${p.key} ${p.label ?? ''} ${p.value}`.toLowerCase();
-    if (!driverAliases.some((alias) => aliasMatches(alias, driverHay))) {
+    if (!driverAliases.some((alias) => aliasMatches(alias, driverHay, hc.ambiguousAliases))) {
       continue;
     }
 
@@ -1277,9 +1289,10 @@ export function detectBinaryFlags(
   points: ExtractedPointInput[],
   rateCard: RateCard,
 ): BinaryHit[] {
+  const hc = resolveHeuristicConfig(rateCard);
   const validSlugs = new Set(rateCard.serviceLines.map((s) => s.slug));
   const hits: BinaryHit[] = [];
-  for (const trigger of BINARY_TRIGGERS) {
+  for (const trigger of hc.binaryTriggers) {
     if (!validSlugs.has(trigger.slug)) continue;
     for (const p of points) {
       const haystack = `${p.key} ${p.label ?? ''}`;
@@ -1303,6 +1316,91 @@ const CLOUD_DOMAIN_RE = /\.(amazonaws|azure|aws|cloudfront|googleapis|cloud\.goo
 const ANY_URL_RE = /\bhttps?:\/\/[^\s,;]+/gi;
 const CLOUD_FILENAME_RE = /aws|azure|gcp|cloud|inventory|deployment/i;
 
+// ── Domain-agnostic heuristic config ─────────────────────────────────────
+// The heuristic fallback's entire vocabulary. WITHOUT a rate-card override it
+// uses VAPT_DEFAULTS (the constants above), which keep the Prophaze tenant
+// byte-identical. A non-VAPT card sets RateCard.heuristicConfig to REPLACE any
+// field; an omitted field stays on the VAPT default, which is naturally inert
+// for a foreign card because every matcher keys on THAT card's own slugs.
+interface ResolvedHeuristicConfig {
+  keywordsByLength: KeywordGroup[];
+  domainTokens: Set<string>;
+  ambiguousAliases: Set<string>;
+  scopePatterns: Record<string, RegExp[]>;
+  binaryTriggers: Array<{ slug: string; patterns: RegExp[]; positiveValues: RegExp }>;
+  urlCountSlug: string | null;
+  urlStrongHostRe: RegExp;
+  urlFilenameHintRe: RegExp;
+  customerTypeMethodology: { external: string; internal: string };
+}
+
+const VAPT_DEFAULTS: ResolvedHeuristicConfig = {
+  keywordsByLength: SERVICE_LINE_KEYWORDS_BY_LENGTH,
+  domainTokens: DOMAIN_TOKENS,
+  ambiguousAliases: AMBIGUOUS_ALIASES,
+  scopePatterns: SCOPE_PATTERNS as Record<string, RegExp[]>,
+  binaryTriggers: BINARY_TRIGGERS,
+  urlCountSlug: 'vapt_cloud_instances',
+  urlStrongHostRe: CLOUD_DOMAIN_RE,
+  urlFilenameHintRe: CLOUD_FILENAME_RE,
+  customerTypeMethodology: { external: 'black_box', internal: 'grey_box' },
+};
+
+/** Compile regex source strings (case-insensitive); a malformed source is
+ *  matched literally rather than crashing the whole inference. */
+function compilePatterns(sources: string[]): RegExp[] {
+  return sources.map((s) => {
+    try {
+      return new RegExp(s, 'i');
+    } catch {
+      return new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    }
+  });
+}
+
+/** Resolve the effective heuristic vocabulary for a rate card: each authored
+ *  field REPLACES the VAPT default; omitted fields keep the default. */
+function resolveHeuristicConfig(rateCard: RateCard): ResolvedHeuristicConfig {
+  const cfg: RateCardHeuristicConfig | null | undefined = rateCard.heuristicConfig;
+  if (!cfg) return VAPT_DEFAULTS;
+
+  const keywordsByLength = cfg.keywordTokens
+    ? [...cfg.keywordTokens.map((k) => ({ token: k.token.toLowerCase(), aliases: k.aliases.map((a) => a.toLowerCase()) }))].sort(
+        (a, b) => b.token.length - a.token.length,
+      )
+    : VAPT_DEFAULTS.keywordsByLength;
+  const domainTokens = cfg.keywordTokens
+    ? new Set(cfg.keywordTokens.filter((k) => k.domain).map((k) => k.token.toLowerCase()))
+    : VAPT_DEFAULTS.domainTokens;
+  const scopePatterns = cfg.scopeUnitPatterns
+    ? Object.fromEntries(Object.entries(cfg.scopeUnitPatterns).map(([k, v]) => [k, compilePatterns(v)]))
+    : VAPT_DEFAULTS.scopePatterns;
+  const binaryTriggers = cfg.binaryTriggers
+    ? cfg.binaryTriggers.map((t) => ({
+        slug: t.slug,
+        patterns: compilePatterns(t.patterns),
+        positiveValues: t.positiveValues
+          ? new RegExp(t.positiveValues, 'i')
+          : /^(yes|true|enabled|y|present|deployed)$/i,
+      }))
+    : VAPT_DEFAULTS.binaryTriggers;
+
+  return {
+    keywordsByLength,
+    domainTokens,
+    ambiguousAliases: cfg.ambiguousAliases ? new Set(cfg.ambiguousAliases.map((a) => a.toLowerCase())) : VAPT_DEFAULTS.ambiguousAliases,
+    scopePatterns,
+    binaryTriggers,
+    urlCountSlug: cfg.urlCountSlug !== undefined ? cfg.urlCountSlug : VAPT_DEFAULTS.urlCountSlug,
+    urlStrongHostRe: cfg.urlStrongHostPatterns ? new RegExp(cfg.urlStrongHostPatterns.join('|'), 'i') : VAPT_DEFAULTS.urlStrongHostRe,
+    urlFilenameHintRe: cfg.urlFilenameHintPatterns ? new RegExp(cfg.urlFilenameHintPatterns.join('|'), 'i') : VAPT_DEFAULTS.urlFilenameHintRe,
+    customerTypeMethodology: {
+      external: cfg.customerTypeMethodology?.external ?? VAPT_DEFAULTS.customerTypeMethodology.external,
+      internal: cfg.customerTypeMethodology?.internal ?? VAPT_DEFAULTS.customerTypeMethodology.internal,
+    },
+  };
+}
+
 interface UrlCountResult {
   count: number;
   confidence: number;
@@ -1320,13 +1418,14 @@ const MAX_URL_HITS = 500;
 export function countCloudUrls(
   points: ExtractedPointInput[],
   filename: string | null,
+  hc: ResolvedHeuristicConfig = VAPT_DEFAULTS,
 ): UrlCountResult {
   let cloudHits: string[] = [];
   let genericHits: string[] = [];
   outer: for (const p of points) {
     const urls = (p.value ?? '').match(ANY_URL_RE) ?? [];
     for (const u of urls) {
-      if (CLOUD_DOMAIN_RE.test(u)) cloudHits.push(u);
+      if (hc.urlStrongHostRe.test(u)) cloudHits.push(u);
       else genericHits.push(u);
       if (cloudHits.length + genericHits.length >= MAX_URL_HITS) break outer;
     }
@@ -1341,7 +1440,7 @@ export function countCloudUrls(
     };
   }
   // Fall back to generic URLs only if filename hints lean cloud.
-  if (genericHits.length >= 2 && filename && CLOUD_FILENAME_RE.test(filename)) {
+  if (genericHits.length >= 2 && filename && hc.urlFilenameHintRe.test(filename)) {
     return {
       count: genericHits.length,
       confidence: 0.7,
@@ -1358,16 +1457,6 @@ function parseNumber(value: string): number | null {
   if (!m) return null;
   const n = Number(m[0]);
   return Number.isFinite(n) ? n : null;
-}
-
-function isValidMethodology(v: unknown): v is Methodology {
-  return (
-    v === 'grey_box' ||
-    v === 'black_box' ||
-    v === 'white_box' ||
-    v === 'va' ||
-    v === 'pt'
-  );
 }
 
 /**
@@ -1398,11 +1487,12 @@ function isWhiteBoxOnlyServiceLine(sl: RateCardServiceLine): boolean {
 function autoPickMethodology(
   sl: RateCardServiceLine,
   customerType: CustomerType,
+  hc: ResolvedHeuristicConfig,
 ): Methodology | null {
   const desired: Methodology = isWhiteBoxOnlyServiceLine(sl)
     ? 'white_box'
     : customerType === 'external'
-      ? 'black_box'
-      : 'grey_box';
+      ? hc.customerTypeMethodology.external
+      : hc.customerTypeMethodology.internal;
   return resolveServiceLineMethodology(sl, desired);
 }
