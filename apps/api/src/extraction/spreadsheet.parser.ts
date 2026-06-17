@@ -273,6 +273,17 @@ function makeKey(label: string): string {
     .slice(0, 60);
 }
 
+/** True when a cell value is essentially just a number / count — "23", "5 ",
+ *  "2+2", "1,000" — i.e. has a digit and no real word (no run of >=2 letters).
+ *  A count is never a valid application identifier; this guards the Link-18 bug
+ *  where the asset count "23" was read as an appId. "App 1" / "HES" carry
+ *  letters, so real app names still pass. */
+function isNumericish(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  return /\d/.test(t) && !/[a-z]{2}/i.test(t);
+}
+
 // ── Fuzzy label → template-question matching ─────────────────────────
 
 /**
@@ -441,21 +452,37 @@ export function documentToRawPoints(doc: RhudDocument): RawPoint[] | null {
     const cols = detectQAColumnsFromDocument(sheet, cellLookup, maxCol);
     if (!cols) continue;
 
-    // Multi-application questionnaires keep the questions in one column and
-    // put EACH application's answers in its own column (App 1 = col B, App 2
-    // = col C, …). Tag each answer column with a distinct appId so every app
-    // is priced separately; a single answer column gets no appId (unchanged
-    // single-app behaviour). appId is also folded into the dedup key so the
-    // same question across apps doesn't collapse to one point.
-    const multiApp = cols.valueCols.length >= 2;
-    const appIds = cols.valueCols.map((c, i) =>
-      multiApp ? deriveAppId(sheet, cellLookup, cols.label, cols.valueCols, i) : undefined,
-    );
+    // Are the extra value columns genuinely separate APPLICATIONS (a multi-app
+    // questionnaire: App 1 | App 2 | App 3 …), or just attribute columns of one
+    // asset INVENTORY (No. of Assets VA | No. of Assets PT | Device Type)?
+    // Real apps have an identity row — distinct, non-numeric names per column.
+    // Without one, the columns are NOT apps: collapse to the single densest
+    // answer column so an inventory sheet yields clean countable points with no
+    // bogus per-"app" fragments (the Link-18 "Application/Operations Server |
+    // 23" → app "23" bug). When it IS multi-app, tag each answer column with a
+    // distinct appId (folded into the dedup key) so every app prices separately.
+    const identityRow =
+      cols.valueCols.length >= 2
+        ? appIdentityRowIndex(sheet, cellLookup, cols.label, cols.valueCols)
+        : null;
+    const valueCols = identityRow != null ? cols.valueCols : [cols.bestCol];
+    const multiApp = valueCols.length >= 2;
+    const usedIds = new Map<string, number>();
+    const appIds = valueCols.map((c, i) => {
+      if (!multiApp) return undefined;
+      let id = deriveAppId(cellLookup, valueCols, i, identityRow!);
+      // Disambiguate two columns that slug to the same identity (e.g. two apps
+      // both literally named "Application") so their rows don't dedup-collapse.
+      const seen = usedIds.get(id);
+      if (seen) { usedIds.set(id, seen + 1); id = `${id}_${seen + 1}`; }
+      else usedIds.set(id, 1);
+      return id;
+    });
 
     for (const row of sheet.rows) {
       const labelRaw = cellLookup.get(`${row.index}:${cols.label}`) ?? '';
-      for (let vi = 0; vi < cols.valueCols.length; vi++) {
-        const valueRaw = cellLookup.get(`${row.index}:${cols.valueCols[vi]!}`) ?? '';
+      for (let vi = 0; vi < valueCols.length; vi++) {
+        const valueRaw = cellLookup.get(`${row.index}:${valueCols[vi]!}`) ?? '';
         if (!isPlausibleQAPair(labelRaw, valueRaw)) continue;
         const label = compactSpaces(labelRaw).trim();
         const value = compactSpaces(valueRaw).trim();
@@ -475,27 +502,26 @@ export function documentToRawPoints(doc: RhudDocument): RawPoint[] | null {
 }
 
 /**
- * Derive a stable, human-ish appId for one answer column of a wide
- * multi-app questionnaire. Prefers the application's own name (from a
- * "name/description of application" row in that column); falls back to a
- * positional `app_<n>`. The mapper is told to reuse this exact id, so it
- * flows through to the per-app scope display.
+ * Find the row that IDENTIFIES each application by name across the answer
+ * columns — a "name/description/application" label whose per-column values are
+ * >=2 distinct and NON-NUMERIC. Its presence is what separates a real
+ * multi-application questionnaire (App 1 | App 2 | App 3 …) from an asset
+ * INVENTORY whose extra columns are parallel COUNTS (Assets-for-VA | for-PT)
+ * or a type descriptor. A row of counts ("23 | 23") or a single repeated
+ * header is NOT an identity row. Returns the best-scoring such row, or null.
+ *
+ * Relies on the label column being the real question column (see the
+ * distinctness pick in detectQAColumnsFromDocument) — otherwise a merged
+ * "section" column would hide the actual name row, as happened on the Link-18
+ * Application Assessment sheet.
  */
-function deriveAppId(
+function appIdentityRowIndex(
   sheet: DocumentSheet,
   lookup: Map<string, string>,
   labelCol: number,
   valueCols: number[],
-  vi: number,
-): string {
-  const valueCol = valueCols[vi]!;
-  // Find the row that NAMES each application. It must VARY across the
-  // answer columns — a repeated sheet-title header ("Web Application
-  // Security Testing Questionnaire" in every column) has the same value
-  // everywhere and would collapse all apps to one id (and dedup their
-  // shared-value rows together). Prefer an explicit name row, then a
-  // description row, then any "application" row.
-  const candidates: Array<{ score: number; rowIndex: number }> = [];
+): number | null {
+  let best: { score: number; rowIndex: number } | null = null;
   for (const row of sheet.rows) {
     const l = (lookup.get(`${row.index}:${labelCol}`) ?? '').toLowerCase();
     const score = /name.*application|application.*name|\bname\b/.test(l)
@@ -507,15 +533,33 @@ function deriveAppId(
           : 0;
     if (score === 0) continue;
     const vals = valueCols.map((c) =>
-      compactSpaces(lookup.get(`${row.index}:${c}`) ?? '').trim().toLowerCase(),
+      compactSpaces(lookup.get(`${row.index}:${c}`) ?? '').trim(),
     );
-    // Require genuine per-column variation (≥2 distinct non-empty values).
-    if (new Set(vals.filter(Boolean)).size < 2) continue;
-    candidates.push({ score, rowIndex: row.index });
+    const distinct = new Set(
+      vals.filter((v) => v && !isNumericish(v)).map((v) => v.toLowerCase()),
+    );
+    if (distinct.size < 2) continue;
+    if (!best || score > best.score) best = { score, rowIndex: row.index };
   }
-  candidates.sort((a, b) => b.score - a.score);
-  for (const cand of candidates) {
-    const v = compactSpaces(lookup.get(`${cand.rowIndex}:${valueCol}`) ?? '').trim();
+  return best ? best.rowIndex : null;
+}
+
+/**
+ * Derive a stable, human-ish appId for one answer column of a wide multi-app
+ * questionnaire, reading the application's own name from the identity row found
+ * by `appIdentityRowIndex`. A numeric count is never a name (guards the
+ * "Application/Operations Server | 23" → "23" bug); an empty / N/A cell falls
+ * back to a positional `app_<n>`. The mapper reuses this id for per-app scope.
+ */
+function deriveAppId(
+  lookup: Map<string, string>,
+  valueCols: number[],
+  vi: number,
+  identityRow: number,
+): string {
+  const valueCol = valueCols[vi]!;
+  const v = compactSpaces(lookup.get(`${identityRow}:${valueCol}`) ?? '').trim();
+  if (v && !isNumericish(v)) {
     const slug = makeKey(v).slice(0, 40);
     if (slug && !/^n_?a$|^not_applicable/.test(slug)) return slug;
   }
@@ -600,7 +644,7 @@ function detectQAColumnsFromDocument(
   sheet: DocumentSheet,
   lookup: Map<string, string>,
   maxCol: number,
-): { label: number; valueCols: number[] } | null {
+): { label: number; valueCols: number[]; bestCol: number } | null {
   const sampleRows = Math.min(sheet.rows.length, 40);
   const hitsFor = (labelCol: number, valueCol: number): number => {
     let hits = 0;
@@ -614,9 +658,16 @@ function detectQAColumnsFromDocument(
   };
 
   const MIN_HITS = 7;
-  // Try the usual label columns (0, then 1 for sheets with a leading
-  // index/section column). For the first label column that yields any
-  // qualifying answer column, collect EVERY answer column to its right.
+  // Evaluate both candidate label columns (0, then 1 for sheets with a leading
+  // index/section column) and pick the BEST — not just the first that works. A
+  // merged "section" column (e.g. "Scope" merged down 12 rows) is dense but
+  // carries the SAME label on every row; the real question column beside it has
+  // DISTINCT labels. Choosing by label distinctness stops us from labelling on
+  // the section column and reading the question text as the answer — the
+  // Link-18 Application Assessment break.
+  let chosen:
+    | { label: number; valueCols: number[]; bestCol: number; distinct: number }
+    | null = null;
   for (const labelCol of [0, 1]) {
     const colHits: Array<{ col: number; hits: number }> = [];
     for (let c = labelCol + 1; c <= maxCol; c++) {
@@ -625,16 +676,33 @@ function detectQAColumnsFromDocument(
     }
     if (colHits.length === 0) continue;
 
-    // The densest answer column is always kept. Additional columns are
-    // treated as parallel APPLICATION columns only when they're similarly
-    // dense (>=70% of the best column's hit count) — this guards a normal
-    // single-app sheet that happens to carry an incidental notes/example
-    // column from being mis-read as a multi-app questionnaire.
+    // The densest answer column is always kept. Additional columns are treated
+    // as parallel APPLICATION columns only when they're similarly dense (>=70%
+    // of the best column's hit count) — this guards a normal single-app sheet
+    // that happens to carry an incidental notes/example column.
     const best = Math.max(...colHits.map((x) => x.hits));
+    const bestCol = colHits.find((x) => x.hits === best)!.col;
     const valueCols = colHits
       .filter((x) => x.hits >= Math.max(MIN_HITS, Math.ceil(best * 0.7)))
       .map((x) => x.col);
-    return { label: labelCol, valueCols };
+
+    // Fraction of DISTINCT labels among the rows that paired with the densest
+    // answer column. ~1.0 for a real question column; ~tiny for a merged
+    // section header that repeats the same word on every row.
+    const seen = new Set<string>();
+    let labelled = 0;
+    for (let i = 0; i < sampleRows; i++) {
+      const row = sheet.rows[i]!;
+      const l = compactSpaces(lookup.get(`${row.index}:${labelCol}`) ?? '').trim().toLowerCase();
+      const v = lookup.get(`${row.index}:${bestCol}`) ?? '';
+      if (isPlausibleQAPair(l, v)) { labelled += 1; if (l) seen.add(l); }
+    }
+    const distinct = labelled > 0 ? seen.size / labelled : 0;
+
+    if (!chosen || distinct > chosen.distinct) {
+      chosen = { label: labelCol, valueCols, bestCol, distinct };
+    }
   }
-  return null;
+  if (!chosen) return null;
+  return { label: chosen.label, valueCols: chosen.valueCols, bestCol: chosen.bestCol };
 }
