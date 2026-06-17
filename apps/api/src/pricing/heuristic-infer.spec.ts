@@ -69,6 +69,34 @@ describe('heuristic fallback — phantom network line items (Link 18)', () => {
   });
 });
 
+describe('heuristic fallback — category gate (P0c: non-scope fields never yield a count)', () => {
+  it('does NOT mine a scope count from an identity field ("Acme, 10 employees")', async () => {
+    const points: ExtractedPointInput[] = [
+      { key: 'firewall_count', label: 'Firewalls in scope', value: '2', category: 'scope' },
+      // An identity point that happens to contain a number must be ignored by
+      // the scope picker — pre-P0c "10" could leak onto a device count.
+      { key: 'company_name', label: 'Company', value: 'Acme Corp with 10 employees', category: 'identity' },
+      { key: 'primary_contact', label: 'Contact', value: 'Jane (x42)', category: 'identity' },
+    ];
+    const bySlug = new Map((await infer(points)).map((e) => [e.serviceLineSlug, e]));
+    // The legitimately-scoped firewalls survive at the right count...
+    expect(bySlug.get('vapt_network_firewalls')?.scopeValue).toBe(2);
+    // ...and no entity carries the identity numbers 10 or 42.
+    for (const e of bySlug.values()) {
+      expect(e.scopeValue).not.toBe(10);
+      expect(e.scopeValue).not.toBe(42);
+    }
+  });
+
+  it('still scopes normally when category is absent (un-categorised input ungated)', async () => {
+    const points: ExtractedPointInput[] = [
+      { key: 'firewall_count', label: 'Firewall - 3', value: '3' },
+    ];
+    const bySlug = new Map((await infer(points)).map((e) => [e.serviceLineSlug, e]));
+    expect(bySlug.get('vapt_network_firewalls')?.scopeValue).toBe(3);
+  });
+});
+
 describe('heuristic fallback — flat binary slugs (IDS/IPS/DLP/IAM)', () => {
   it('emits IDS only from an affirmative flag (Pass 2), not a raw count', async () => {
     // A numeric "count of IDS devices" must NOT price a flat IDS line...

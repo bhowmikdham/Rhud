@@ -59,6 +59,7 @@ import {
   documentToRawPoints,
   documentToLlmText,
   scoreLabelMatch,
+  EXTRACTION_PARSER_VERSION,
   type RawPoint,
 } from './spreadsheet.parser.js';
 
@@ -123,6 +124,12 @@ export type PointCategory =
 export interface ExtractedPoint {
   /** snake_case identifier — `team_size`, `compliance_required`, etc. */
   key: string;
+  /** The ORIGINAL human label as it appeared in the document (e.g.
+   *  "No. of Web Applications"). `key` is `makeKey(label)` — a lossy
+   *  snake_case of this. The mapper's heuristic gates and the LLM prompt
+   *  both read the label for full phrasing; dropping it (as the handoff
+   *  used to) is why the fallback was filtering on data it never received. */
+  label?: string;
   /** The extracted value. Always a string for storage simplicity;
    *  numeric-looking values stay as their literal string form. */
   value: string;
@@ -710,6 +717,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       const relatedQuestion = bestScore >= 0.25 ? bestId : null;
       return {
         key: r.key.slice(0, 100),
+        label: r.label.slice(0, 300),
         value: r.value.slice(0, 1_000),
         sourceQuote: `${r.label} | ${r.value}`.slice(0, 500),
         relatedQuestion,
@@ -1291,30 +1299,41 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     try {
       const card = await this.pricing.getById(tenantId, rateCardId);
+      // Forward the FULL semantic contract to the mapper — not just key/value.
+      // `label` gives the LLM the original phrasing and the heuristic gates a
+      // real haystack; `category` lets the scope-pickers skip non-scope fields;
+      // `relatedQuestion` flags template-bound answers. Dropping these (the old
+      // {key,value,sheet,appId}-only handoff) is the audit's biggest single
+      // defect — the fallback was filtering on data it never received.
       const mapperPoints = points.map((p) => ({
         key: p.key,
         value: p.value,
+        ...(p.label != null ? { label: p.label } : {}),
         ...(p.sheet != null ? { sheet: p.sheet } : {}),
+        ...(p.relatedQuestion != null ? { relatedQuestion: p.relatedQuestion } : {}),
+        ...(p.category != null ? { category: p.category } : {}),
         ...(p.appId != null ? { appId: p.appId } : {}),
       }));
 
       // ── Content-addressed inference cache ────────────────────────────
       // The LLM mapper is non-deterministic (a thinking model drifts even at
       // temperature 0), so re-running the SAME document used to yield a
-      // different quote each time. Hash the INPUTS — the points, the rate-card
-      // version, and the mapper prompt version — and reuse the cached entities
-      // when nothing has changed. `force` (an explicit re-infer) bypasses it.
+      // different quote each time. Hash the SEMANTIC inputs — key/value/appId/
+      // label/category (NOT sheet, which is presentational and caused cache
+      // thrashing) — plus the rate-card + prompt + parser versions, and reuse
+      // the cached entities when nothing changed. `force` bypasses it.
       const inputHash = createHash('sha256')
         .update(
           JSON.stringify({
-            points: [...mapperPoints].sort((a, b) =>
-              `${a.appId ?? ''}|${a.key}|${a.value}`.localeCompare(
-                `${b.appId ?? ''}|${b.key}|${b.value}`,
+            points: mapperPoints
+              .map((p) => ({ key: p.key, value: p.value, appId: p.appId ?? '', label: p.label ?? '', category: p.category ?? '' }))
+              .sort((a, b) =>
+                `${a.appId}|${a.key}|${a.value}`.localeCompare(`${b.appId}|${b.key}|${b.value}`),
               ),
-            ),
             rateCardId,
             rateCardVersion: card.version,
             promptVersion: MAPPER_PROMPT_VERSION,
+            parserVersion: EXTRACTION_PARSER_VERSION,
           }),
         )
         .digest('hex');

@@ -47,12 +47,26 @@ export interface ExtractedPointInput {
   value: string;
   label?: string;
   sheet?: string | null;
+  /** Matching template-question id when this point answered one (null/absent
+   *  otherwise). Lets the prompt flag template-bound answers. */
+  relatedQuestion?: string | null;
+  /** Layer-2 semantic class ('scope' | 'identity' | 'compliance' |
+   *  'methodology' | 'service_type' | 'environment' | 'other'). Typed as a
+   *  plain string here to avoid an import cycle with extraction.service.
+   *  The heuristic scope-pickers use it to AVOID reading a count out of a
+   *  non-scope field (e.g. "Acme, 10 employees" tagged `identity`). */
+  category?: string;
   /** Application instance this point belongs to (wide multi-app
    *  questionnaires). When set, the LLM is told to reuse it verbatim as
    *  the entity's `appId` so every application is priced + shown
    *  separately. */
   appId?: string;
 }
+
+/** Categories that never carry a service-line SCOPE count. The heuristic
+ *  scope-pickers skip points tagged with these so an identity/compliance/
+ *  methodology field can't be mined for a phantom quantity. */
+const NON_SCOPE_CATEGORIES = new Set(['identity', 'compliance', 'methodology']);
 
 /** Optional context the mapper uses for deterministic heuristics —
  *  filename hints (`aws_inventory.xlsx` → bias cloud), URL counting,
@@ -125,7 +139,7 @@ const MAPPER_PARSE_ATTEMPTS = 3;
  * a change here should invalidate cached results and force re-inference on the
  * next run. Keeps "same doc → same quote" honest across deploys.
  */
-export const MAPPER_PROMPT_VERSION = 'v5-2026-06-parse-retry';
+export const MAPPER_PROMPT_VERSION = 'v6-2026-06-label-category-handoff';
 
 /**
  * One slug the LLM explicitly evaluated and rejected, with a short
@@ -519,7 +533,11 @@ export class RateCardFieldMapperService {
         // application it belongs to. Surface it so the LLM groups entities
         // per application instead of merging them (see SYSTEM_KERNEL rule 2).
         const appPart = p.appId ? ` [app: ${p.appId}]` : '';
-        return `- ${p.key}: ${p.value}${labelPart}${sheetPart}${appPart}`;
+        // Flag answers bound to a template question and the Layer-2 category so
+        // the model weights real answers and ignores identity/compliance noise.
+        const qPart = p.relatedQuestion ? ` [answers: ${p.relatedQuestion}]` : '';
+        const catPart = p.category && p.category !== 'other' ? ` [kind: ${p.category}]` : '';
+        return `- ${p.key}: ${p.value}${labelPart}${sheetPart}${appPart}${qPart}${catPart}`;
       })
       .join('\n');
     blocks.push(`EXTRACTED POINTS:\n${pointLines}`);
@@ -1152,6 +1170,12 @@ function pickScopeValue(
   for (const p of points) {
     const num = parseNumber(p.value);
     if (num == null || num <= 0) continue;
+
+    // Never mine a scope count out of a non-scope field. "Acme Corp, 10
+    // employees" (category=identity) or "SOC2, 3 controls" (compliance) must
+    // not become a service-line quantity. Category is a best-effort Layer-2
+    // tag; absent → not gated (preserves behaviour for un-categorised input).
+    if (p.category && NON_SCOPE_CATEGORIES.has(p.category)) continue;
 
     const haystack = `${p.key} ${p.label ?? ''}`;
 

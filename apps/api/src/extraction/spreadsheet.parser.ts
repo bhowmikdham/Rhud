@@ -46,6 +46,17 @@ export interface RawPoint {
   appId?: string;
 }
 
+/**
+ * Version tag for the structured spreadsheet PARSER's behaviour (column
+ * detection, multi-app/inventory discrimination, appId derivation, the points
+ * it emits). Folded into the inference cache key (extraction.service
+ * runAndCacheInference) so a parser fix BUSTS cached entities computed from
+ * the old points — otherwise a parser bugfix silently leaves stale quotes
+ * frozen (the gap that made the "Re-extract" dance necessary). Bump on any
+ * change that alters the emitted points for an unchanged document.
+ */
+export const EXTRACTION_PARSER_VERSION = 'p1-2026-06-distinctness';
+
 /** Workbook size cap. Rejects files that would dominate the API
  *  process's memory budget; the caller falls through to LLM-only. */
 const MAX_ROWS = 10_000;
