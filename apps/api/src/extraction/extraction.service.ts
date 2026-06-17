@@ -1350,6 +1350,17 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
           llmFallback = { reason, message };
         },
       });
+      // A degraded HEURISTIC fallback (the LLM genuinely FAILED — malformed
+      // JSON after retries, timeout, rate-limit) must NOT be frozen in the
+      // content-addressed cache. Freezing it turns a transient model hiccup
+      // into a permanently under-scoped quote: that is exactly how gg/Link-18
+      // cached at ₹60k (2 heuristic entities) instead of re-attempting the LLM.
+      // So persist the entities (the rep still sees *something*) but leave the
+      // hash NULL on failure → the next run misses the cache and re-runs the
+      // LLM. A clean LLM result — including a legitimately empty one
+      // (reason='no_entities') — is stable and cached normally.
+      const fb0 = llmFallback as { reason: string; message: string } | null;
+      const cacheable = !fb0 || fb0.reason === 'no_entities';
       // Preserve any manually-overridden entities from a prior session.
       // Re-extraction shouldn't wipe a rep's correction — overlay
       // LLM/heuristic results only for slugs the rep didn't override.
@@ -1369,13 +1380,14 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         const all = [...manual, ...fresh];
         await db.engagementFile.update({
           where: { id: fileId },
-          data: { inferredEntities: all as unknown as object, inferenceInputHash: inputHash },
+          data: { inferredEntities: all as unknown as object, inferenceInputHash: cacheable ? inputHash : null },
         });
         return all;
       });
       void merged;
       this.logger.log(
-        `inference cached file=${fileId} entities=${inferred.length} ` +
+        `inference ${cacheable ? 'cached' : 'NOT cached (LLM fallback — will retry next run)'} ` +
+          `file=${fileId} entities=${inferred.length} ` +
           `(high-confidence: ${inferred.filter((e: InferredEntity) => e.confidence >= 0.6).length})`,
       );
 

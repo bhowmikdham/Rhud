@@ -32,6 +32,24 @@ function makeMockLlm(responseText: string) {
   } as unknown as ConstructorParameters<typeof RateCardFieldMapperService>[0];
 }
 
+/** Mock that returns a SEQUENCE of responses (the last one repeats once the
+ *  list is exhausted) and counts how many times `chat` was invoked — used to
+ *  assert the malformed-JSON re-draw loop in `llmInfer`. */
+function makeSeqLlm(responses: string[]) {
+  const calls = { count: 0 };
+  let i = 0;
+  const llm = {
+    getProviderName: async () => 'mock' as const,
+    chat: async () => {
+      calls.count++;
+      const text = responses[Math.min(i, responses.length - 1)]!;
+      i++;
+      return { text };
+    },
+  } as unknown as ConstructorParameters<typeof RateCardFieldMapperService>[0];
+  return { llm, calls };
+}
+
 describe('mapper LLM path — canned responses', () => {
   it('parses multi-app response with appIds preserved', async () => {
     const llm = makeMockLlm(JSON.stringify({
@@ -161,6 +179,48 @@ describe('mapper LLM path — canned responses', () => {
     expect(out.length).toBeGreaterThan(0);
     expect(out.some((e) => e.serviceLineSlug === 'vapt_network_firewalls')).toBe(true);
     expect(out.every((e) => e.source === 'heuristic')).toBe(true);
+  });
+
+  // ── Malformed-JSON re-draw (gg / Link-18 under-quote fix) ──────────────
+  // A thinking model intermittently emits broken JSON. Before the re-draw a
+  // single bad draw dropped the whole call to the heuristic (and the cache
+  // froze that degraded quote). These prove the loop recovers an intermittent
+  // failure and only re-draws genuine malformations.
+
+  it('re-draws malformed JSON and RECOVERS the LLM result when a later draw parses', async () => {
+    const valid = JSON.stringify({
+      entities: [
+        { serviceLineSlug: 'vapt_web_app_dynamic_pages', scopeValue: 29, customerType: 'external', confidence: 0.9, reasoning: '', sourceQuote: '' },
+      ],
+    });
+    // First draw is structurally broken; second is clean.
+    const { llm, calls } = makeSeqLlm(['{"entities": [ {"serviceLineSlug" "oops-no-colon"', valid]);
+    const mapper = new RateCardFieldMapperService(llm);
+    const out = await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
+    expect(calls.count).toBe(2); // re-drew once, then succeeded
+    expect(out).toHaveLength(1);
+    expect(out[0]!.serviceLineSlug).toBe('vapt_web_app_dynamic_pages');
+    expect(out[0]!.source).toBe('llm'); // recovered the LLM mapping, NOT the heuristic
+  });
+
+  it('exhausts re-draws on PERSISTENT malformed JSON, then falls back to heuristic', async () => {
+    const { llm, calls } = makeSeqLlm(['still not valid json']);
+    const mapper = new RateCardFieldMapperService(llm);
+    const out = await mapper.inferEntities(
+      't',
+      [{ key: 'firewalls', label: 'Firewalls in scope', value: '5' }],
+      RATE_CARD,
+    );
+    expect(calls.count).toBe(3); // MAPPER_PARSE_ATTEMPTS draws before giving up
+    // The throw was caught and the heuristic took over (firewalls × 5).
+    expect(out.some((e) => e.serviceLineSlug === 'vapt_network_firewalls' && e.source === 'heuristic')).toBe(true);
+  });
+
+  it('does NOT re-draw a VALID empty response (doc genuinely maps nothing)', async () => {
+    const { llm, calls } = makeSeqLlm([JSON.stringify({ entities: [] })]);
+    const mapper = new RateCardFieldMapperService(llm);
+    await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
+    expect(calls.count).toBe(1); // clean parse → returned immediately, no re-draw
   });
 
   // ── New behaviour: heuristic suppression when LLM succeeds ─────────────

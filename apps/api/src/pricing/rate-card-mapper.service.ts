@@ -38,7 +38,7 @@ import type {
   ScopeUnit,
 } from '@rhud/shared';
 import { LlmService } from '../llm/llm.service.js';
-import type { ChatMessage } from '../llm/llm.types.js';
+import type { ChatMessage, ChatOptions } from '../llm/llm.types.js';
 import { enrichPoints } from './point-enrichment.js';
 import { resolveCanonicalScope } from './scope-graph.js';
 
@@ -108,6 +108,16 @@ const CONFIDENCE_THRESHOLD = 0.6;
  *  the whole call silently falls back to the keyword heuristic. */
 const MAPPER_MAX_OUTPUT_TOKENS = 32_768;
 
+/** Total LLM attempts for one inference when the model returns MALFORMED or
+ *  TRUNCATED JSON. Thinking models (Gemini 2.5-flash) intermittently emit
+ *  structurally-broken JSON even at temperature 0 — a single bad draw used to
+ *  drop the whole call to the keyword heuristic (and, via the cache, freeze
+ *  that degraded result forever). Re-drawing recovers it: the malformation is
+ *  per-draw, not deterministic for a given doc. Only malformed/truncated draws
+ *  are retried — a VALID-but-empty response (the doc genuinely maps nothing) is
+ *  returned immediately, never retried. */
+const MAPPER_PARSE_ATTEMPTS = 3;
+
 /**
  * Version tag for the mapper's behaviour (system kernel + prompt build +
  * dedup/pooling logic). It is folded into the content-addressed inference
@@ -115,7 +125,7 @@ const MAPPER_MAX_OUTPUT_TOKENS = 32_768;
  * a change here should invalidate cached results and force re-inference on the
  * next run. Keeps "same doc → same quote" honest across deploys.
  */
-export const MAPPER_PROMPT_VERSION = 'v4-2026-06-scope-graph';
+export const MAPPER_PROMPT_VERSION = 'v5-2026-06-parse-retry';
 
 /**
  * One slug the LLM explicitly evaluated and rejected, with a short
@@ -130,6 +140,11 @@ export interface ConsideredSlug {
 interface LlmInferResult {
   entities: InferredEntity[];
   considered: ConsideredSlug[];
+  /** Set when the response could NOT be parsed (malformed JSON, no object
+   *  found, or a missing/invalid `entities` field) — as opposed to a clean
+   *  parse that legitimately yielded zero entities. Drives the retry in
+   *  `llmInfer`: a parse failure is re-drawable; a valid-empty result is not. */
+  parseError?: string;
 }
 
 @Injectable()
@@ -365,7 +380,7 @@ export class RateCardFieldMapperService {
       { role: 'user', content: this.buildLlmPrompt(rateCard, points) },
     ];
 
-    const result = await this.llm.chat(tenantId, messages, {
+    const chatOpts: ChatOptions = {
       // Generous output budget. Gemini 2.5/3.x "flash" (and most current
       // frontier models) are THINKING models: hidden reasoning tokens count
       // against max_tokens. A tight cap is consumed almost entirely by
@@ -396,21 +411,52 @@ export class RateCardFieldMapperService {
       // ~35s across a minute boundary (Gemini's bucket reset point)
       // plus the actual LLM round-trip on the second attempt.
       timeoutMs: 90_000,
-    });
+    };
 
-    // Surface truncation explicitly. Without this, a hit output cap looks
-    // identical to "the doc genuinely had nothing to map" — the failure mode
-    // that hid the prod heuristic-fallback regression for weeks.
-    if (result.finishReason === 'length') {
-      this.logger.warn(
-        `field-mapper LLM response hit the output-token cap ` +
-          `(finish_reason=length, output_tokens=${result.outputTokens ?? '?'}, ` +
-          `maxTokens=${MAPPER_MAX_OUTPUT_TOKENS}). JSON is likely truncated and will fail to ` +
-          `parse — raise maxTokens further or pick a model with a smaller/disabled thinking budget.`,
-      );
+    // Re-draw on MALFORMED / TRUNCATED JSON. A thinking model intermittently
+    // emits structurally-broken JSON even at temperature 0 — that is a property
+    // of the individual draw, not of the document, so a fresh draw usually
+    // parses. Before this loop a single bad draw dropped the whole call to the
+    // keyword heuristic AND (via the content-addressed cache) froze that
+    // degraded result, which is exactly how the gg/Link-18 doc under-quoted.
+    // A clean parse — entities OR a legitimate empty array — returns at once and
+    // is never retried.
+    let lastParseError: string | null = null;
+    for (let attempt = 1; attempt <= MAPPER_PARSE_ATTEMPTS; attempt++) {
+      const result = await this.llm.chat(tenantId, messages, chatOpts);
+      const truncated = result.finishReason === 'length';
+      if (truncated) {
+        this.logger.warn(
+          `field-mapper LLM hit the output-token cap (finish_reason=length, ` +
+            `output_tokens=${result.outputTokens ?? '?'}, maxTokens=${MAPPER_MAX_OUTPUT_TOKENS}) ` +
+            `on attempt ${attempt}/${MAPPER_PARSE_ATTEMPTS}; JSON is likely truncated.`,
+        );
+      }
+
+      const parsed = this.parseLlmEntities(result.text, rateCard);
+      // Clean parse → done. `parseError` distinguishes a broken response from a
+      // valid-but-empty one (doc genuinely maps nothing); the latter must NOT
+      // be re-drawn. A partial-but-usable parse (≥1 entity) is also kept.
+      if ((!parsed.parseError && !truncated) || parsed.entities.length > 0) {
+        return parsed;
+      }
+
+      lastParseError =
+        parsed.parseError ?? (truncated ? 'response truncated at output-token cap' : 'unknown parse failure');
+      if (attempt < MAPPER_PARSE_ATTEMPTS) {
+        this.logger.warn(
+          `field-mapper LLM JSON unusable (${lastParseError}) — re-drawing ` +
+            `(attempt ${attempt + 1}/${MAPPER_PARSE_ATTEMPTS})`,
+        );
+      }
     }
 
-    return this.parseLlmEntities(result.text, rateCard);
+    // Budget spent on malformed/truncated draws. THROW (don't return empty) so
+    // inferEntities categorises this as a genuine `parse_error` failure: the
+    // heuristic fallback is shown to the rep but the result is NOT written to
+    // the content-addressed cache, so the next run re-attempts the LLM instead
+    // of serving a frozen, under-scoped quote.
+    throw new Error(`LLM JSON unparseable after ${MAPPER_PARSE_ATTEMPTS} attempts: ${lastParseError}`);
   }
 
   /**
@@ -487,8 +533,8 @@ export class RateCardFieldMapperService {
   private parseLlmEntities(raw: string, rateCard: RateCard): LlmInferResult {
     const empty: LlmInferResult = { entities: [], considered: [] };
     if (!raw) {
-      this.logger.warn('LLM returned empty response — treating as zero entities');
-      return empty;
+      this.logger.warn('LLM returned empty response — treating as a parse failure (re-drawable)');
+      return { ...empty, parseError: 'empty response' };
     }
     const cleaned = raw
       .trim()
@@ -502,30 +548,24 @@ export class RateCardFieldMapperService {
       const start = cleaned.indexOf('{');
       const end = cleaned.lastIndexOf('}');
       if (start === -1 || end === -1) {
-        this.logger.warn(
-          `LLM response not parseable as JSON; no '{' or '}' found: ${(firstErr as Error).message} ` +
-            `(raw[0..200]="${cleaned.slice(0, 200)}")`,
-        );
-        return empty;
+        const m = `not parseable as JSON; no '{' or '}' found: ${(firstErr as Error).message}`;
+        this.logger.warn(`LLM response ${m} (raw[0..200]="${cleaned.slice(0, 200)}")`);
+        return { ...empty, parseError: m };
       }
       try {
         parsed = JSON.parse(cleaned.slice(start, end + 1));
       } catch (secondErr) {
-        this.logger.warn(
-          `LLM response unparseable even after substring extraction: ${(secondErr as Error).message} ` +
-            `(raw[0..200]="${cleaned.slice(0, 200)}")`,
-        );
-        return empty;
+        const m = `unparseable even after substring extraction: ${(secondErr as Error).message}`;
+        this.logger.warn(`LLM response ${m} (raw[0..200]="${cleaned.slice(0, 200)}")`);
+        return { ...empty, parseError: m };
       }
     }
 
     const arr = (parsed as { entities?: unknown }).entities;
     if (!Array.isArray(arr)) {
-      this.logger.warn(
-        `LLM response missing or invalid "entities" field; got ${typeof arr}. ` +
-          `Returning zero entities.`,
-      );
-      return empty;
+      const m = `missing or invalid "entities" field; got ${typeof arr}`;
+      this.logger.warn(`LLM response ${m}. Returning zero entities.`);
+      return { ...empty, parseError: m };
     }
 
     const slBySlug = new Map(rateCard.serviceLines.map((s) => [s.slug, s]));
