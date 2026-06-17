@@ -625,7 +625,11 @@ export function normaliseScope(
         if (binding.serviceLineSlug) continue;
         const mapped = mapBoundAnswer(ans, binding);
         const num = typeof mapped === 'number' ? mapped : Number(mapped);
-        if (Number.isFinite(num)) {
+        // Guard num > 0 to match the top-level (line ~567) and driver (~660)
+        // paths. Without it a "0"/blank loop-main answer created a zero-scope
+        // entity that then priced as an unmatched ₹0 line — a silent partial
+        // quote. No entity is better than a phantom zero-scope one.
+        if (Number.isFinite(num) && num > 0) {
           mainScope = num;
           break;
         }

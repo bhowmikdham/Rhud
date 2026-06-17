@@ -114,6 +114,24 @@ describe('normaliseScope — multi-driver intake', () => {
     expect(out[0]!.dimensions.pages).toBe(75);
   });
 
+  it('loop-main: a 0 scope answer emits NO entity (P0d zero-scope guard parity)', () => {
+    // Pre-fix the loop-main path lacked the `num > 0` guard the top-level and
+    // driver paths have, so a "0" answer created a phantom zero-scope entity
+    // that priced as a silent unmatched ₹0 line.
+    const loop = node({
+      id: 'loop1', nodeType: 'loop', position: 0,
+      loopConfig: { mode: 'open_ended', serviceLineSlug: 'vapt_web_app' },
+    });
+    const body = node({
+      id: 'body1', nodeType: 'number', position: 0, parentNodeId: 'loop1',
+      binding: { field: 'scope_value' },
+    });
+    const tmpl = makeTemplate([loop, body]);
+    const answers: AnswersByIter = new Map([['body1', new Map([[0, 0]])]]);
+    const out = normaliseScope(tmpl, makeRateCard(), answers);
+    expect(out).toHaveLength(0);
+  });
+
   it('multi-driver loop: ONE iteration emits N entities, one per body slug', () => {
     const loop = node({
       id: 'loop1', nodeType: 'loop', position: 0,
