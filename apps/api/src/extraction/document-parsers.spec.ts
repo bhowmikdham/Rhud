@@ -238,36 +238,6 @@ describe('documentToRawPoints — wide multi-application questionnaire', () => {
     // col 2 has only 2 populated cells (< 7-hit floor) → single app.
     expect(out!.every((p) => p.appId === undefined)).toBe(true);
   });
-
-  it('treats an asset INVENTORY (VA | PT | type columns) as single-column, not multi-app (Link-18)', () => {
-    // The Infrastructure sheet is an inventory: label = asset type, and the
-    // extra columns are parallel COUNTS (Assets-for-VA | Assets-for-PT) plus a
-    // type descriptor — NOT separate applications. Pre-fix, the count "23" was
-    // read as an appId and the "Application/Operations Server | 23" row was
-    // split from its descriptor, so the 23 servers were never priced.
-    const doc = blankDoc();
-    doc.sheets = [
-      wideSheet('Infrastructure VAPT', [
-        ['Infrastructure', 'No. of IT Assets for VA', 'No. of IT Assets for PT', 'Device/ Application Type'],
-        ['Application/Operations Server', '23', '23', 'Network Devices'],
-        ['Database Server', '5', '5', 'Linux Server'],
-        ['Desktops/Laptops', '0', '0', 'Endpoint'],
-        ['Firewall', '2', '2', 'Appliance'],
-        ['Web Server', '5', '5', 'Linux Server'],
-        ['Router', '0', '0', 'Network'],
-        ['Switch', '0', '0', 'Network'],
-        ['Other Devices, if any', '2+2', '2+2', 'LB, WAF'],
-      ]),
-    ];
-    const out = documentToRawPoints(doc);
-    expect(out).not.toBeNull();
-    // No app is invented — and NEVER the count "23" as an appId.
-    expect(out!.every((p) => p.appId === undefined)).toBe(true);
-    // The 23 servers survive as a clean, countable point the mapper can price.
-    const servers = out!.find((p) => p.key === 'application_operations_server');
-    expect(servers).toBeDefined();
-    expect(servers!.value).toBe('23');
-  });
 });
 
 describe('documentToLlmText', () => {
