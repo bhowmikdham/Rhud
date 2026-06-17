@@ -306,10 +306,21 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       // win — the second one sees status='processing' and bails.
       const row = await db.engagementFile.findUnique({
         where: { id: fileId },
-        select: { id: true, extractionStatus: true },
+        select: { id: true, extractionStatus: true, inferredEntities: true },
       });
       if (!row) return null;
       if (row.extractionStatus === 'processing') return null;
+
+      // A Re-extract must RESET the inferred state too — not just the points.
+      // Pre-fix, kickoff cleared extractedPoints but left inferredEntities +
+      // inferenceInputHash behind, so a re-parse that changed the points could
+      // still surface the OLD quote whenever re-inference was skipped/cached/
+      // failed (the "Re-extract didn't fully stick" symptom). Keep ONLY the
+      // rep's manual overrides; everything else is recomputed from scratch.
+      const priorEntities = Array.isArray(row.inferredEntities)
+        ? (row.inferredEntities as unknown as InferredEntity[])
+        : [];
+      const manualKept = priorEntities.filter((e) => e.source === 'manual');
 
       await db.engagementFile.update({
         where: { id: fileId },
@@ -319,6 +330,8 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
           extractedAt: null,
           extractionError: null,
           extractedPoints: [],
+          inferredEntities: manualKept as unknown as object,
+          inferenceInputHash: null,
           // Clear the retry handle so a re-kick from the cron OR a
           // manual Re-extract doesn't loop with stale scheduling.
           extractionRetryAt: null,
