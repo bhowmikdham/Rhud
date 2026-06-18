@@ -91,6 +91,41 @@ const CHUNK_OVERLAP_CHARS = 1_500;
  *  chunks. After this many we trust we've sampled enough. */
 const MAX_CHUNKS = 12;
 
+/** Total LLM attempts per extraction chunk when the model returns malformed
+ *  JSON. Gemini intermittently emits structurally-broken JSON (a per-draw
+ *  fault, not per-doc) — without a retry, ONE bad draw aborts the whole
+ *  extraction and a sparse-coverage doc falls back to its thin structured
+ *  parse (the MedTech case). Mirrors the mapper's MAPPER_PARSE_ATTEMPTS. */
+const EXTRACTION_PARSE_ATTEMPTS = 3;
+
+/** Structured-output schema constraining the extraction JSON to {points:[…]}.
+ *  Sent as response_format json_schema; the provider strips it + retries on a
+ *  4xx, so it can only help. Kills markdown-fence / prose parse failures. */
+const EXTRACTION_RESPONSE_SCHEMA = {
+  name: 'extracted_points',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      points: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            key: { type: 'string' },
+            value: { type: 'string' },
+            sourceQuote: { type: 'string' },
+            relatedQuestion: { type: 'string' },
+          },
+          required: ['key', 'value'],
+        },
+      },
+    },
+    required: ['points'],
+  },
+} as const;
+
 /** Max length per spreadsheet cell. Stops a single comment-style cell
  *  from dominating the entire document budget. */
 const MAX_CELL_CHARS = 280;
@@ -1039,13 +1074,33 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       },
     ];
 
-    const result = await this.llm.chat(tenantId, messages, {
-      maxTokens: 2_000,
-      temperature: 0,
-      timeoutMs: 60_000,
-    });
-
-    return this.parsePointsResponse(result.text);
+    // Re-draw on malformed JSON. Gemini intermittently returns structurally-
+    // broken JSON even at temperature 0 (a per-draw fault), which used to abort
+    // the whole extraction on the first bad draw. Constrain with a json_schema
+    // + seed and retry; only after EXTRACTION_PARSE_ATTEMPTS bad draws do we
+    // surface the error (caller's per-chunk catch / structured fallback).
+    let lastErr: Error | null = null;
+    for (let attempt = 1; attempt <= EXTRACTION_PARSE_ATTEMPTS; attempt++) {
+      const result = await this.llm.chat(tenantId, messages, {
+        maxTokens: 2_000,
+        temperature: 0,
+        timeoutMs: 60_000,
+        seed: 1,
+        responseSchema: EXTRACTION_RESPONSE_SCHEMA,
+      });
+      try {
+        return this.parsePointsResponse(result.text);
+      } catch (e) {
+        lastErr = e as Error;
+        if (attempt < EXTRACTION_PARSE_ATTEMPTS) {
+          this.logger.warn(
+            `llm extraction JSON unparseable (${lastErr.message}) — re-drawing ` +
+              `(attempt ${attempt + 1}/${EXTRACTION_PARSE_ATTEMPTS})`,
+          );
+        }
+      }
+    }
+    throw lastErr ?? new Error('llm_extraction_unparseable');
   }
 
   /**
