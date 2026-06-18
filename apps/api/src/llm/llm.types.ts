@@ -62,6 +62,17 @@ export interface ChatResult {
   model?: string;
   /** Raw stop reason string from the provider, normalised to lowercase. */
   finishReason?: string;
+  /**
+   * Whether the response was actually generated under the requested
+   * `responseSchema` (json_schema) constraint. `true` when a schema was sent
+   * and the provider accepted it; `false` when a schema was requested but the
+   * provider REJECTED it (4xx) and the call silently fell back to unconstrained
+   * generation — the case that produces malformed free-form JSON (see Gemini +
+   * `additionalProperties`). `undefined` when no schema was requested or the
+   * provider doesn't track it. Callers use `false` to parse defensively and to
+   * log that structured output is not actually engaged for this provider.
+   */
+  structuredOutputApplied?: boolean;
 }
 
 export interface LlmProvider {

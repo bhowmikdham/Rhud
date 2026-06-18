@@ -16,6 +16,8 @@
  * overall budget — backoff sleeps eat into it.
  */
 
+import { Logger } from '@nestjs/common';
+
 import type {
   ChatMessage,
   ChatOptions,
@@ -52,6 +54,12 @@ export class OpenAiCompatProvider implements LlmProvider {
   private readonly baseUrl: string;
   private readonly apiKey: string | null;
   private readonly model: string;
+  /** True when this client actually talks to Gemini's OpenAI-compat endpoint —
+   *  either provider==='gemini' OR a tenant pointed the generic `openai_compat`
+   *  provider at Gemini's base URL. Drives the json_schema dialect fix; keying
+   *  only on the provider NAME would miss the latter case. */
+  private readonly geminiDialect: boolean;
+  private readonly logger = new Logger(OpenAiCompatProvider.name);
 
   constructor(config: ResolvedConfig) {
     this.name = config.provider;
@@ -64,6 +72,8 @@ export class OpenAiCompatProvider implements LlmProvider {
     }
     // Trim trailing slash so we can append /chat/completions cleanly.
     this.baseUrl = base.replace(/\/$/, '');
+    this.geminiDialect =
+      this.name === 'gemini' || /generativelanguage\.googleapis\.com/i.test(this.baseUrl);
   }
 
   async chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatResult> {
@@ -90,13 +100,32 @@ export class OpenAiCompatProvider implements LlmProvider {
     if (opts.responseSchema != null) {
       body.response_format = {
         type: 'json_schema',
-        json_schema: { name: opts.responseSchema.name, schema: opts.responseSchema.schema },
+        json_schema: {
+          name: opts.responseSchema.name,
+          // Gemini's OpenAI-compat layer REJECTS (4xx) — or silently ignores —
+          // a json_schema carrying `additionalProperties` (confirmed against
+          // Google's docs + tracked issues). When it rejects, the strip-and-
+          // retry path below drops structured output entirely and the call
+          // free-forms verbatim document text → unescaped quotes → malformed
+          // JSON (the MedTech extraction bug). Sanitising the schema to
+          // Gemini's supported subset keeps structured output ENGAGED, which
+          // flips on constrained JSON decoding and guarantees parseable output.
+          schema: sanitizeSchemaForProvider(
+            opts.responseSchema.schema,
+            this.geminiDialect ? 'gemini' : this.name,
+          ),
+        },
       };
     }
     if (opts.seed != null) {
       body.seed = opts.seed;
     }
     let strippedExtras = false;
+    // Did we have to drop `response_format` to get a 2xx? Drives
+    // `structuredOutputApplied` on the result so callers know the response is
+    // unconstrained (parse defensively) — independent of seed/reasoning, which
+    // get stripped in the same pass but don't affect output validity.
+    let responseFormatStripped = false;
 
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.apiKey) {
@@ -185,6 +214,24 @@ export class OpenAiCompatProvider implements LlmProvider {
         const hasExtras =
           'reasoning_effort' in body || 'response_format' in body || 'seed' in body;
         if (res.status >= 400 && res.status < 500 && hasExtras && !strippedExtras) {
+          // Surface WHY — a silent strip is exactly how structured output
+          // quietly stopped working in prod. The body usually names the
+          // offending field ("additionalProperties", "reasoning_effort", …),
+          // which is the single most useful breadcrumb for tuning the schema.
+          if ('response_format' in body) {
+            responseFormatStripped = true;
+            this.logger.warn(
+              `${this.name}: provider rejected request with structured output ` +
+                `(http ${res.status}); stripping response_format/seed/reasoning and ` +
+                `retrying UNCONSTRAINED — output will not be schema-validated. ` +
+                `Upstream: ${text.slice(0, 300)}`,
+            );
+          } else {
+            this.logger.warn(
+              `${this.name}: provider rejected optional params (http ${res.status}); ` +
+                `stripping and retrying. Upstream: ${text.slice(0, 200)}`,
+            );
+          }
           delete body.reasoning_effort;
           delete body.response_format;
           delete body.seed;
@@ -201,6 +248,10 @@ export class OpenAiCompatProvider implements LlmProvider {
       const result: ChatResult = { text };
       if (json.model != null) result.model = json.model;
       if (finish != null) result.finishReason = finish;
+      if (opts.responseSchema != null) {
+        // True only if the schema survived to this successful request.
+        result.structuredOutputApplied = !responseFormatStripped;
+      }
       if (json.usage?.prompt_tokens != null) result.inputTokens = json.usage.prompt_tokens;
       if (json.usage?.completion_tokens != null) result.outputTokens = json.usage.completion_tokens;
       if (json.usage?.total_tokens != null) result.totalTokens = json.usage.total_tokens;
@@ -228,6 +279,41 @@ export class OpenAiCompatProvider implements LlmProvider {
     await new Promise<void>((r) => setTimeout(r, wait));
     return true;
   }
+}
+
+/**
+ * Adapt a json_schema to a provider's supported dialect before it goes on the
+ * wire. Currently Gemini-specific: its OpenAI-compat layer rejects (or ignores)
+ * schemas that carry `additionalProperties` — the field OpenAI's strict mode
+ * REQUIRES but Gemini's `responseJsonSchema` translation chokes on. Dropping it
+ * recursively lets Gemini accept the schema and engage constrained JSON
+ * decoding (which guarantees syntactically valid output) instead of silently
+ * falling back to free-form text. Other providers (OpenAI, Ollama, generic
+ * openai_compat) get the schema untouched.
+ *
+ * Pure + deep-cloned — never mutates the caller's schema object (it's a module
+ * constant shared across requests).
+ */
+export function sanitizeSchemaForProvider(
+  schema: Record<string, unknown>,
+  provider: LlmProviderName,
+): Record<string, unknown> {
+  if (provider !== 'gemini') return schema;
+  return stripKeysDeep(schema, ['additionalProperties']) as Record<string, unknown>;
+}
+
+/** Deep-clone `value`, omitting any object keys in `keys` at every level. */
+function stripKeysDeep(value: unknown, keys: string[]): unknown {
+  if (Array.isArray(value)) return value.map((v) => stripKeysDeep(v, keys));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (keys.includes(k)) continue;
+      out[k] = stripKeysDeep(v, keys);
+    }
+    return out;
+  }
+  return value;
 }
 
 function parseRetryAfter(value: string | null): number | null {

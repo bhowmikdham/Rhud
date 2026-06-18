@@ -40,6 +40,7 @@ import type {
 } from '@rhud/shared';
 import { LlmService } from '../llm/llm.service.js';
 import type { ChatMessage, ChatOptions } from '../llm/llm.types.js';
+import { parseLlmJson, LlmJsonParseError } from '../llm/json-extract.js';
 import { enrichPoints } from './point-enrichment.js';
 import { resolveCanonicalScope } from './scope-graph.js';
 
@@ -160,6 +161,16 @@ interface LlmInferResult {
    *  parse that legitimately yielded zero entities. Drives the retry in
    *  `llmInfer`: a parse failure is re-drawable; a valid-empty result is not. */
   parseError?: string;
+  /** True when jsonrepair (not strict/substring parsing) reconstructed the JSON
+   *  — logged so prod surfaces malformed-draw rate. */
+  repaired?: boolean;
+  /** True when reconstruction used the whole-text fallback (no complete `{…}`
+   *  slice survived). Combined with a `finish_reason=length` truncation this
+   *  flags that the TRAILING entity was rebuilt from a cut-off token and may
+   *  carry a fabricated scopeValue — the retry loop drops it so a truncated draw
+   *  can't inject a wrong count into the quote. (Ordinary slice-repair already
+   *  excludes the incomplete tail, so it does not set this.) */
+  repairedWhole?: boolean;
 }
 
 @Injectable()
@@ -450,6 +461,23 @@ export class RateCardFieldMapperService {
       }
 
       const parsed = this.parseLlmEntities(result.text, rateCard);
+      // A truncated response (finish_reason=length) was completed by jsonrepair
+      // — the TRAILING entity is reconstructed from a cut-off object and can
+      // carry a fabricated scopeValue (e.g. "scopeValue":12 where the real value
+      // was 125, which would then be PRICED). Drop it: the leading entities were
+      // emitted in full before the cut and are trustworthy. Re-drawing wouldn't
+      // help (same prompt + same 32k cap → truncates identically), so salvaging
+      // the complete head is the right call — and it can only UNDER-count, never
+      // invent a wrong number. The single-app/small-doc case never truncates.
+      if (truncated && parsed.repairedWhole && parsed.entities.length > 0) {
+        const dropped = parsed.entities.pop()!;
+        this.logger.warn(
+          `field-mapper response truncated (finish_reason=length) with no complete ` +
+            `object slice — dropped the trailing reconstructed entity ` +
+            `(slug=${dropped.serviceLineSlug}, scopeValue=${dropped.scopeValue}) to ` +
+            `avoid pricing a fabricated count`,
+        );
+      }
       // Clean parse → done. `parseError` distinguishes a broken response from a
       // valid-but-empty one (doc genuinely maps nothing); the latter must NOT
       // be re-drawn. A partial-but-usable parse (≥1 entity) is also kept.
@@ -556,29 +584,32 @@ export class RateCardFieldMapperService {
       this.logger.warn('LLM returned empty response — treating as a parse failure (re-drawable)');
       return { ...empty, parseError: 'empty response' };
     }
-    const cleaned = raw
-      .trim()
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '');
-
+    // Fence-strip → strict parse → substring → jsonrepair. A thinking model
+    // intermittently emits structurally-broken JSON (unescaped chars in
+    // reasoning/sourceQuote, a truncated tail); repair recovers it rather than
+    // dropping the whole call to the keyword heuristic. `parseError` (not a
+    // throw) keeps the caller's re-draw / heuristic-fallback contract intact.
     let parsed: unknown;
+    let repaired = false;
+    let repairedWhole = false;
     try {
-      parsed = JSON.parse(cleaned);
-    } catch (firstErr) {
-      const start = cleaned.indexOf('{');
-      const end = cleaned.lastIndexOf('}');
-      if (start === -1 || end === -1) {
-        const m = `not parseable as JSON; no '{' or '}' found: ${(firstErr as Error).message}`;
-        this.logger.warn(`LLM response ${m} (raw[0..200]="${cleaned.slice(0, 200)}")`);
-        return { ...empty, parseError: m };
+      const res = parseLlmJson(raw);
+      repaired = res.via === 'repair' || res.via === 'repair-whole';
+      repairedWhole = res.via === 'repair-whole';
+      if (repaired) {
+        this.logger.warn(
+          `field-mapper LLM JSON was malformed — recovered via jsonrepair ` +
+            `(raw[0..200]="${raw.trim().slice(0, 200)}")`,
+        );
       }
-      try {
-        parsed = JSON.parse(cleaned.slice(start, end + 1));
-      } catch (secondErr) {
-        const m = `unparseable even after substring extraction: ${(secondErr as Error).message}`;
-        this.logger.warn(`LLM response ${m} (raw[0..200]="${cleaned.slice(0, 200)}")`);
-        return { ...empty, parseError: m };
-      }
+      parsed = res.value;
+    } catch (e) {
+      const m =
+        e instanceof LlmJsonParseError
+          ? `unparseable JSON even after repair: ${e.message}`
+          : `unexpected parse error: ${(e as Error).message}`;
+      this.logger.warn(`LLM response ${m} (raw[0..200]="${raw.trim().slice(0, 200)}")`);
+      return { ...empty, parseError: m };
     }
 
     const arr = (parsed as { entities?: unknown }).entities;
@@ -684,7 +715,12 @@ export class RateCardFieldMapperService {
       }
     }
 
-    return { entities: out, considered };
+    return {
+      entities: out,
+      considered,
+      ...(repaired ? { repaired: true } : {}),
+      ...(repairedWhole ? { repairedWhole: true } : {}),
+    };
   }
 
   // ── Heuristic safety net ──────────────────────────────────────────

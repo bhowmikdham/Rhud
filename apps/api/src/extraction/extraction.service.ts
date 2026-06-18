@@ -53,6 +53,7 @@ import {
 import { ThreadService } from '../thread/thread.service.js';
 import { buildPromotionPlan } from './inferred-promote.js';
 import type { ChatMessage } from '../llm/llm.types.js';
+import { parseLlmJson, LlmJsonParseError } from '../llm/json-extract.js';
 import {
   parseSpreadsheetStructured,
   parseSpreadsheetToDocument,
@@ -97,6 +98,15 @@ const MAX_CHUNKS = 12;
  *  extraction and a sparse-coverage doc falls back to its thin structured
  *  parse (the MedTech case). Mirrors the mapper's MAPPER_PARSE_ATTEMPTS. */
 const EXTRACTION_PARSE_ATTEMPTS = 3;
+
+/** Output-token budget per extraction chunk. Gemini 2.5/3.x "flash" are
+ *  THINKING models: hidden reasoning tokens count against max_tokens, so a
+ *  tight cap is consumed by reasoning and the JSON answer truncates mid-array
+ *  (a second, distinct way extraction loses content). Paired with
+ *  `reasoningEffort: 'low'` (caps thinking) this leaves ample room for the
+ *  ≤60-point answer. Mirrors the mapper's hard-won MAPPER_MAX_OUTPUT_TOKENS
+ *  lesson at a smaller scale (one chunk, not a whole multi-app questionnaire). */
+const EXTRACTION_MAX_OUTPUT_TOKENS = 8_192;
 
 /** Structured-output schema constraining the extraction JSON to {points:[…]}.
  *  Sent as response_format json_schema; the provider strips it + retries on a
@@ -1081,13 +1091,31 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
     // surface the error (caller's per-chunk catch / structured fallback).
     let lastErr: Error | null = null;
     for (let attempt = 1; attempt <= EXTRACTION_PARSE_ATTEMPTS; attempt++) {
+      // A re-draw must actually DIFFER to be worth a call. Gemini at
+      // temperature 0 + fixed seed is deterministic — it repeats the identical
+      // (broken) output, so the first re-draw drops the seed and warms the
+      // temperature. jsonrepair in parsePointsResponse handles most malformed
+      // draws on attempt 1, so this is the rare belt-and-suspenders case.
+      const firstTry = attempt === 1;
       const result = await this.llm.chat(tenantId, messages, {
-        maxTokens: 2_000,
-        temperature: 0,
+        maxTokens: EXTRACTION_MAX_OUTPUT_TOKENS,
+        temperature: firstTry ? 0 : 0.3,
         timeoutMs: 60_000,
-        seed: 1,
+        // Cap Gemini's hidden thinking so the token budget goes to the answer.
+        reasoningEffort: 'low',
+        ...(firstTry ? { seed: 1 } : {}),
         responseSchema: EXTRACTION_RESPONSE_SCHEMA,
       });
+      // If the provider stripped our schema (Gemini rejecting it), the response
+      // is UNCONSTRAINED free-form text — the exact condition that yields
+      // malformed JSON. Surface it once so prod shows structured output isn't
+      // engaged for this provider/model; jsonrepair still recovers the content.
+      if (result.structuredOutputApplied === false) {
+        this.logger.warn(
+          `extraction: structured-output schema was NOT applied (provider stripped ` +
+            `it on a 4xx) — response is unconstrained, relying on JSON repair`,
+        );
+      }
       try {
         return this.parsePointsResponse(result.text);
       } catch (e) {
@@ -1194,28 +1222,38 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
 
   private parsePointsResponse(raw: string): ExtractedPoint[] {
     if (!raw) return [];
-    // Some providers wrap JSON in markdown fences despite instructions.
-    // Strip the most common shapes before parsing.
-    const cleaned = raw
-      .trim()
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '');
-
+    // Fence-strip → strict parse → substring → jsonrepair. Gemini emits
+    // structurally-broken JSON (unescaped quotes / newlines in verbatim cell
+    // text) DETERMINISTICALLY when its json_schema is rejected — a plain retry
+    // can't fix it, but repair can. Throwing on total failure preserves the
+    // caller's per-chunk catch + structured fallback (never does worse).
     let parsed: unknown;
+    let viaRepair = false;
     try {
-      parsed = JSON.parse(cleaned);
-    } catch {
-      // Last-ditch: find the first { ... last } in the response.
-      const start = cleaned.indexOf('{');
-      const end = cleaned.lastIndexOf('}');
-      if (start === -1 || end === -1 || end <= start) {
-        throw new Error('llm_response_not_json');
-      }
-      parsed = JSON.parse(cleaned.slice(start, end + 1));
+      const res = parseLlmJson(raw);
+      parsed = res.value;
+      viaRepair = res.via === 'repair' || res.via === 'repair-whole';
+    } catch (e) {
+      if (e instanceof LlmJsonParseError) throw new Error('llm_response_not_json');
+      throw e;
     }
 
-    const arr = (parsed as { points?: unknown }).points;
-    if (!Array.isArray(arr)) return [];
+    const arr =
+      parsed && typeof parsed === 'object' ? (parsed as { points?: unknown }).points : undefined;
+    // Not a `{ points: [...] }` object — e.g. a refusal / prose that jsonrepair
+    // stringified, or the wrong shape. Treat it as a parse failure (throw) so
+    // the caller's re-draw loop gets another draw, rather than silently yielding
+    // zero points. A GENUINE empty result is `{ "points": [] }` → an empty array
+    // here → returned as [] (no re-draw, the doc chunk truly maps nothing).
+    if (!Array.isArray(arr)) throw new Error('llm_response_not_json');
+    // Log recovery only once we know the repaired bytes were actually usable —
+    // avoids a misleading "recovered" line for prose that repaired to garbage.
+    if (viaRepair) {
+      this.logger.warn(
+        `extraction JSON was malformed — recovered via jsonrepair ` +
+          `(raw[0..120]="${raw.trim().slice(0, 120)}")`,
+      );
+    }
 
     const out: ExtractedPoint[] = [];
     for (const p of arr) {

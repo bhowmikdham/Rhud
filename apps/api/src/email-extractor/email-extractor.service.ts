@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TenantDb } from '../db/with-tenant.js';
 import { UnscopedDb } from '../db/unscoped-db.js';
 import { LlmService } from '../llm/llm.service.js';
+import { parseLlmJson } from '../llm/json-extract.js';
 import {
   disambiguateForwardedSender,
   extractStructuredFields,
@@ -227,20 +228,11 @@ export class EmailExtractorService implements OnModuleInit, OnModuleDestroy {
     return { result, model: res.model ?? null };
   }
 
-  /** Strip optional markdown fences and parse → validate the JSON. Throws
-   *  on anything unparseable so the caller falls back to the heuristic. */
+  /** Parse → validate the LLM JSON via the shared tolerant parser (fences,
+   *  prose, and jsonrepair for malformed draws). Throws on anything that
+   *  doesn't validate so the caller falls back to the heuristic. */
   private parseLlmJson(text: string): z.infer<typeof llmSchema> {
-    let s = text.trim();
-    // Models sometimes wrap output in ```json … ``` despite instructions.
-    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fence) s = fence[1]!.trim();
-    // Or prepend prose — grab the first {...} balanced-ish block.
-    if (!s.startsWith('{')) {
-      const start = s.indexOf('{');
-      const end = s.lastIndexOf('}');
-      if (start >= 0 && end > start) s = s.slice(start, end + 1);
-    }
-    return llmSchema.parse(JSON.parse(s));
+    return llmSchema.parse(parseLlmJson(text).value);
   }
 
   private coerce(p: z.infer<typeof llmSchema>, dto: PreviewFromEmailDto): EmailExtractionResult {

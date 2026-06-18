@@ -181,26 +181,92 @@ describe('mapper LLM path — canned responses', () => {
     expect(out.every((e) => e.source === 'heuristic')).toBe(true);
   });
 
-  // ── Malformed-JSON re-draw (gg / Link-18 under-quote fix) ──────────────
+  // ── Malformed-JSON repair + re-draw (gg / Link-18 under-quote fix) ─────
   // A thinking model intermittently emits broken JSON. Before the re-draw a
   // single bad draw dropped the whole call to the heuristic (and the cache
-  // froze that degraded quote). These prove the loop recovers an intermittent
-  // failure and only re-draws genuine malformations.
+  // froze that degraded quote). jsonrepair now recovers SYNTACTIC breaks on the
+  // first draw (no wasted call); the re-draw loop remains the safety net for
+  // draws that repair can't turn into usable entities.
 
-  it('re-draws malformed JSON and RECOVERS the LLM result when a later draw parses', async () => {
+  it('RECOVERS a syntactically-broken draw via jsonrepair WITHOUT a re-draw', async () => {
+    // Valid content (real slug, real scope) but a missing comma between fields
+    // — exactly the per-draw structural fault jsonrepair fixes. The old code
+    // would have dropped this to the heuristic and burned a second LLM call.
+    const broken =
+      '{"entities":[{"serviceLineSlug":"vapt_web_app_dynamic_pages" "scopeValue":29,' +
+      '"customerType":"external","confidence":0.9,"reasoning":"","sourceQuote":""}]}';
+    const { llm, calls } = makeSeqLlm([broken]);
+    const mapper = new RateCardFieldMapperService(llm);
+    const out = await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
+    expect(calls.count).toBe(1); // repaired in place — no re-draw needed
+    expect(out).toHaveLength(1);
+    expect(out[0]!.serviceLineSlug).toBe('vapt_web_app_dynamic_pages');
+    expect(out[0]!.source).toBe('llm'); // recovered the LLM mapping, NOT the heuristic
+  });
+
+  it('re-draws when the first draw is unrepairable, then RECOVERS the clean draw', async () => {
     const valid = JSON.stringify({
       entities: [
         { serviceLineSlug: 'vapt_web_app_dynamic_pages', scopeValue: 29, customerType: 'external', confidence: 0.9, reasoning: '', sourceQuote: '' },
       ],
     });
-    // First draw is structurally broken; second is clean.
-    const { llm, calls } = makeSeqLlm(['{"entities": [ {"serviceLineSlug" "oops-no-colon"', valid]);
+    // First draw carries no recoverable object structure (repair yields a bare
+    // string → no `entities` field → re-drawable); second is clean.
+    const { llm, calls } = makeSeqLlm(['the model declined to answer', valid]);
     const mapper = new RateCardFieldMapperService(llm);
     const out = await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
     expect(calls.count).toBe(2); // re-drew once, then succeeded
     expect(out).toHaveLength(1);
     expect(out[0]!.serviceLineSlug).toBe('vapt_web_app_dynamic_pages');
-    expect(out[0]!.source).toBe('llm'); // recovered the LLM mapping, NOT the heuristic
+    expect(out[0]!.source).toBe('llm');
+  });
+
+  it('drops a truncated trailing entity (fabricated scopeValue) instead of pricing it', async () => {
+    // finish_reason=length cut the 2nd entity mid-scopeValue; jsonrepair completes
+    // it to a valid-but-WRONG number (6, when the real value was cut off). The
+    // leading entity (scope 29) was emitted in full and is trustworthy. The fix
+    // must keep the first and DROP the reconstructed second so we never price a
+    // fabricated count.
+    const truncated =
+      '{"entities":[' +
+      '{"serviceLineSlug":"vapt_web_app_dynamic_pages","scopeValue":29,"customerType":"external","confidence":0.9,"reasoning":"","sourceQuote":""},' +
+      '{"serviceLineSlug":"vapt_web_app_input_fields","customerType":"external","confidence":0.9,"scopeValue":6';
+    let calls = 0;
+    const llm = {
+      getProviderName: async () => 'mock' as const,
+      chat: async () => {
+        calls++;
+        return { text: truncated, finishReason: 'length' };
+      },
+    } as unknown as ConstructorParameters<typeof RateCardFieldMapperService>[0];
+    const mapper = new RateCardFieldMapperService(llm);
+    const out = await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.serviceLineSlug).toBe('vapt_web_app_dynamic_pages');
+    expect(out[0]!.scopeValue).toBe(29);
+    // No 6-page input_fields line should survive.
+    expect(out.some((e) => e.serviceLineSlug === 'vapt_web_app_input_fields')).toBe(false);
+  });
+
+  it('does NOT price a fabricated count when a SINGLE entity is truncated (repair-whole)', async () => {
+    // No complete object brace survives → repair-whole reconstructs the lone
+    // entity with a cut-off scopeValue. The fix must refuse to price it (drop →
+    // re-draw → heuristic), never emit the fabricated number.
+    const truncated =
+      '{"entities":[{"serviceLineSlug":"vapt_web_app_dynamic_pages","customerType":"external","confidence":0.9,"scopeValue":2';
+    let calls = 0;
+    const llm = {
+      getProviderName: async () => 'mock' as const,
+      chat: async () => {
+        calls++;
+        return { text: truncated, finishReason: 'length' };
+      },
+    } as unknown as ConstructorParameters<typeof RateCardFieldMapperService>[0];
+    const mapper = new RateCardFieldMapperService(llm);
+    const out = await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
+    // The lone fabricated entity is dropped; heuristic finds nothing for k/v.
+    expect(out.every((e) => e.source !== 'llm')).toBe(true);
+    expect(out.some((e) => e.scopeValue === 2)).toBe(false);
   });
 
   it('exhausts re-draws on PERSISTENT malformed JSON, then falls back to heuristic', async () => {
