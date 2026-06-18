@@ -550,6 +550,10 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
     // form prose docs, unconventional layouts), in which case we fall
     // through to the LLM path below.
     let parsedDocument: RhudDocument | null = null;
+    // Clean structured points kept as a FALLBACK when coverage is incomplete
+    // and we escalate to the LLM extractor (so a failed/absent LLM never makes
+    // us do worse than the structured parse alone).
+    let structuredFallback: ExtractedPoint[] | null = null;
 
     if (this.isSpreadsheet(file.contentType, file.filename)) {
       try {
@@ -567,18 +571,33 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
         });
         if (doc) parsedDocument = doc; // capture for persistence even when Q/A fails
         const raw = doc ? documentToRawPoints(doc) : null;
-        if (raw && raw.length > 0) {
+        if (raw && raw.length > 0 && doc) {
           const points = await this.matchPointsToTemplate(tenantId, file.engagementId, raw);
+          const cov = structuredCoverageComplete(doc, raw);
+          if (cov.complete) {
+            this.logger.log(
+              `extraction structured file=${fileId} points=${points.length} ` +
+                `(skipped LLM; coverage ${cov.covered}/${cov.content} content sheets)`,
+            );
+            // Persist with the joined text content so the UI's "extracted
+            // text" view still has something to show.
+            const text = raw
+              .map((r) => `[${r.sheetName}] ${r.label}: ${r.value}`)
+              .join('\n');
+            await this.persistResult(tenantId, fileId, text, points, parsedDocument);
+            return;
+          }
+          // INCOMPLETE coverage — content-bearing sheets the Q/A parser could
+          // not read (scope in column headers, sparse/blank answers). Keep the
+          // clean structured points as a fallback but ESCALATE to the LLM
+          // extractor, which reads the whole grid (all sheets, headers + free
+          // text). Without this, a sparse multi-sheet questionnaire extracts
+          // almost nothing (the MedTech case: 3 of 7 sheets, no scope).
           this.logger.log(
-            `extraction structured file=${fileId} points=${points.length} (skipped LLM)`,
+            `extraction structured file=${fileId} points=${points.length} but coverage ` +
+              `INCOMPLETE (${cov.covered}/${cov.content} content sheets) — escalating to LLM extractor`,
           );
-          // Persist with the joined text content so the UI's "extracted
-          // text" view still has something to show.
-          const text = raw
-            .map((r) => `[${r.sheetName}] ${r.label}: ${r.value}`)
-            .join('\n');
-          await this.persistResult(tenantId, fileId, text, points, parsedDocument);
-          return;
+          structuredFallback = points;
         }
       } catch (e) {
         // Don't fail outright — fall through to the LLM path which
@@ -611,22 +630,41 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
     try {
       const provider = await this.llm.getProviderName(tenantId);
       if (!provider) {
-        // Tenant hasn't configured AI yet — store the text but leave
-        // points empty. They can re-run after Settings → AI is set up.
-        await this.persistResult(tenantId, fileId, text, [], parsedDocument);
+        // Tenant hasn't configured AI yet — store the text and whatever the
+        // structured parser got (don't discard it). They can re-run after
+        // Settings → AI is set up.
+        await this.persistResult(tenantId, fileId, text, structuredFallback ?? [], parsedDocument);
         return;
       }
       if (provider === 'manual') {
-        // Per-file paste-and-return doesn't make sense for the rep at
-        // scale. Skip and surface in the UI as "Manual AI mode — use
-        // an automated provider for document extraction."
+        // Per-file paste-and-return doesn't make sense for the rep at scale.
+        // If the structured parser got points, keep them; otherwise surface
+        // "Manual AI mode — use an automated provider for document extraction."
+        if (structuredFallback && structuredFallback.length > 0) {
+          await this.persistResult(tenantId, fileId, text, structuredFallback, parsedDocument);
+          return;
+        }
         await this.markSkipped(tenantId, fileId, 'manual_provider_unsupported');
         return;
       }
-      points = await this.runLlmExtraction(tenantId, file.engagementId, text);
+      const llmPoints = await this.runLlmExtraction(tenantId, file.engagementId, text);
+      // When we escalated, MERGE the LLM's whole-grid read with the clean
+      // structured points (de-duped) so neither source's signal is lost.
+      points = structuredFallback ? mergeExtractedPoints(structuredFallback, llmPoints) : llmPoints;
     } catch (e) {
       const raw = (e as Error).message ?? 'unknown';
       this.logger.error(`llm extraction failed file=${fileId}: ${raw}`);
+
+      // If we ESCALATED from a usable structured parse, the LLM was a bonus —
+      // never let its failure make us worse than structured. Persist the
+      // structured points (the rep can re-extract to retry the richer LLM read).
+      if (structuredFallback && structuredFallback.length > 0) {
+        this.logger.warn(
+          `llm escalation failed file=${fileId} — persisting ${structuredFallback.length} structured points as fallback`,
+        );
+        await this.persistResult(tenantId, fileId, text, structuredFallback, parsedDocument);
+        return;
+      }
 
       // Rate-limited → don't surface as failed; queue for a delayed
       // retry. The cron sweeps every 30s and re-kicks once retry_at
@@ -2172,6 +2210,48 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
  * Layer 3 (LLM-first inference). If the categoriser misclassifies
  * something, the rep sees the wrong chip but pricing is unaffected.
  */
+/**
+ * Does the structured Q/A parse COVER the document, or did it miss
+ * content-bearing sheets? The Q/A parser only captures filled label→value
+ * pairs, so a sheet whose scope lives in COLUMN HEADERS (e.g. a Network sheet
+ * listing "File Server | Firewalls | Switches | Routers" with blank quantity
+ * cells) or whose answers are sparse yields zero points and is silently
+ * dropped. When that happens we must escalate to the LLM extractor, which reads
+ * the whole grid. "Complete" = every sheet with real content contributed at
+ * least one structured point.
+ */
+export function structuredCoverageComplete(
+  doc: RhudDocument,
+  raw: RawPoint[],
+): { complete: boolean; content: number; covered: number } {
+  const MIN_CONTENT_ROWS = 5; // ignore tiny title/legend sheets
+  const coveredSheets = new Set(raw.map((r) => r.sheetName));
+  let content = 0;
+  let covered = 0;
+  for (const s of doc.sheets) {
+    const nonEmpty = s.rows.filter((row) => row.cells.some((c) => (c.value ?? '').trim() !== '')).length;
+    if (nonEmpty < MIN_CONTENT_ROWS) continue;
+    content += 1;
+    if (coveredSheets.has(s.name)) covered += 1;
+  }
+  return { complete: content === 0 || covered >= content, content, covered };
+}
+
+/** Merge two ExtractedPoint sets, de-duping by sheet+key+value so an escalated
+ *  LLM pass doesn't double the clean structured points it re-reads. Structured
+ *  points come first (kept on a tie). */
+export function mergeExtractedPoints(structured: ExtractedPoint[], llm: ExtractedPoint[]): ExtractedPoint[] {
+  const seen = new Set<string>();
+  const out: ExtractedPoint[] = [];
+  for (const p of [...structured, ...llm]) {
+    const k = `${(p.sheet ?? '').toLowerCase()}::${p.key.toLowerCase()}::${p.value.trim().toLowerCase()}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(p);
+  }
+  return out;
+}
+
 function categorisePoint(p: ExtractedPoint): PointCategory {
   const haystack = `${p.key} ${p.value}`.toLowerCase();
 
