@@ -86,30 +86,28 @@ export class OpenAiCompatProvider implements LlmProvider {
 
     // Gemini-only thinking control. gemini-2.5/3.x flash run a large DYNAMIC
     // thinking budget that dominates token usage even on mechanical JSON
-    // mapping. `reasoning_effort` caps it. HARD-GATED to provider==='gemini'
-    // — OpenAI/openai_compat targets 400 on unknown params. If Gemini itself
-    // rejects it we strip it and retry (see `strippedReasoning` below), so a
-    // bad param can never make a call fail; maxTokens stays the safety net.
-    if (this.name === 'gemini' && opts.reasoningEffort != null) {
+    // mapping. `reasoning_effort` caps it. Gated to Gemini (by name OR base URL)
+    // — a real OpenAI/openai_compat target 400s on unknown params. If the target
+    // still rejects it, the surgical 4xx strip below removes just that field, so
+    // a bad param can never make a call fail; maxTokens stays the safety net.
+    if (this.geminiDialect && opts.reasoningEffort != null) {
       body.reasoning_effort = opts.reasoningEffort;
     }
-    // Structured output (constrained JSON) + determinism seed. Both are
-    // optional "extras": if the provider rejects them with a 4xx we strip ALL
-    // extras and retry once (see `strippedExtras`), so they can only help,
-    // never break a call.
+    // Structured output (constrained JSON). If the provider rejects it with a
+    // 4xx the strip-and-retry below removes it, so it can only help — but the
+    // strip is now SURGICAL (see below), so an unrelated bad field (e.g. seed)
+    // no longer drags the schema down with it.
     if (opts.responseSchema != null) {
       body.response_format = {
         type: 'json_schema',
         json_schema: {
           name: opts.responseSchema.name,
-          // Gemini's OpenAI-compat layer REJECTS (4xx) — or silently ignores —
-          // a json_schema carrying `additionalProperties` (confirmed against
-          // Google's docs + tracked issues). When it rejects, the strip-and-
-          // retry path below drops structured output entirely and the call
-          // free-forms verbatim document text → unescaped quotes → malformed
-          // JSON (the MedTech extraction bug). Sanitising the schema to
-          // Gemini's supported subset keeps structured output ENGAGED, which
-          // flips on constrained JSON decoding and guarantees parseable output.
+          // Defensive: Gemini's OpenAI-compat layer can also reject a json_schema
+          // carrying `additionalProperties` (it's outside its supported subset),
+          // so we strip it for Gemini. (The PRIMARY cause of structured output
+          // not engaging on Gemini was the `seed` field 400 above dragging the
+          // schema down in a bundled strip — fixed by not sending seed + the
+          // surgical strip below. This sanitization guards the remaining case.)
           schema: sanitizeSchemaForProvider(
             opts.responseSchema.schema,
             this.geminiDialect ? 'gemini' : this.name,
@@ -117,14 +115,25 @@ export class OpenAiCompatProvider implements LlmProvider {
         },
       };
     }
-    if (opts.seed != null) {
+    // Determinism seed — but NOT for Gemini. Gemini's OpenAI-compat endpoint
+    // 400s on `seed` ("Unknown name seed: Cannot find field") and, because a
+    // 4xx used to strip ALL extras together, that 400 silently took down
+    // `response_format` too — which is the ACTUAL reason structured output never
+    // engaged on Gemini (so it free-formed verbatim cell text → malformed JSON,
+    // the MedTech bug). `seed` is also a no-op there (Gemini ignores it), so we
+    // simply never send it. Other providers still get it for best-effort
+    // determinism.
+    if (opts.seed != null && !this.geminiDialect) {
       body.seed = opts.seed;
     }
-    let strippedExtras = false;
-    // Did we have to drop `response_format` to get a 2xx? Drives
-    // `structuredOutputApplied` on the result so callers know the response is
-    // unconstrained (parse defensively) — independent of seed/reasoning, which
-    // get stripped in the same pass but don't affect output validity.
+    // Optional fields we've removed (and won't re-add) after the provider
+    // rejected them with a 4xx. We strip SURGICALLY — the single named field —
+    // so one unsupported param can't disable structured output for the others.
+    const strippedFields = new Set<string>();
+    // Last-resort bundled strip happened? (generic 4xx with no field named.)
+    let bundledStripped = false;
+    // Did we have to drop `response_format` specifically? Drives
+    // `structuredOutputApplied` so callers know the response is unconstrained.
     let responseFormatStripped = false;
 
     const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -208,35 +217,44 @@ export class OpenAiCompatProvider implements LlmProvider {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         // Resilience: a 4xx caused by an OPTIONAL extra (reasoning_effort,
-        // response_format/json_schema, seed) must never break the call — strip
-        // them all and retry once. The call then behaves exactly as before
-        // these options existed (unstructured, unconstrained).
-        const hasExtras =
-          'reasoning_effort' in body || 'response_format' in body || 'seed' in body;
-        if (res.status >= 400 && res.status < 500 && hasExtras && !strippedExtras) {
-          // Surface WHY — a silent strip is exactly how structured output
-          // quietly stopped working in prod. The body usually names the
-          // offending field ("additionalProperties", "reasoning_effort", …),
-          // which is the single most useful breadcrumb for tuning the schema.
-          if ('response_format' in body) {
-            responseFormatStripped = true;
+        // response_format/json_schema, seed) must never break the call. We
+        // prefer a SURGICAL strip — remove only the field the provider names as
+        // unknown — so an unsupported `seed` doesn't drag down `response_format`
+        // (the bug that disabled structured output on Gemini). Only when no
+        // field is identifiable do we fall back to stripping the whole bundle.
+        if (res.status >= 400 && res.status < 500) {
+          const OPTIONAL = ['seed', 'reasoning_effort', 'response_format'];
+          // Gemini: `Invalid JSON payload received. Unknown name "seed": …`
+          const named = text.match(/[Uu]nknown name \\?"?([a-zA-Z_]+)\\?"?/)?.[1];
+          if (named && OPTIONAL.includes(named) && named in body && !strippedFields.has(named)) {
+            strippedFields.add(named);
+            if (named === 'response_format') responseFormatStripped = true;
             this.logger.warn(
-              `${this.name}: provider rejected request with structured output ` +
-                `(http ${res.status}); stripping response_format/seed/reasoning and ` +
-                `retrying UNCONSTRAINED — output will not be schema-validated. ` +
-                `Upstream: ${text.slice(0, 300)}`,
+              `${this.name}: provider rejected '${named}' (http ${res.status}) — ` +
+                `removing just that field and retrying${named === 'response_format'
+                  ? ' UNCONSTRAINED (output will not be schema-validated)'
+                  : ' (structured output preserved)'}. Upstream: ${text.slice(0, 200)}`,
             );
-          } else {
-            this.logger.warn(
-              `${this.name}: provider rejected optional params (http ${res.status}); ` +
-                `stripping and retrying. Upstream: ${text.slice(0, 200)}`,
-            );
+            delete body[named];
+            continue;
           }
-          delete body.reasoning_effort;
-          delete body.response_format;
-          delete body.seed;
-          strippedExtras = true;
-          continue;
+          // Fallback: a generic 4xx with no named field, or a repeat failure —
+          // strip the whole bundle once. Last resort before surfacing the error.
+          const hasExtras =
+            'reasoning_effort' in body || 'response_format' in body || 'seed' in body;
+          if (hasExtras && !bundledStripped) {
+            bundledStripped = true;
+            if ('response_format' in body) responseFormatStripped = true;
+            this.logger.warn(
+              `${this.name}: provider rejected request (http ${res.status}); stripping all ` +
+                `optional params (response_format/seed/reasoning) and retrying — output may ` +
+                `not be schema-validated. Upstream: ${text.slice(0, 300)}`,
+            );
+            delete body.reasoning_effort;
+            delete body.response_format;
+            delete body.seed;
+            continue;
+          }
         }
         throw new Error(`llm http ${res.status}: ${text.slice(0, 300)}`);
       }

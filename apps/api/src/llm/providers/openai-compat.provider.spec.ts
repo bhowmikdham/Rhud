@@ -98,6 +98,36 @@ describe('OpenAiCompatProvider structured-output handling', () => {
     expect(res.structuredOutputApplied).toBe(true);
   });
 
+  it('never sends seed to Gemini (it 400s on it) but keeps the schema', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse());
+    const p = new OpenAiCompatProvider(config('gemini'));
+    const res = await p.chat([{ role: 'user', content: 'hi' }], { responseSchema: SCHEMA, seed: 1 });
+    const sent = bodyOf(0);
+    expect('seed' in sent).toBe(false); // gated — would otherwise 400 and strip the schema
+    expect('response_format' in sent).toBe(true);
+    expect(res.structuredOutputApplied).toBe(true);
+  });
+
+  it('surgically strips ONLY the named unsupported field, preserving structured output', async () => {
+    // openai_compat backend that rejects `seed` by name (like Gemini's compat).
+    fetchMock.mockResolvedValueOnce(
+      errResponse(400, '{"error":{"message":"Invalid JSON payload received. Unknown name \\"seed\\": Cannot find field."}}'),
+    );
+    fetchMock.mockResolvedValueOnce(okResponse('{"points":[]}'));
+    const cfg: ResolvedConfig = {
+      tenantId: 't1', provider: 'openai_compat', model: 'm',
+      baseUrl: 'https://example.com/v1', apiKey: 'k', enabled: true,
+    };
+    const p = new OpenAiCompatProvider(cfg);
+    const res = await p.chat([{ role: 'user', content: 'hi' }], { responseSchema: SCHEMA, seed: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect('seed' in bodyOf(0)).toBe(true); // sent on the first try (non-Gemini)
+    const retry = bodyOf(1);
+    expect('seed' in retry).toBe(false); // the offending field is gone…
+    expect('response_format' in retry).toBe(true); // …but the schema SURVIVES
+    expect(res.structuredOutputApplied).toBe(true); // structured output still applied
+  });
+
   it('marks structuredOutputApplied=false and drops response_format when the provider 4xxs the schema', async () => {
     // First call (with schema) → 400; provider strips + retries → 200.
     fetchMock.mockResolvedValueOnce(errResponse(400, 'additionalProperties is not supported'));
