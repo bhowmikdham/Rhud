@@ -29,7 +29,6 @@ import { TenantDb } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { PredictionService } from './prediction.service.js';
 import { QuoteService } from './quote.service.js';
-import { QuoteLineItemsService } from './quote-line-items.service.js';
 import { OdooService } from '../integrations/odoo/odoo.service.js';
 
 // UUID-shape match. `@IsUUID()` requires version 1-5, but our seed
@@ -152,7 +151,6 @@ export class PredictionController {
     private readonly thread: ThreadService,
     private readonly quotes: QuoteService,
     private readonly odoo: OdooService,
-    private readonly lineItems: QuoteLineItemsService,
   ) {}
 
   /**
@@ -243,39 +241,22 @@ export class PredictionController {
       throw new BadRequestException('prediction_not_found_for_engagement');
     }
 
-    let approvedCents: number;
+    // Prediction-derived tier values are immutable (predictions are
+    // append-only), so they're safe to resolve outside the write txn. The
+    // tech_adjusted read and the line-item fold both touch mutable quote state
+    // and must share one snapshot with the VP/CEO threshold gate — they're
+    // resolved INSIDE the write txn below (quotes-8 TOCTOU).
+    let tierCents: number | null = null;
     switch (dto.choice) {
-      case 'base':         approvedCents = prediction.basePriceCents; break;
-      case 'recommended':  approvedCents = prediction.predictedPriceCents; break;
-      case 'aggressive':   approvedCents = prediction.bandLowCents; break;
-      case 'tech_adjusted': {
-        // Read the tech-team adjustment off the quote row. Must be
-        // bound to THIS prediction — a stale adjustment (from before a
-        // re-predict) is not approvable.
-        const quote = await this.quotes.getForEngagement(req.tenantId, engagementId);
-        if (
-          !quote
-          || quote.techAdjustedPriceCents == null
-          || quote.techAdjustedPredictionId !== prediction.id
-        ) {
-          throw new BadRequestException('tech_adjusted_price_not_available');
-        }
-        approvedCents = quote.techAdjustedPriceCents;
-        break;
-      }
+      case 'base':         tierCents = prediction.basePriceCents; break;
+      case 'recommended':  tierCents = prediction.predictedPriceCents; break;
+      case 'aggressive':   tierCents = prediction.bandLowCents; break;
       case 'custom':
         if (dto.customPriceCents == null) throw new BadRequestException('custom_price_required');
-        approvedCents = dto.customPriceCents;
+        tierCents = dto.customPriceCents;
         break;
-    }
-
-    // pricing-quotes-2 / data-contracts-1: the prediction-derived options price
-    // only the rate-card base. Fold in reviewer-added line items (travel/tools/
-    // discounts) so the approved price matches the grand total shown in the UI.
-    // 'custom' and 'tech_adjusted' are manual full prices — taken verbatim.
-    if (dto.choice === 'base' || dto.choice === 'recommended' || dto.choice === 'aggressive') {
-      const breakdown = await this.lineItems.getBreakdown(req.tenantId, engagementId);
-      approvedCents = Math.max(0, approvedCents + breakdown.lineItemTotalCents);
+      case 'tech_adjusted':
+        break; // resolved in-txn (reads the mutable tech-adjusted quote field)
     }
 
     const eventType =
@@ -291,7 +272,7 @@ export class PredictionController {
     // terminal/sent deal can't be re-approved back out of its final state —
     // which would overwrite the price and re-fire the Odoo 'won' sync.
     const TERMINAL_STATUSES = ['closed', 'lost', 'rejected', 'sent', 'expired'];
-    const { updated, targetStatus, finalLevel } = await this.tenantDb.run(
+    const { updated, targetStatus, finalLevel, approvedCents } = await this.tenantDb.run(
       req.tenantId,
       async (db) => {
         const current = await db.engagement.findUnique({
@@ -301,6 +282,57 @@ export class PredictionController {
         if (!current) throw new NotFoundException('engagement_not_found');
         if (TERMINAL_STATUSES.includes(current.status)) {
           throw new ConflictException(`cannot_approve_from_status:${current.status}`);
+        }
+
+        // ── Resolve the approved price HERE, inside the write txn, so the
+        //    line-item fold and the tech-adjusted read share the same committed
+        //    snapshot as the threshold gate below. Reading them in a prior
+        //    transaction left a TOCTOU window where a racing line-item edit or
+        //    tech-adjust could slip a stale total past the VP/CEO gate. ──
+        let approvedCents: number;
+        if (dto.choice === 'tech_adjusted') {
+          // Tech-team adjustment must be bound to THIS prediction — a stale
+          // adjustment (from before a re-predict) is not approvable.
+          const quote = await db.engagementQuote.findUnique({
+            where: { engagementId },
+            select: { techAdjustedPriceCents: true, techAdjustedPredictionId: true },
+          });
+          if (
+            !quote
+            || quote.techAdjustedPriceCents == null
+            || quote.techAdjustedPredictionId !== prediction.id
+          ) {
+            throw new BadRequestException('tech_adjusted_price_not_available');
+          }
+          approvedCents = Number(quote.techAdjustedPriceCents);
+        } else {
+          // base / recommended / aggressive / custom — tierCents is set above.
+          approvedCents = tierCents ?? 0;
+          // pricing-quotes-2 / data-contracts-1: the prediction-derived tiers
+          // price only the rate-card base. Fold in reviewer-added line items
+          // (travel/tools/discounts) so the approved price matches the grand
+          // total shown in the UI. 'custom' is a manual full price — verbatim.
+          if (
+            dto.choice === 'base'
+            || dto.choice === 'recommended'
+            || dto.choice === 'aggressive'
+          ) {
+            const quoteRow = await db.engagementQuote.findUnique({
+              where: { engagementId },
+              select: { id: true },
+            });
+            if (quoteRow) {
+              const lineRows = await db.engagementQuoteLineItem.findMany({
+                where: { engagementQuoteId: quoteRow.id },
+                select: { amountCents: true },
+              });
+              const lineItemTotalCents = lineRows.reduce(
+                (sum, r) => sum + Number(r.amountCents),
+                0,
+              );
+              approvedCents = Math.max(0, approvedCents + lineItemTotalCents);
+            }
+          }
         }
 
         const tenantConfig = await db.tenant.findUnique({
@@ -375,7 +407,7 @@ export class PredictionController {
             },
           });
         }
-        return { updated: eng, targetStatus: status, finalLevel: level, finalThreshold: threshold };
+        return { updated: eng, targetStatus: status, finalLevel: level, approvedCents };
       },
     );
 

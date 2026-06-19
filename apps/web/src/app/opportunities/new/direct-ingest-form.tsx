@@ -19,9 +19,10 @@
  */
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ingest, opportunities } from '@/lib/api';
 import { Icon } from '@/components/icon';
+import { downscaleImage, imageFromClipboard, isImageFile } from '@/lib/images';
 
 type Mode = 'paste' | 'drop';
 
@@ -33,6 +34,8 @@ interface UploadedArtifact {
   error?: string;
   /** The original File, kept so a failed upload can be retried in place. */
   file?: File;
+  /** Object URL for an image preview thumbnail (images only). */
+  previewUrl?: string;
 }
 
 export function DirectIngestForm() {
@@ -76,15 +79,21 @@ export function DirectIngestForm() {
    *   2. PUT bytes directly to S3
    *   3. Update local state with status='ready' (or 'failed')
    */
-  async function handleFiles(files: FileList | File[]) {
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
     const arr = Array.from(files);
-    for (const file of arr) {
+    for (const raw of arr) {
+      // Shrink + normalise screenshots before upload — keeps the picture
+      // small (vision-token cost + upload time) and converts HEIC/BMP to
+      // PNG so the extractor accepts it. Non-images pass through untouched.
+      const file = isImageFile(raw) ? await downscaleImage(raw) : raw;
+      const previewUrl = isImageFile(file) ? URL.createObjectURL(file) : undefined;
       const placeholder: UploadedArtifact = {
         artifactId: `pending-${file.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         filename: file.name,
         sizeBytes: file.size,
         status: 'uploading',
         file,
+        ...(previewUrl ? { previewUrl } : {}),
       };
       setArtifacts((prev) => [...prev, placeholder]);
 
@@ -119,11 +128,32 @@ export function DirectIngestForm() {
         );
       }
     }
-  }
+  }, []);
+
+  // Paste-a-screenshot support. A document-level listener catches Cmd/Ctrl
+  // +V anywhere on the page (the paste textarea can't hold an image, so we
+  // intercept it and route the picture to the upload flow instead). Only
+  // fires when the clipboard actually carries an image — text pastes fall
+  // straight through to the focused field.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const img = imageFromClipboard(e);
+      if (!img) return;
+      e.preventDefault();
+      setMode('drop');
+      void handleFiles([img]);
+    }
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [handleFiles]);
 
   /** Drop a row (a failed upload, or one the rep changed their mind on). */
   function removeArtifact(artifactId: string) {
-    setArtifacts((prev) => prev.filter((a) => a.artifactId !== artifactId));
+    setArtifacts((prev) => {
+      const gone = prev.find((a) => a.artifactId === artifactId);
+      if (gone?.previewUrl) URL.revokeObjectURL(gone.previewUrl);
+      return prev.filter((a) => a.artifactId !== artifactId);
+    });
   }
 
   /** Re-upload a failed file in place — we kept the original File object. */
@@ -212,7 +242,8 @@ export function DirectIngestForm() {
           </div>
           <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 12 }}>
             Email body, WhatsApp thread, call notes — anything the client sent you. We&apos;ll
-            extract structured points after you create the opportunity.
+            extract structured points after you create the opportunity. You can also paste a
+            screenshot — we&apos;ll attach it as an image and read it for scope.
           </div>
           <textarea
             className="input"
@@ -252,9 +283,9 @@ export function DirectIngestForm() {
             Drop the file(s)
           </div>
           <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 12 }}>
-            PDF, DOCX, XLSX, or any RFP/SOW document. Uploaded straight to storage — the
-            API never sees the bytes. Each file is queued for extraction once you create
-            the opportunity.
+            PDF, DOCX, XLSX, or images / screenshots (PNG, JPG) — or just paste a screenshot.
+            Uploaded straight to storage — the API never sees the bytes. Each file is queued
+            for extraction once you create the opportunity.
           </div>
 
           <label
@@ -285,6 +316,7 @@ export function DirectIngestForm() {
               type="file"
               multiple
               hidden
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,image/*"
               onChange={(e) => {
                 if (e.target.files?.length) void handleFiles(e.target.files);
                 // Reset so picking the same file twice re-fires.
@@ -294,10 +326,10 @@ export function DirectIngestForm() {
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
               <Icon.Download size={20} style={{ color: 'var(--fg-subtle)' }} />
               <div style={{ fontSize: 13, fontWeight: 500 }}>
-                Drag files here or click to choose
+                Drag files here, click to choose, or paste a screenshot
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--fg-subtle)' }}>
-                Up to 50 MB per file · multiple files OK
+                Docs &amp; images · up to 50 MB per file · multiple files OK
               </div>
             </div>
           </label>
@@ -317,7 +349,23 @@ export function DirectIngestForm() {
                     background: 'var(--bg)',
                   }}
                 >
-                  <Icon.FileText size={14} style={{ color: 'var(--fg-subtle)' }} />
+                  {a.previewUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={a.previewUrl}
+                      alt=""
+                      style={{
+                        width: 30,
+                        height: 30,
+                        objectFit: 'cover',
+                        borderRadius: 4,
+                        flexShrink: 0,
+                        border: '1px solid var(--divider)',
+                      }}
+                    />
+                  ) : (
+                    <Icon.FileText size={14} style={{ color: 'var(--fg-subtle)' }} />
+                  )}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
                       style={{

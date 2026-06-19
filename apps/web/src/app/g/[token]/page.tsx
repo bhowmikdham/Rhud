@@ -24,6 +24,7 @@ import {
 } from '@/lib/api';
 import type { TemplateNode, NodeOption } from '@rhud/shared';
 import { Icon } from '@/components/icon';
+import { downscaleImage, imageFromClipboard, isImageFile } from '@/lib/images';
 
 type Answer = string | string[] | number | null;
 
@@ -389,10 +390,13 @@ export default function GatheringFlowPage() {
    *  recorded engagement-level with `kind='scoping_doc'` and `nodeId=null`
    *  so it doesn't appear in any per-question file list. Extraction runs
    *  server-side; the polling effect takes over until everything settles. */
-  async function quickFillUpload(file: File) {
+  async function quickFillUpload(rawFile: File) {
     setQuickFillBusy(true);
     setErr(null);
     try {
+      // Shrink + normalise screenshots before upload (keeps vision-token
+      // cost + upload time low; converts HEIC/BMP to PNG). Docs pass through.
+      const file = isImageFile(rawFile) ? await downscaleImage(rawFile) : rawFile;
       const url = await gathering.scopingDocUploadUrl(token, {
         filename: file.name,
         contentType: file.type || 'application/octet-stream',
@@ -564,10 +568,11 @@ export default function GatheringFlowPage() {
     }
   }
 
-  async function uploadFile(file: File) {
+  async function uploadFile(rawFile: File) {
     setBusy(true);
     setErr(null);
     try {
+      const file = isImageFile(rawFile) ? await downscaleImage(rawFile) : rawFile;
       const url = await gathering.uploadUrl(token, {
         nodeId: node.id,
         filename: file.name,
@@ -1376,6 +1381,21 @@ function QuickFillCard({
   onSkip: () => void;
 }) {
   const [drag, setDrag] = useState(false);
+
+  // Paste-a-screenshot: catch Cmd/Ctrl+V on the quick-fill screen and
+  // upload the pasted image, same as dropping a file.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      if (busy) return;
+      const img = imageFromClipboard(e);
+      if (!img) return;
+      e.preventDefault();
+      void onUpload(img);
+    }
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [busy, onUpload]);
+
   return (
     <div className="client-card client-quickfill">
       <div className="client-body" style={{ padding: '52px 56px' }}>
@@ -1383,11 +1403,11 @@ function QuickFillCard({
           <Icon.Sparkle size={20} />
         </div>
         <h2 style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.015em', marginTop: 16, lineHeight: 1.25 }}>
-          Have a scoping sheet? Drop it in.
+          Have a scoping sheet or screenshot? Drop it in.
         </h2>
         <p style={{ color: 'var(--fg-muted)', fontSize: 14, marginTop: 8, lineHeight: 1.55, maxWidth: 540 }}>
-          We&apos;ll parse your Excel / PDF and pre-fill the form so you only review what we found —
-          no need to retype questions you&apos;ve already documented elsewhere.
+          We&apos;ll read your Excel / PDF / screenshot and pre-fill the form so you only review what
+          we found — no need to retype questions you&apos;ve already documented elsewhere.
         </p>
         <label
           className={'qf-drop' + (drag ? ' active' : '')}
@@ -1402,7 +1422,7 @@ function QuickFillCard({
         >
           <input
             type="file"
-            accept=".xlsx,.xls,.csv,.pdf,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf"
+            accept=".xlsx,.xls,.csv,.pdf,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,image/*"
             disabled={busy}
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -1413,8 +1433,8 @@ function QuickFillCard({
             <span className="hint"><span className="spin" /> Uploading…</span>
           ) : (
             <>
-              <span className="qf-drop-title"><Icon.Plus size={14} /> Drop file or click to choose</span>
-              <span className="hint">Excel / CSV / PDF · up to 50 MB</span>
+              <span className="qf-drop-title"><Icon.Plus size={14} /> Drop file, click to choose, or paste a screenshot</span>
+              <span className="hint">Excel / CSV / PDF / image · up to 50 MB</span>
             </>
           )}
         </label>

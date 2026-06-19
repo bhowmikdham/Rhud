@@ -492,6 +492,16 @@ export const opportunities = {
       body: JSON.stringify({ outcome }),
     }),
 
+  /** Attach a file/image to an EXISTING opportunity. Returns a presigned
+   *  PUT url + fileId; the client PUTs the bytes and the server auto-runs
+   *  extraction (images are read by the tenant's vision model). Used by
+   *  the reviewer "drop a screenshot for scope" affordance. */
+  filePresign: (id: string, dto: { filename: string; contentType: string; sizeBytes: number }) =>
+    request<{ fileId: string; uploadUrl: string; s3Key: string; expiresAt: string }>(
+      `/opportunities/${id}/files/presign`,
+      { method: 'POST', body: JSON.stringify(dto) },
+    ),
+
   // ── Phase A: reviewer-fillable scope fields ─────────────────────
   updateScope: (
     id: string,

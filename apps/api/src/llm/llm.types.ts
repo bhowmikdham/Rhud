@@ -16,9 +16,29 @@ export type LlmProviderName =
   | 'openai_compat'
   | 'manual';
 
+/**
+ * One image attached to a chat message, for multimodal (vision) models.
+ * Provider-neutral: each provider maps this to its own wire format
+ * (OpenAI/Gemini → `image_url` data URI; Anthropic → native base64
+ * source block). `dataBase64` is the raw base64 with NO `data:` prefix.
+ */
+export interface ChatImagePart {
+  /** Base64-encoded image bytes, no `data:<mime>;base64,` prefix. */
+  dataBase64: string;
+  /** MIME type, e.g. `image/png`, `image/jpeg`, `image/webp`, `image/gif`. */
+  mimeType: string;
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /**
+   * Optional image attachments for multimodal models. Providers that
+   * don't support vision ignore these. Honoured only on `user` messages
+   * (system/assistant images are dropped). Text-only callers omit this
+   * and are completely unaffected.
+   */
+  images?: ChatImagePart[];
 }
 
 export interface ChatOptions {

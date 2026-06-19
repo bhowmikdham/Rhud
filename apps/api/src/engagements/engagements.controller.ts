@@ -11,7 +11,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import type { AuthedRequest } from '../auth/auth.types.js';
@@ -46,6 +46,16 @@ class MarkOutcomeDto {
  *  (the template-less pricing path). The card must be published. */
 class AttachRateCardDto {
   @IsUUID() rateCardId!: string;
+}
+
+/** POST body for attaching a file/image to an existing opportunity — the
+ *  reviewer "drop a screenshot for scope" path. Mirrors the direct-ingest
+ *  presign DTO. contentType is unconstrained: images, PDFs, and docs all
+ *  flow through the same extraction pipeline (images via the vision model). */
+class EngagementFilePresignDto {
+  @IsString() @MaxLength(255) filename!: string;
+  @IsString() @MaxLength(200) contentType!: string;
+  @IsInt() @Min(1) sizeBytes!: number;
 }
 
 // Mounted at both routes so the rebrand is purely cosmetic for clients:
@@ -255,6 +265,31 @@ export class EngagementsController {
     @Body() dto: UpdateScopeDto,
   ) {
     return this.svc.updateScope(req.tenantId, id, req.user.sub, dto);
+  }
+
+  /**
+   * Attach a file or image to an EXISTING opportunity and run extraction
+   * over it — the reviewer "drop a screenshot for scope" path. Images are
+   * read by the tenant's vision model; PDFs / docs / sheets by the text
+   * pipeline. Returns a presigned PUT URL; the client uploads the bytes
+   * and the server kicks extraction automatically (see IngestionService).
+   */
+  @Post(':id/files/presign')
+  @Roles('admin', 'sales_manager', 'sales_employee', 'tech_team')
+  @HttpCode(201)
+  presignEngagementFile(
+    @Req() req: AuthedRequest,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: EngagementFilePresignDto,
+  ) {
+    return this.ingestion.presignFileForEngagement({
+      tenantId: req.tenantId,
+      engagementId: id,
+      userId: req.user.sub,
+      filename: dto.filename,
+      contentType: dto.contentType,
+      sizeBytes: dto.sizeBytes,
+    });
   }
 
   /** Phase C — update the client metadata (name / address / contact). */

@@ -15,11 +15,12 @@
  *     Escalate), each opening a small reason-modal.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   describeError,
   opportunities,
   quoteLineItems,
+  uploadToSignedUrl,
   type CreateQuoteLineItemInput,
   type QuoteLineItemKind,
   type QuoteLineItemRow,
@@ -28,6 +29,7 @@ import {
 import { Icon } from '@/components/icon';
 import { Portal } from '@/components/portal';
 import { useConfirm } from '@/components/confirm';
+import { downscaleImage, imageFromClipboard, isImageFile } from '@/lib/images';
 
 // ── Assumptions / Exclusions / Timeline ─────────────────────────────
 
@@ -56,6 +58,48 @@ export function AssumptionsExclusionsCard({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  // "Attach a screenshot for scope" — uploads an image/doc to this
+  // opportunity and lets the extractor read it (images via the vision
+  // model). Points land in the Documents tab, not in these text fields.
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [attachNote, setAttachNote] = useState<string | null>(null);
+  const [attachErr, setAttachErr] = useState<string | null>(null);
+
+  const attachFile = useCallback(async (rawFile: File) => {
+    setAttachBusy(true);
+    setAttachErr(null);
+    setAttachNote(null);
+    try {
+      const file = isImageFile(rawFile) ? await downscaleImage(rawFile) : rawFile;
+      const presign = await opportunities.filePresign(engagementId, {
+        filename: file.name,
+        contentType: file.type || 'application/octet-stream',
+        sizeBytes: file.size,
+      });
+      await uploadToSignedUrl(presign.uploadUrl, file);
+      setAttachNote(`Uploaded ${file.name} — reading it for scope. Extracted points appear in the Documents tab.`);
+    } catch (e) {
+      setAttachErr(describeError(e));
+    } finally {
+      setAttachBusy(false);
+    }
+  }, [engagementId]);
+
+  // Paste a screenshot straight into the reviewer notes — the textarea
+  // can't hold an image, so we intercept the paste and upload it instead.
+  useEffect(() => {
+    if (!canEdit) return undefined;
+    function onPaste(e: ClipboardEvent) {
+      if (attachBusy) return;
+      const img = imageFromClipboard(e);
+      if (!img) return;
+      e.preventDefault();
+      void attachFile(img);
+    }
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [canEdit, attachBusy, attachFile]);
 
   const dirty = useMemo(() => {
     const norm = (v: string) => v.trim();
@@ -139,6 +183,61 @@ export function AssumptionsExclusionsCard({
             style={{ height: 32, fontSize: 13 }}
           />
         </Field>
+
+        {canEdit && (
+          <div>
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 500 }}>
+              Attach a screenshot for scope
+            </span>
+            <label
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const f = e.dataTransfer.files?.[0];
+                if (f) void attachFile(f);
+              }}
+              style={{
+                marginTop: 4,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 12px',
+                borderRadius: 8,
+                border: '1.5px dashed var(--border)',
+                background: 'var(--bg-sunk)',
+                cursor: attachBusy ? 'default' : 'pointer',
+                fontSize: 12,
+                color: 'var(--fg-muted)',
+              }}
+            >
+              <input
+                type="file"
+                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt"
+                style={{ display: 'none' }}
+                disabled={attachBusy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void attachFile(f);
+                  e.target.value = '';
+                }}
+              />
+              {attachBusy ? <span className="spin" /> : <Icon.Paperclip size={13} />}
+              <span>
+                {attachBusy
+                  ? 'Uploading…'
+                  : 'Drop, click, or paste an image / doc — we’ll read it for scope'}
+              </span>
+            </label>
+            {attachNote && (
+              <div style={{ fontSize: 11.5, color: 'var(--ok)', marginTop: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Icon.Check size={11} /> {attachNote}
+              </div>
+            )}
+            {attachErr && (
+              <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 6 }}>{attachErr}</div>
+            )}
+          </div>
+        )}
 
         {err && (
           <div style={{ padding: 8, fontSize: 12, color: 'var(--danger)', background: 'var(--danger-tint)', borderRadius: 6 }}>

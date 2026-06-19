@@ -27,6 +27,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { TenantDb, type PrismaTx } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { S3Service } from '../storage/s3.service.js';
@@ -127,6 +128,90 @@ export class IngestionService {
     private readonly extraction: ExtractionService,
     private readonly engagements: EngagementsService,
   ) {}
+
+  /**
+   * Authenticated "attach a file/image to an EXISTING opportunity" path.
+   * The direct-ingest presign creates a not-yet-promoted artifact, which
+   * is the wrong shape for an engagement that already exists — so this
+   * creates an EngagementFile directly (kind='scoping_doc', nodeId=null),
+   * presigns a PUT URL, and schedules extraction once the bytes land.
+   *
+   * Mirrors GatheringService.createScopingDocUploadUrl, but gated by the
+   * caller's JWT instead of a share token. Used by the reviewer's
+   * "attach a screenshot for scope" affordance on the opportunity page.
+   */
+  async presignFileForEngagement(args: {
+    tenantId: string;
+    engagementId: string;
+    userId: string;
+    filename: string;
+    contentType: string;
+    sizeBytes: number;
+  }): Promise<{ fileId: string; uploadUrl: string; s3Key: string; expiresAt: string }> {
+    if (args.sizeBytes > 50 * 1024 * 1024) {
+      throw new BadRequestException('file_too_large');
+    }
+
+    const fileId = randomUUID();
+    const key = S3Service.keyForEngagementFile({
+      tenantId: args.tenantId,
+      engagementId: args.engagementId,
+      fileId,
+      filename: args.filename,
+    });
+    const { url, expiresAt } = await this.s3.presignPut({ key, contentType: args.contentType });
+
+    const payload = { kind: 'scoping_doc', filename: args.filename, sizeBytes: args.sizeBytes };
+    await this.tenantDb.run(args.tenantId, async (db) => {
+      // Existence + ownership check. RLS already scopes to the tenant;
+      // this turns a missing / other-tenant id into a clean 404 rather
+      // than a foreign-key violation 500.
+      const eng = await db.engagement.findUnique({
+        where: { id: args.engagementId },
+        select: { id: true },
+      });
+      if (!eng) throw new NotFoundException('engagement_not_found');
+
+      await db.engagementFile.create({
+        data: {
+          id: fileId,
+          tenantId: args.tenantId,
+          engagementId: args.engagementId,
+          // node_id stays null — like a quick-fill scoping doc, this
+          // isn't tied to a specific template question.
+          kind: 'scoping_doc',
+          s3Key: key,
+          filename: args.filename,
+          sizeBytes: BigInt(args.sizeBytes),
+          contentType: args.contentType,
+        },
+      });
+      await this.thread.emitWithin(db, args.tenantId, {
+        engagementId: args.engagementId,
+        eventType: 'file_uploaded',
+        actorType: 'user',
+        actorId: args.userId,
+        payload,
+      });
+    });
+
+    void this.thread.dispatchAfterCommit(args.tenantId, {
+      engagementId: args.engagementId,
+      eventType: 'file_uploaded',
+      actorType: 'user',
+      actorId: args.userId,
+      payload,
+    });
+
+    // Kick extraction after a short delay so the client's PUT lands
+    // first. NoSuchKey races are absorbed by the extraction retry queue,
+    // so this is best-effort timing, not a correctness gate.
+    setTimeout(() => {
+      void this.extraction.kickoff(args.tenantId, fileId).catch(() => undefined);
+    }, 1500);
+
+    return { fileId, uploadUrl: url, s3Key: key, expiresAt };
+  }
 
   /**
    * Land an artifact. Doesn't create an engagement.

@@ -51,11 +51,27 @@ export class AnthropicProvider implements LlmProvider {
   async chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatResult> {
     // Anthropic separates system from the message list. Concatenate any
     // leading system messages into a single string and pass the rest as-is.
+    // A user message carrying images becomes a content-block array using
+    // Anthropic's native base64 image source; text-only turns stay plain
+    // strings.
     const systemParts: string[] = [];
-    const turns: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    const turns: Array<{ role: 'user' | 'assistant'; content: string | unknown[] }> = [];
     for (const m of messages) {
-      if (m.role === 'system') systemParts.push(m.content);
-      else turns.push({ role: m.role, content: m.content });
+      if (m.role === 'system') {
+        systemParts.push(m.content);
+      } else if (m.role === 'user' && m.images?.length) {
+        const blocks: unknown[] = [];
+        if (m.content) blocks.push({ type: 'text', text: m.content });
+        for (const img of m.images) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: img.mimeType, data: img.dataBase64 },
+          });
+        }
+        turns.push({ role: m.role, content: blocks });
+      } else {
+        turns.push({ role: m.role, content: m.content });
+      }
     }
 
     const body: Record<string, unknown> = {

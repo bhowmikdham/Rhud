@@ -154,6 +154,30 @@ const MAX_STORED_TEXT = 200_000;
 const MAX_VALUE_LEN = 1_000;
 const MAX_QUOTE_LEN = 500;
 
+/** Filename extensions that mark a file as an image, so we route it to
+ *  the multimodal (vision) extractor instead of the text path. The
+ *  content-type check (`image/*`) is the primary signal; the extension
+ *  list is the fallback for uploads with a generic octet-stream type. */
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.heic', '.heif'];
+/** Cap on raw image bytes sent inline to the model. Base64 inflates by
+ *  ~33% and providers cap total request size; the web client downscales
+ *  before upload, so this is just a backstop for oversized direct /
+ *  API uploads. */
+const MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/** System prompt for the vision extractor. Mirrors the text-extraction
+ *  prompt but tuned for reading a screenshot/photo/scan. */
+const IMAGE_EXTRACTION_SYSTEM_PROMPT =
+  'You extract pricing-relevant data points from a client-supplied IMAGE ' +
+  '(a screenshot, photo, or scan of requirements) for a B2B services consultancy. ' +
+  'Read ALL text and tables visible in the image. ' +
+  'Output valid JSON only — no preamble, no markdown fences. ' +
+  'Be aggressive about pulling out scale numbers (users, requests, throughput, sites, counts), ' +
+  'tech stack mentions, integrations, compliance / security requirements, deadlines, and any number that could move a price. ' +
+  'When the image directly answers a template question, set `relatedQuestion` to the matching question key. ' +
+  'When it carries a useful signal but no question maps, leave `relatedQuestion` null. ' +
+  'For `sourceQuote`, transcribe the exact text from the image that supports the point (≤200 chars).';
+
 /** Layer 2 categories — semantic classification each extracted point
  *  gets tagged with so the UI can show what kind of data was found
  *  and the downstream pipeline can route by category. */
@@ -587,6 +611,15 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // Step 1.5 — images. They have no text layer to parse, so route
+    // them to the multimodal (vision) extractor, which sends the picture
+    // itself to the tenant's model. Screenshots of requirements,
+    // photographed SOWs, pasted WhatsApp grabs all land here.
+    if (this.isImage(file.contentType, file.filename)) {
+      await this.runImageExtraction(tenantId, file, bytes);
+      return;
+    }
+
     // Step 2 — structural shortcut for spreadsheets. Most security
     // questionnaires + scoping docs are clean two-column Q/A sheets;
     // we can pull the answers deterministically with no LLM round-trip.
@@ -754,6 +787,15 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       lower.endsWith('.xlsx') ||
       lower.endsWith('.xls')
     );
+  }
+
+  /** Did this file come in as an image? Drives the vision-extractor
+   *  shortcut in runExtraction. */
+  private isImage(contentType: string, filename: string): boolean {
+    const ct = (contentType || '').toLowerCase();
+    if (ct.startsWith('image/')) return true;
+    const lower = filename.toLowerCase();
+    return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
   }
 
   /**
@@ -1006,6 +1048,44 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Load the template's answerable questions for an engagement, as
+   * `{ keyId, question }` pairs keyed by the real node UUID. The model
+   * is asked to echo that exact id in `relatedQuestion` when a point
+   * matches, so auto-promotion can look up the answer slot directly
+   * without a position-based mapping. Returns [] for template-less
+   * (direct-ingest) engagements — points still extract, they just don't
+   * bind to a node. Shared by the text and image extraction paths.
+   */
+  private async loadTemplateQuestions(
+    tenantId: string,
+    engagementId: string,
+  ): Promise<Array<{ keyId: string; question: string }>> {
+    return this.tenantDb.run(tenantId, async (db) => {
+      const eng = await db.engagement.findUnique({
+        where: { id: engagementId },
+        select: { templateId: true },
+      });
+      if (!eng?.templateId) return [];
+      const nodes = await db.templateNode.findMany({
+        where: {
+          // Section + loop containers aren't questions the client
+          // answers — exclude them so the LLM doesn't try to match
+          // points against headings. Loop *bodies* (parentNodeId set)
+          // also excluded for now; Phase 3 will support per-iteration
+          // auto-promotion.
+          templateId: eng.templateId,
+          nodeType: { notIn: ['section', 'loop'] },
+          parentNodeId: null,
+        },
+        select: { id: true, question: true, position: true },
+        orderBy: { position: 'asc' },
+        take: 60,
+      });
+      return nodes.map((n) => ({ keyId: n.id, question: n.question }));
+    });
+  }
+
+  /**
    * Build a structured-extraction prompt anchored on the template's
    * questions, send to the configured LLM, parse its JSON response.
    */
@@ -1014,36 +1094,7 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
     engagementId: string,
     text: string,
   ): Promise<ExtractedPoint[]> {
-    const questions = await this.tenantDb.run(tenantId, async (db) => {
-      const eng = await db.engagement.findUnique({
-        where: { id: engagementId },
-        select: { templateId: true },
-      });
-      // No template attached → no nodes to match against. See above.
-      if (!eng?.templateId) return [];
-      const nodes = await db.templateNode.findMany({
-        where: {
-          templateId: eng.templateId,
-          // Section + loop containers aren't questions the client
-          // answers — exclude them so the LLM doesn't try to match
-          // points against headings. Loop *bodies* (parentNodeId set)
-          // also excluded for now; Phase 3 will support per-iteration
-          // auto-promotion.
-          nodeType: { notIn: ['section', 'loop'] },
-          parentNodeId: null,
-        },
-        select: { id: true, question: true, position: true },
-        orderBy: { position: 'asc' },
-        take: 60,
-      });
-      // Use the real node UUID as the LLM-facing key. We ask the
-      // model to return that exact id in `relatedQuestion` when a
-      // point matches a question — that way the auto-promotion step
-      // below can look up the engagement answer slot directly without
-      // a position-based mapping. Tradeoff: the prompt is a bit
-      // longer (UUIDs vs `q1`) but the round-trip is bullet-proof.
-      return nodes.map((n) => ({ keyId: n.id, question: n.question }));
-    });
+    const questions = await this.loadTemplateQuestions(tenantId, engagementId);
 
     // For documents under the single-call cap, one LLM round-trip is
     // enough. For larger docs (multi-page security questionnaires
@@ -1218,6 +1269,205 @@ export class ExtractionService implements OnModuleInit, OnModuleDestroy {
       `If the document carries no pricing-relevant information, return ` +
       `\`{ "points": [] }\`. Output ONLY the JSON.`
     );
+  }
+
+  /**
+   * Vision path: an image has no text layer to parse, so we hand the
+   * picture itself to the tenant's multimodal model with the same
+   * extraction contract the text path uses. Output points flow through
+   * `persistResult` exactly like a PDF's, so Layer-3 inference + pricing
+   * behave identically.
+   *
+   * Graceful degradation mirrors the text path:
+   *   - no provider configured → store the file, 0 points (re-extract
+   *     after Settings → AI is set up);
+   *   - manual provider        → skipped (no per-file paste flow);
+   *   - non-vision model / bad key / rate limit → friendly failure or
+   *     the retry queue.
+   */
+  private async runImageExtraction(
+    tenantId: string,
+    file: { id: string; engagementId: string; filename: string; contentType: string },
+    bytes: Buffer,
+  ): Promise<void> {
+    const fileId = file.id;
+
+    // Backstop for oversized direct/API uploads — the web client
+    // downscales before upload so this rarely trips in practice.
+    if (bytes.length > MAX_INLINE_IMAGE_BYTES) {
+      await this.markSkipped(
+        tenantId,
+        fileId,
+        `image_too_large_for_vision:${Math.round(bytes.length / 1024)}KB`,
+      );
+      return;
+    }
+
+    const mimeType = this.normalizeImageMime(file.contentType, file.filename);
+    if (!mimeType) {
+      // HEIC/BMP/etc. — models reject these. The web client converts to
+      // PNG before upload, so this only fires for raw direct/API uploads.
+      await this.markSkipped(tenantId, fileId, 'unsupported_image_format:convert_to_png_or_jpeg');
+      return;
+    }
+
+    const provider = await this.llm.getProviderName(tenantId);
+    if (!provider) {
+      // No AI configured yet — keep the file, leave points empty. The
+      // rep can re-run after Settings → AI is set up. Mirrors the text path.
+      await this.persistResult(
+        tenantId,
+        fileId,
+        `[Image: ${file.filename}] — AI not configured; no points extracted yet.`,
+        [],
+        null,
+      );
+      return;
+    }
+    if (provider === 'manual') {
+      await this.markSkipped(tenantId, fileId, 'manual_provider_unsupported');
+      return;
+    }
+
+    const questions = await this.loadTemplateQuestions(tenantId, file.engagementId);
+
+    let points: ExtractedPoint[];
+    try {
+      const messages: ChatMessage[] = [
+        { role: 'system', content: IMAGE_EXTRACTION_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: this.buildImageExtractionUserPrompt(questions),
+          images: [{ dataBase64: bytes.toString('base64'), mimeType }],
+        },
+      ];
+      // Re-draw on malformed/mis-shaped JSON — parity with the text path
+      // (runLlmExtractionOnChunk). A thinking model occasionally emits a broken
+      // draw, and parsePointsResponse now THROWS on a non-`{points:[]}` shape, so
+      // without a retry a single bad draw would hard-FAIL the file. chat() errors
+      // (rate-limit / non-vision model / bad key) are NOT caught here — they bubble
+      // to the outer catch, where retrying in-loop wouldn't help and would waste calls.
+      let parsed: ExtractedPoint[] | null = null;
+      let lastParseErr: Error | null = null;
+      for (let attempt = 1; attempt <= EXTRACTION_PARSE_ATTEMPTS; attempt++) {
+        const result = await this.llm.chat(tenantId, messages, {
+          // Same budget + thinking cap as the text extractor: "thinking" models
+          // (gemini-2.5-flash) spend output tokens reasoning before the JSON, so a
+          // tight cap truncates mid-array. The shared constant + reasoningEffort
+          // 'low' keep the budget on the answer (the provider also defaults Gemini
+          // to 'low', but we state it explicitly here so the intent is local).
+          maxTokens: EXTRACTION_MAX_OUTPUT_TOKENS,
+          // Deterministic first draw; warm re-draws so a repeat actually differs.
+          temperature: attempt === 1 ? 0 : 0.3,
+          reasoningEffort: 'low',
+          timeoutMs: 90_000,
+        });
+        try {
+          parsed = this.parsePointsResponse(result.text);
+          break;
+        } catch (e) {
+          lastParseErr = e as Error;
+          if (attempt < EXTRACTION_PARSE_ATTEMPTS) {
+            this.logger.warn(
+              `vision extraction JSON unparseable (${lastParseErr.message}) — re-drawing ` +
+                `(attempt ${attempt + 1}/${EXTRACTION_PARSE_ATTEMPTS})`,
+            );
+          }
+        }
+      }
+      if (parsed == null) throw lastParseErr ?? new Error('llm_response_not_json');
+      points = parsed;
+    } catch (e) {
+      const raw = (e as Error).message ?? 'unknown';
+      this.logger.error(`vision extraction failed file=${fileId}: ${raw}`);
+
+      // Rate-limited → retry queue (same as the text path).
+      const isRateLimit = raw.includes('429') || raw.toLowerCase().includes('resource_exhausted');
+      if (isRateLimit) {
+        await this.queueForRetry(tenantId, fileId, raw);
+        return;
+      }
+
+      const low = raw.toLowerCase();
+      let friendly: string;
+      if (
+        low.includes('vision') ||
+        low.includes('multimodal') ||
+        low.includes('image') ||
+        low.includes('does not support')
+      ) {
+        // The configured model is text-only. Surface a clear nudge.
+        friendly = 'model_not_vision_capable:set_a_multimodal_model_in_settings_ai';
+      } else if (raw.includes('400') && low.includes('model name')) {
+        friendly = 'bad_model_name:check_settings_ai';
+      } else if (raw.includes('401') || raw.includes('403')) {
+        friendly = 'auth_failed:check_api_key_in_settings_ai';
+      } else if (low.includes('timeout')) {
+        friendly = 'timeout:image_too_large_or_provider_slow';
+      } else {
+        friendly = `vision_extraction:${raw}`;
+      }
+      await this.markFailed(tenantId, fileId, friendly);
+      return;
+    }
+
+    // Synthesise a readable "extracted text" view from the points so the
+    // UI's text panel isn't blank for image sources.
+    const text = points.length
+      ? `[Extracted from image: ${file.filename}]\n` +
+        points.map((p) => `${p.key}: ${p.value}`).join('\n')
+      : `[Image: ${file.filename}] — no pricing-relevant points found.`;
+
+    await this.persistResult(tenantId, fileId, text, points, null);
+  }
+
+  /** Prompt for the vision extractor — same JSON contract as the text
+   *  path, but it instructs the model to read/transcribe the attached
+   *  image rather than a text blob. */
+  private buildImageExtractionUserPrompt(
+    questions: Array<{ keyId: string; question: string }>,
+  ): string {
+    const qList = questions.length === 0
+      ? '(no template questions defined)'
+      : questions
+          .map((q) => `- ${q.keyId}: ${q.question.replace(/\s+/g, ' ').trim().slice(0, 200)}`)
+          .join('\n');
+
+    return (
+      `Template questions for context:\n${qList}\n\n` +
+      `Extract pricing-relevant points from the attached image. ` +
+      `Return JSON exactly in this shape:\n` +
+      `{\n` +
+      `  "points": [\n` +
+      `    {\n` +
+      `      "key": "snake_case_descriptor",\n` +
+      `      "value": "the extracted value as a string",\n` +
+      `      "sourceQuote": "verbatim text transcribed from the image, ≤200 chars",\n` +
+      `      "relatedQuestion": "matching template question key or null"\n` +
+      `    }\n` +
+      `  ]\n` +
+      `}\n` +
+      `If the image carries no pricing-relevant information, return ` +
+      `\`{ "points": [] }\`. Output ONLY the JSON.`
+    );
+  }
+
+  /** Map an uploaded image's content-type/filename to a MIME the vision
+   *  models accept (PNG/JPEG/WebP/GIF). Returns null for formats they
+   *  reject (HEIC/BMP/unknown) so the caller can skip with a clear
+   *  "convert to PNG/JPEG" message. */
+  private normalizeImageMime(contentType: string, filename: string): string | null {
+    const ct = (contentType || '').toLowerCase();
+    if (ct === 'image/png' || ct === 'image/jpeg' || ct === 'image/webp' || ct === 'image/gif') {
+      return ct;
+    }
+    if (ct === 'image/jpg') return 'image/jpeg';
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    return null;
   }
 
   private parsePointsResponse(raw: string): ExtractedPoint[] {

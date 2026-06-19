@@ -79,7 +79,7 @@ export class OpenAiCompatProvider implements LlmProvider {
   async chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatResult> {
     const body: Record<string, unknown> = {
       model: opts.model ?? this.model,
-      messages,
+      messages: messages.map(toWireMessage),
       ...(opts.temperature != null && { temperature: opts.temperature }),
       ...(opts.maxTokens != null && { max_tokens: opts.maxTokens }),
     };
@@ -336,6 +336,30 @@ function stripKeysDeep(value: unknown, keys: string[]): unknown {
     return out;
   }
   return value;
+}
+
+/**
+ * Map our provider-neutral ChatMessage to the OpenAI wire shape. When a
+ * user message carries images, `content` becomes the OpenAI multimodal
+ * array (`[{type:'text'}, {type:'image_url', image_url:{url:dataURI}}]`)
+ * — the same format Gemini's OpenAI-compat endpoint accepts. Messages
+ * without images keep the plain string content, so text-only calls are
+ * byte-for-byte unchanged.
+ */
+function toWireMessage(m: ChatMessage): { role: string; content: unknown } {
+  if (m.role !== 'user' || !m.images?.length) {
+    return { role: m.role, content: m.content };
+  }
+  const parts: unknown[] = [];
+  // Text first so the model reads the instruction before the image(s).
+  if (m.content) parts.push({ type: 'text', text: m.content });
+  for (const img of m.images) {
+    parts.push({
+      type: 'image_url',
+      image_url: { url: `data:${img.mimeType};base64,${img.dataBase64}` },
+    });
+  }
+  return { role: m.role, content: parts };
 }
 
 function parseRetryAfter(value: string | null): number | null {
