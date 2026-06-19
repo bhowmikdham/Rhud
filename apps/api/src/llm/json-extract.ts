@@ -3,10 +3,12 @@
  *
  * LLMs wrap output in markdown fences, prepend prose, and — the failure that
  * motivated this util — emit STRUCTURALLY-BROKEN JSON. The worst offender is
- * Gemini's OpenAI-compat endpoint: when it rejects a `response_format`
- * json_schema (it 4xx's / ignores schemas carrying `additionalProperties:false`,
- * see `sanitizeSchemaForProvider` in openai-compat.provider.ts) the call falls
- * back to UNCONSTRAINED generation. Unconstrained, the model echoes verbatim
+ * Gemini's OpenAI-compat endpoint: when ANY optional param is rejected with a
+ * 4xx (the real culprit was `seed`; `additionalProperties` is also unsupported)
+ * the `response_format` json_schema gets dropped and the call falls back to
+ * UNCONSTRAINED generation. (openai-compat.provider.ts now gates `seed` for
+ * Gemini and strips surgically, so this is the SAFETY NET, not the common path.)
+ * Unconstrained, the model echoes verbatim
  * document text — spreadsheet cells like `2 Apps (Doctor & "Health") - Andriod`,
  * multi-line comments — straight into string values WITHOUT escaping the inner
  * quotes / newlines, producing JSON that `JSON.parse` rejects at the first
