@@ -24,6 +24,15 @@ import type { ChatMessage } from './llm.types.js';
 
 const ANSWER_TYPES: NodeType[] = ['short_text', 'long_text', 'number', 'single_select', 'multi_select', 'file_upload'];
 
+/** Output-token budget for template generation. gemini-2.5/3.x "flash" are
+ *  THINKING models: hidden reasoning tokens count against max_tokens, so a tight
+ *  cap (the old 2000) is eaten by reasoning and the 8–15-node JSON array
+ *  truncates mid-array → parse failure → "ai_provider_error". Paired with
+ *  `reasoningEffort: 'low'` (caps the thinking, gemini-gated + self-healing in
+ *  the provider) this leaves ample room for the answer. Mirrors the extraction /
+ *  mapper fix. */
+const TEMPLATE_GEN_MAX_OUTPUT_TOKENS = 8_192;
+
 export interface GeneratedNode {
   question: string;
   nodeType: NodeType;
@@ -64,8 +73,11 @@ export class TemplateGenService {
     let result;
     try {
       result = await this.llm.chat(tenantId, messages, {
-        maxTokens: 2_000,
+        maxTokens: TEMPLATE_GEN_MAX_OUTPUT_TOKENS,
         temperature: 0.4,
+        // Cap Gemini's hidden thinking so the budget goes to the JSON answer
+        // (gemini-gated in the provider; ignored by other providers).
+        reasoningEffort: 'low',
         timeoutMs: 60_000,
       });
     } catch (e) {
