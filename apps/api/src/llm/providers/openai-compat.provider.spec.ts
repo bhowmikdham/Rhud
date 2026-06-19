@@ -169,4 +169,25 @@ describe('OpenAiCompatProvider structured-output handling', () => {
     const res = await p.chat([{ role: 'user', content: 'hi' }], {});
     expect(res.structuredOutputApplied).toBeUndefined();
   });
+
+  it('DEFAULTS reasoning_effort to low for Gemini when the caller did not set one', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse());
+    const p = new OpenAiCompatProvider(config('gemini'));
+    await p.chat([{ role: 'user', content: 'hi' }], { maxTokens: 100 });
+    expect(bodyOf(0).reasoning_effort).toBe('low'); // caps thinking → no truncation
+  });
+
+  it('honours an explicit reasoning_effort override for Gemini', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse());
+    const p = new OpenAiCompatProvider(config('gemini'));
+    await p.chat([{ role: 'user', content: 'hi' }], { reasoningEffort: 'high' });
+    expect(bodyOf(0).reasoning_effort).toBe('high');
+  });
+
+  it('never sends reasoning_effort to a non-Gemini provider', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse());
+    const p = new OpenAiCompatProvider(config('openai'));
+    await p.chat([{ role: 'user', content: 'hi' }], { reasoningEffort: 'low' });
+    expect('reasoning_effort' in bodyOf(0)).toBe(false);
+  });
 });

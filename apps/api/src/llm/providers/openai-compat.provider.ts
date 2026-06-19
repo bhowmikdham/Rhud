@@ -85,13 +85,17 @@ export class OpenAiCompatProvider implements LlmProvider {
     };
 
     // Gemini-only thinking control. gemini-2.5/3.x flash run a large DYNAMIC
-    // thinking budget that dominates token usage even on mechanical JSON
-    // mapping. `reasoning_effort` caps it. Gated to Gemini (by name OR base URL)
-    // — a real OpenAI/openai_compat target 400s on unknown params. If the target
-    // still rejects it, the surgical 4xx strip below removes just that field, so
-    // a bad param can never make a call fail; maxTokens stays the safety net.
-    if (this.geminiDialect && opts.reasoningEffort != null) {
-      body.reasoning_effort = opts.reasoningEffort;
+    // thinking budget that counts against max_tokens — on a complex task it
+    // balloons and silently TRUNCATES the answer (every tight-budget call site
+    // was a latent truncation). So for Gemini we DEFAULT `reasoning_effort` to
+    // 'low' when the caller didn't pick one, capping the thinking so the budget
+    // goes to the answer. Callers that want more still override (→ 'medium'/
+    // 'high'); none of this app's tasks need deep reasoning. Gated to Gemini (by
+    // name OR base URL) — a real OpenAI/openai_compat target 400s on unknown
+    // params; if it still rejects it, the surgical 4xx strip below removes just
+    // that field, so the default can never make a call fail.
+    if (this.geminiDialect) {
+      body.reasoning_effort = opts.reasoningEffort ?? 'low';
     }
     // Structured output (constrained JSON). If the provider rejects it with a
     // 4xx the strip-and-retry below removes it, so it can only help — but the
