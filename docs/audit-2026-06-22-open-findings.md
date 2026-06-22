@@ -5,6 +5,18 @@ Deduped vs prior audit + memory. Excludes already-shipped: Gemini seed/structure
 
 Severity from adversarial verify (real/refuted votes). Tiers: 1=document→scope/extraction, 2=pricing, 3=everything else.
 
+## Progress (step-wise fix loop)
+- ✅ **Tier 1 (document → scope)** — SHIPPED `08d61e0` + scope deep-dive (run wf_708ab552-4b7).
+  Prompt-injection guard on doc+image extraction; integer scope (parseNumber + LLM scopeValue).
+  The deep-dive's other 6 "bugs" were rejected after code-verify (would regress: false-positive
+  "inverted" filter, under-counting 60-caps, repairedWhole revert) or deferred (narrow/risky:
+  scope-graph consumed-API, appId dedup, heuristic tiebreak — need live multi-app fixtures).
+- ✅ **Tier 2 (pricing)** — SHIPPED `05f150e`. Live % discounts (effectiveLineItemCents),
+  NaN-proof scope kernel (safeScope), Odoo money inverse (currency_to_cents + pull-skip).
+- ⏳ **Tier 3 (everything else)** — NOT STARTED. HIGH cluster (sendViaOutlook double-send, gamma
+  double-bill, sent→approved demote, S3 orphan-on-delete, Odoo no-timeout, setOutcome ignores
+  return, LLM_KEY_ENCRYPTION_KEY no boot-enforce) + MED/LOW. Prod @ 05f150e.
+
 
 ## Tier 1 — Document → scope / extraction
 
