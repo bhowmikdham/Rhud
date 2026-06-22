@@ -13,9 +13,14 @@ Severity from adversarial verify (real/refuted votes). Tiers: 1=document→scope
   scope-graph consumed-API, appId dedup, heuristic tiebreak — need live multi-app fixtures).
 - ✅ **Tier 2 (pricing)** — SHIPPED `05f150e`. Live % discounts (effectiveLineItemCents),
   NaN-proof scope kernel (safeScope), Odoo money inverse (currency_to_cents + pull-skip).
-- ⏳ **Tier 3 (everything else)** — NOT STARTED. HIGH cluster (sendViaOutlook double-send, gamma
-  double-bill, sent→approved demote, S3 orphan-on-delete, Odoo no-timeout, setOutcome ignores
-  return, LLM_KEY_ENCRYPTION_KEY no boot-enforce) + MED/LOW. Prod @ 05f150e.
+- ✅ **Tier 3 HIGH cluster** — all 7 fixed. sendViaOutlook atomic-claim-before-send;
+  generateViaGamma atomic-claim-before-credit-spend; rollbackDraftStatus restores the PRIOR
+  status (no sent→approved demote on synchronous re-draft failure; async-poll edge documented);
+  remove() reclaims S3 by engagement prefix; Odoo XML-RPC 30s abort timeout; setOutcome treats an
+  explicit `false` action result as failure; LLM_KEY_ENCRYPTION_KEY required (32-byte) in prod.
+- ⏳ **Tier 3 MED/LOW** — remaining: processPendingWebhooks atomic claim, winProbability≈0.85
+  constant, stale web error banner, gamma default-template P2002 race, unbounded /g answer,
+  downloadPdf 401 mislabel, archived dead code.
 
 
 ## Tier 1 — Document → scope / extraction

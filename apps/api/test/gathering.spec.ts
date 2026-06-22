@@ -71,7 +71,7 @@ describe('Gathering / engagement flow (sprint 3)', () => {
   mlClient.predict = async () => null;
   mlClient.train = async () => null;
   const mlSvc = new MlService(tenantDb, thread, mlClient);
-  const engagementsSvc = new EngagementsService(tenantDb, thread);
+  const engagementsSvc = new EngagementsService(tenantDb, thread, s3);
   const pricingSvc = new PricingService(tenantDb, new RateCardHintSynthesizerService());
   // Stub the rate-card field mapper — these tests don't exercise
   // extraction-driven pricing. Returning [] makes the quote service

@@ -66,6 +66,29 @@ export const envSchema = z.object({
         'Refusing to fall back to DATABASE_URL, which would disable tenant RLS.',
     });
   }
+
+  // LLM API-key envelope-encryption master key. Without it in production the
+  // crypto silently generates a RANDOM per-boot key (its dev behaviour), so every
+  // stored tenant LLM key becomes undecryptable after the next restart — and the
+  // failure is deferred and silent until the first decrypt. Fail fast at boot.
+  if (env.NODE_ENV === 'production') {
+    const key = env.LLM_KEY_ENCRYPTION_KEY;
+    if (!key) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LLM_KEY_ENCRYPTION_KEY'],
+        message:
+          'LLM_KEY_ENCRYPTION_KEY is required in production (32-byte base64). Without it the ' +
+          'crypto falls back to a random per-boot key and stored tenant LLM keys stop decrypting after a restart.',
+      });
+    } else if (Buffer.from(key, 'base64').length !== 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LLM_KEY_ENCRYPTION_KEY'],
+        message: `LLM_KEY_ENCRYPTION_KEY must decode to 32 bytes (got ${Buffer.from(key, 'base64').length}).`,
+      });
+    }
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;

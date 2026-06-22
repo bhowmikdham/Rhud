@@ -17,7 +17,7 @@
  * a single retry on 429/503.
  */
 
-/* global Response */
+/* global Response, AbortController */
 import { Logger } from '@nestjs/common';
 
 export class OdooApiError extends Error {
@@ -55,6 +55,10 @@ export interface OdooClientConfig {
  * callers compose these with the helper below.
  */
 export type OdooDomain = ReadonlyArray<unknown>;
+
+/** Hard per-request timeout for every Odoo XML-RPC call. Native fetch has none;
+ *  without this a hung Odoo wedges the request thread indefinitely. */
+const ODOO_REQUEST_TIMEOUT_MS = 30_000;
 
 export class OdooClient {
   private readonly logger = new Logger(OdooClient.name);
@@ -216,36 +220,43 @@ export class OdooClient {
     const baseUrl = this.cfg.url.replace(/\/$/, '');
     const url = `${baseUrl}${path}`;
 
+    // Hard per-request timeout. Native fetch has NONE by default — a hung Odoo
+    // (TCP connected, no response) would otherwise block this request thread
+    // indefinitely, and every sync endpoint funnels through here, so one stuck
+    // Odoo could exhaust the pool. Abort after ODOO_REQUEST_TIMEOUT_MS.
+    const fetchXml = async (): Promise<Response> => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ODOO_REQUEST_TIMEOUT_MS);
+      try {
+        return await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'text/xml' },
+          body,
+          signal: ctrl.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const describeFetchError = (e: Error): string =>
+      e.name === 'AbortError'
+        ? `odoo request timed out after ${ODOO_REQUEST_TIMEOUT_MS}ms calling ${path}`
+        : `odoo network error calling ${path}: ${e.message}`;
+
     let res: Response;
     try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'text/xml' },
-        body,
-      });
+      res = await fetchXml();
     } catch (e) {
-      throw new OdooApiError(
-        'network_error',
-        null,
-        `odoo network error calling ${path}: ${(e as Error).message}`,
-      );
+      throw new OdooApiError('network_error', null, describeFetchError(e as Error));
     }
 
     if (res.status === 429 || res.status === 503) {
       // Single retry after a polite delay.
       await new Promise((r) => setTimeout(r, 1500));
       try {
-        res = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'text/xml' },
-          body,
-        });
+        res = await fetchXml();
       } catch (e) {
-        throw new OdooApiError(
-          'network_error',
-          null,
-          `odoo retry failed: ${(e as Error).message}`,
-        );
+        throw new OdooApiError('network_error', null, `odoo retry failed: ${describeFetchError(e as Error)}`);
       }
     }
 

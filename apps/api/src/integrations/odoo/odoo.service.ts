@@ -868,10 +868,21 @@ export class OdooService {
     const client = await this.clientFor(tenantId);
     const start = Date.now();
     try {
-      if (outcome === 'won') {
-        await client.callAction('crm.lead', 'action_set_won', link.odooId);
-      } else {
-        await client.callAction('crm.lead', 'action_set_lost', link.odooId);
+      const actionResult =
+        outcome === 'won'
+          ? await client.callAction('crm.lead', 'action_set_won', link.odooId)
+          : await client.callAction('crm.lead', 'action_set_lost', link.odooId);
+      // Odoo's action_set_won/lost return `false` when the stage change did NOT
+      // apply (e.g. a server-side automation/guard blocked it). Without checking,
+      // we'd log a successful won/lost sync that Odoo never actually made — the
+      // Rhud outcome and the CRM silently diverge. Only an explicit `false` is a
+      // failure (a truthy value or an action dict is success).
+      if (actionResult === false) {
+        throw new OdooApiError(
+          'action_not_applied',
+          null,
+          `odoo action_set_${outcome} returned false — the lead stage was not changed`,
+        );
       }
       await this.tenantDb.run(tenantId, async (db) =>
         this.writeLog(db, tenantId, {

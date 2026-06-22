@@ -1,6 +1,7 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { TenantDb, type PrismaTx } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
+import { S3Service } from '../storage/s3.service.js';
 import { hashToken, mintToken } from '../gathering/token.util.js';
 import type { CreateEngagementDto } from './dto.js';
 import type { EngagementSource } from '@rhud/shared';
@@ -78,9 +79,12 @@ export interface EngagementSummary {
  */
 @Injectable()
 export class EngagementsService {
+  private readonly logger = new Logger(EngagementsService.name);
+
   constructor(
     private readonly tenantDb: TenantDb,
     private readonly thread: ThreadService,
+    private readonly s3: S3Service,
   ) {}
 
   async issue(args: {
@@ -506,6 +510,18 @@ export class EngagementsService {
       if (!exists) throw new NotFoundException('engagement_not_found');
       await db.engagement.delete({ where: { id } });
     });
+    // Postgres cascades the child ROWS (files, answers, …) but never the S3
+    // BYTES those files referenced — every uploaded doc/screenshot would orphan
+    // forever. Reclaim them by prefix (all of an engagement's files live under
+    // engagements/<tenant>/<id>/). Best-effort: the row delete already committed,
+    // so a storage hiccup must not fail the request — log the orphan for cleanup.
+    try {
+      await this.s3.deleteByPrefix(S3Service.prefixForEngagement({ tenantId, engagementId: id }));
+    } catch (e) {
+      this.logger.warn(
+        `engagement ${id} deleted but S3 cleanup failed (objects orphaned): ${(e as Error).message}`,
+      );
+    }
   }
 
   /**

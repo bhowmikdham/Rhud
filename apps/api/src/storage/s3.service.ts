@@ -234,6 +234,13 @@ export class S3Service {
     return `engagements/${args.tenantId}/${args.engagementId}/${args.fileId}/${safe}`;
   }
 
+  /** Prefix under which ALL of one engagement's uploaded files live — used to
+   *  reclaim its S3 objects when the engagement is hard-deleted (Postgres
+   *  cascades the rows but never the bytes). */
+  static prefixForEngagement(args: { tenantId: string; engagementId: string }): string {
+    return `engagements/${args.tenantId}/${args.engagementId}/`;
+  }
+
   /**
    * Canonical S3 key for a user's profile photo. The `uploadId` (a fresh
    * uuid per upload) busts any CDN/browser cache when the avatar is

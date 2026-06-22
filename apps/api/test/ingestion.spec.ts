@@ -52,7 +52,7 @@ describe('Direct-ingest pipeline (sprint 1)', () => {
   const notifications = new NotificationsService(tenantDb, email);
   const thread = new ThreadService(tenantDb, notifications);
   const s3 = new S3Service();
-  const engagementsSvc = new EngagementsService(tenantDb, thread);
+  const engagementsSvc = new EngagementsService(tenantDb, thread, s3);
   // Extraction stub — these tests don't exercise the extraction
   // pipeline (no LLM, no S3 round-trip). promote() fires kickoff post-
   // commit; returning 0 is the no-op path.

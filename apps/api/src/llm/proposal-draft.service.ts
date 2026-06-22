@@ -161,7 +161,12 @@ export class ProposalDraftService {
           return this.getCurrent(tenantId, engagementId);
         }
         if (deck.status === 'failed') {
-          await this.rollbackToApproved(tenantId, engagementId);
+          // Async poll path — the pre-draft status isn't recoverable here without
+          // persisting it (no column for it), so we fall back to 'approved'. The
+          // SYNCHRONOUS re-draft-failure paths (generate's LLM + Gamma-start) DO
+          // restore the prior status; only this narrow case (Gamma accepted the
+          // job, then the generation failed) can still demote a re-drafted 'sent'.
+          await this.rollbackDraftStatus(tenantId, engagementId, 'approved');
           await this.clearGammaTracking(tenantId, engagementId);
           throw new BadGatewayException(`gamma_provider_error: ${deck.error ?? 'unknown'}`);
         }
@@ -335,15 +340,15 @@ export class ProposalDraftService {
         timeoutMs: 90_000,
       });
     } catch (e) {
-      // Roll back the status change so the rep can retry instead of
-      // being stuck in `drafting`.
-      await this.rollbackToApproved(tenantId, engagementId);
+      // Roll back to the PRIOR status so the rep can retry instead of being stuck
+      // in `drafting` (and a re-draft of a 'sent' proposal isn't demoted).
+      await this.rollbackDraftStatus(tenantId, engagementId, ctx.status);
       throw new BadGatewayException(`ai_provider_error: ${(e as Error).message}`);
     }
 
     const text = result.text.trim();
     if (!text) {
-      await this.rollbackToApproved(tenantId, engagementId);
+      await this.rollbackDraftStatus(tenantId, engagementId, ctx.status);
       throw new BadGatewayException('ai_provider_error: empty_draft');
     }
 
@@ -379,10 +384,22 @@ export class ProposalDraftService {
      *  whatever structure the consultancy wrote. */
     renderedScaffold?: string,
   ): Promise<ProposalDraftResult> {
-    // Kick off generation FIRST — if Gamma rejects (bad key, bad template id,
-    // etc.) the gamma_provider_error propagates before we flip status, so we
-    // never leave a half-flipped engagement sitting in `drafting`.
-    //
+    // ATOMIC CLAIM before spending a Gamma credit. Flip the engagement to
+    // 'drafting' FIRST; a concurrent double-fire (double-click, or a switch-picker
+    // regenerate racing a mid-flight poll) then finds the status already
+    // 'drafting' (count 0) and bails, so only ONE call reaches Gamma. Previously
+    // Gamma was called before the flip and the updateMany count was ignored, so
+    // two calls each spent a credit and last-writer-wins on gammaGenerationId
+    // orphaned the first deck. On a Gamma error we roll the status back to where
+    // it started, so we never leave a half-flipped 'drafting'.
+    const claim = await this.tenantDb.run(tenantId, async (db) =>
+      db.engagement.updateMany({
+        where: { id: engagementId, status: { in: ['approved', 'draft_ready', 'sent'] } },
+        data: { status: 'drafting' },
+      }),
+    );
+    if (claim.count !== 1) throw new ConflictException('draft_already_in_progress');
+
     // Three-way pick — the Gamma File ID comes from the resolved library entry
     // (the per-opportunity selection), never the questionnaire template:
     //   - rendered scaffold → consultancy wrote the prose; pass it verbatim.
@@ -403,19 +420,18 @@ export class ProposalDraftService {
     } else {
       brief = this.buildGammaBrief(ctx);
     }
-    const started = await this.gamma.startDraftFromBrief(tenantId, brief);
+    // Spend the credit only after winning the claim; release the claim on failure.
+    const started = await this.gamma.startDraftFromBrief(tenantId, brief).catch(async (e) => {
+      await this.rollbackDraftStatus(tenantId, engagementId, ctx.status);
+      throw e;
+    });
 
-    // Now flip status, persist generation tracking, emit thread event.
-    // Any subsequent GET /draft poll will hit Gamma's status endpoint
-    // via getCurrent() and finalise once the deck is ready.
+    // Persist generation tracking (status is already 'drafting' from the claim) +
+    // emit. A subsequent GET /draft poll finalises via getCurrent() once ready.
     await this.tenantDb.run(tenantId, async (db) => {
       await db.engagement.updateMany({
-        // Regenerate from draft_ready (e.g. after switching the picker) and
-        // re-draft from sent (the generate guard allows 'sent') — else the flip
-        // no-ops, Gamma credits are spent, and the new deck is orphaned.
-        where: { id: engagementId, status: { in: ['approved', 'draft_ready', 'sent'] } },
+        where: { id: engagementId, status: 'drafting' },
         data: {
-          status: 'drafting',
           proposalDraftSource: 'gamma',
           gammaGenerationId: started.generationId,
           gammaGenerationStartedAt: new Date(),
@@ -755,6 +771,22 @@ export class ProposalDraftService {
       }
     }
 
+    // Atomically CLAIM the send BEFORE the irreversible sendMail, so two
+    // concurrent calls (rep double-clicks "Send to client", or a retried request)
+    // can't both email the client. The early `status === 'sent'` guard above is a
+    // fast pre-check inside a separate read txn — only this conditional updateMany
+    // is the real mutual-exclusion (mirrors gathering.submit's claim pattern). The
+    // loser sees status already 'sent' (count 0) → 409. If the send then fails we
+    // roll the status back so the rep can retry.
+    const priorStatus = eng.status;
+    const claim = await this.tenantDb.run(tenantId, async (db) =>
+      db.engagement.updateMany({
+        where: { id: engagementId, status: { not: 'sent' } },
+        data: { status: 'sent' },
+      }),
+    );
+    if (claim.count !== 1) throw new ConflictException('already_sent');
+
     let sentFrom: string;
     try {
       const sendRes = await this.outlook.sendMail(tenantId, actorId, {
@@ -765,6 +797,15 @@ export class ProposalDraftService {
       });
       sentFrom = sendRes.accountEmail;
     } catch (e) {
+      // Send failed — RELEASE the claim so the rep can retry (no phantom 'sent').
+      await this.tenantDb
+        .run(tenantId, async (db) =>
+          db.engagement.updateMany({
+            where: { id: engagementId, status: 'sent' },
+            data: { status: priorStatus },
+          }),
+        )
+        .catch(() => undefined);
       // UnauthorizedException (outlook_reconnect_required) and
       // ServiceUnavailableException (outlook_not_configured) carry the
       // right HTTP semantics — propagate without wrapping. Anything
@@ -789,11 +830,8 @@ export class ProposalDraftService {
       sentFrom,
       ...(eng.gammaDeckUrl ? { proposalUrl: eng.gammaDeckUrl } : {}),
     };
+    // Status was already flipped to 'sent' by the atomic claim above — just emit.
     await this.tenantDb.run(tenantId, async (db) => {
-      await db.engagement.update({
-        where: { id: engagementId },
-        data: { status: 'sent' },
-      });
       await this.thread.emitWithin(db, tenantId, {
         engagementId,
         eventType: 'proposal_sent',
@@ -1116,12 +1154,21 @@ export class ProposalDraftService {
     return { inputText, title, gammaTemplateId };
   }
 
-  private async rollbackToApproved(tenantId: string, engagementId: string): Promise<void> {
+  /** Release a `drafting` claim back to the status the engagement had BEFORE the
+   *  draft started. Restoring the prior status (not a hardcoded 'approved') is
+   *  what stops a failed re-draft of an already-`sent` proposal from silently
+   *  demoting it to 'approved'. Only flips rows still in 'drafting' (a concurrent
+   *  finalise that already advanced the status is left alone). Best-effort. */
+  private async rollbackDraftStatus(
+    tenantId: string,
+    engagementId: string,
+    priorStatus: string,
+  ): Promise<void> {
     await this.tenantDb
       .run(tenantId, async (db) => {
         await db.engagement.updateMany({
           where: { id: engagementId, status: 'drafting' },
-          data: { status: 'approved' },
+          data: { status: priorStatus },
         });
       })
       .catch(() => undefined);
