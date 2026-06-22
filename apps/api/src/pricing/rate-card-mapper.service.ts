@@ -635,7 +635,12 @@ export class RateCardFieldMapperService {
         droppedHallucinated++;
         continue;
       }
-      const scopeValue = Number(r.scopeValue);
+      // Round to an integer count. The schema constrains scopeValue to `integer`,
+      // but if structured output was stripped (non-Gemini, or a provider 4xx) the
+      // model can emit a float; a count can't be fractional, and a fractional value
+      // would skew pickTier ranges + Math.round(price×scope). `Math.round(NaN)` stays
+      // NaN (caught below); `Math.round(0.4)`→0 (caught by the ≤0 guard).
+      const scopeValue = Math.round(Number(r.scopeValue));
       if (!Number.isFinite(scopeValue) || scopeValue <= 0) {
         droppedBadScope++;
         continue;
@@ -1512,7 +1517,14 @@ function parseNumber(value: string): number | null {
   const m = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
   if (!m) return null;
   const n = Number(m[0]);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+  // Scope is always an INTEGER count (pages, apps, endpoints, users, sites) — a
+  // fractional literal (a doc typo like "10.5", or "1.5" that should have been a
+  // whole number) can't be half a unit. Round to the nearest whole so the heuristic
+  // never feeds a fractional scopeValue into pickTier / Math.round(price×scope).
+  // NB: deliberately NOT expanding k/M/B suffixes here — grabbing a trailing letter
+  // would turn "10 mobile apps" into "10m" → 10,000,000, a catastrophic over-count.
+  return Math.round(n);
 }
 
 /**

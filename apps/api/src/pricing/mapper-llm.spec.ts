@@ -158,6 +158,21 @@ describe('mapper LLM path — canned responses', () => {
     expect(out).toHaveLength(1);
   });
 
+  it('rounds a fractional scopeValue to an integer count (scope can\'t be half a unit)', async () => {
+    // If structured output was stripped the model can emit a float; a count must
+    // be a whole number before it feeds pickTier ranges / Math.round(price×scope).
+    const llm = makeMockLlm(JSON.stringify({
+      entities: [
+        { serviceLineSlug: 'vapt_web_app_dynamic_pages', scopeValue: 10.5, customerType: 'external', confidence: 0.9, reasoning: '', sourceQuote: '' },
+      ],
+    }));
+    const mapper = new RateCardFieldMapperService(llm);
+    const out = await mapper.inferEntities('t', [{ key: 'k', value: 'v' }], RATE_CARD);
+    expect(out).toHaveLength(1);
+    expect(Number.isInteger(out[0]!.scopeValue)).toBe(true);
+    expect(out[0]!.scopeValue).toBe(11); // Math.round(10.5)
+  });
+
   it('falls back to heuristic when LLM returns mangled JSON', async () => {
     const llm = makeMockLlm('this is definitely not JSON at all');
     const mapper = new RateCardFieldMapperService(llm);
