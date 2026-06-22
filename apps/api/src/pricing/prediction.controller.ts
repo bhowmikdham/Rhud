@@ -29,6 +29,7 @@ import { TenantDb } from '../db/with-tenant.js';
 import { ThreadService } from '../thread/thread.service.js';
 import { PredictionService } from './prediction.service.js';
 import { QuoteService } from './quote.service.js';
+import { effectiveLineItemCents } from './quote-line-items.service.js';
 import { OdooService } from '../integrations/odoo/odoo.service.js';
 
 // UUID-shape match. `@IsUUID()` requires version 1-5, but our seed
@@ -319,15 +320,19 @@ export class PredictionController {
           ) {
             const quoteRow = await db.engagementQuote.findUnique({
               where: { engagementId },
-              select: { id: true },
+              select: { id: true, baseTotalCents: true },
             });
             if (quoteRow) {
               const lineRows = await db.engagementQuoteLineItem.findMany({
                 where: { engagementQuoteId: quoteRow.id },
-                select: { amountCents: true },
+                select: { amountCents: true, percentageBps: true },
               });
+              // Recompute percentage discounts against the LIVE base (same as
+              // getBreakdown) so the APPROVED price can't bake in a stale "% off"
+              // snapshot from an earlier, smaller base.
+              const base = Number(quoteRow.baseTotalCents);
               const lineItemTotalCents = lineRows.reduce(
-                (sum, r) => sum + Number(r.amountCents),
+                (sum, r) => sum + effectiveLineItemCents(r, base),
                 0,
               );
               approvedCents = Math.max(0, approvedCents + lineItemTotalCents);

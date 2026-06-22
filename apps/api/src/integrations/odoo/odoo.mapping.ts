@@ -73,6 +73,11 @@ export function buildEngagementPatch(
     if (m.rhudEntity !== 'engagement') continue;
     if (m.odooModel !== targetOdooModel) continue;
     if (m.direction === 'push') continue; // outbound only
+    // `cents_to_currency` is an OUTBOUND transform — applying it inbound would
+    // divide an already-in-currency Odoo value by 100 (a 100× corruption). A
+    // misconfigured pull/both row is skipped here; tenants pulling money must use
+    // `currency_to_cents` instead.
+    if (m.transform === 'cents_to_currency') continue;
     const raw = flattened[m.odooField];
     if (raw == null) continue;
     const transformed = applyTransform(raw, m.transform);
@@ -95,8 +100,17 @@ export function applyTransform(value: unknown, transform: string | null | undefi
   if (value == null) return value;
   switch (transform) {
     case 'cents_to_currency': {
+      // Outbound only (cents → whole-currency). The inbound/pull builder skips
+      // this transform so it can never divide an already-in-currency Odoo value.
       const n = typeof value === 'bigint' ? Number(value) : Number(value);
       return Number.isFinite(n) ? Number((n / 100).toFixed(2)) : 0;
+    }
+    case 'currency_to_cents': {
+      // Inbound inverse (whole-currency → cents) for tenants pulling an Odoo money
+      // field back into a Rhud `*Cents` field. Without this, a pull mapping had to
+      // misuse `cents_to_currency`, dividing an already-currency value by 100.
+      const n = Number(value);
+      return Number.isFinite(n) ? Math.round(n * 100) : 0;
     }
     case 'json_stringify':
       return JSON.stringify(value);

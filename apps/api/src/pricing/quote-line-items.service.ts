@@ -24,6 +24,26 @@ import {
   type UpdateQuoteLineItemInput,
 } from '@rhud/shared';
 
+/**
+ * The LIVE cents for a line item. A percentage discount is recomputed against
+ * the CURRENT base every time it's consumed — the stored `amountCents` is only a
+ * create-time snapshot and goes STALE after a re-quote changes `baseTotalCents`
+ * (a "10% off" entered at base ₹50k must become −₹10k once the scope grows the
+ * base to ₹100k, not stay −₹5k). Fixed-cents rows return their stored amount.
+ * `percentageBps` is the single source of truth; `amountCents` is display history.
+ * Used by BOTH the breakdown read and the approval fold so they can never diverge.
+ */
+export function effectiveLineItemCents(
+  item: { amountCents: number | bigint; percentageBps: number | null },
+  baseTotalCents: number,
+): number {
+  if (item.percentageBps != null) {
+    // Percentage rows are discount-only (enforced at create) → always negative.
+    return -Math.round((baseTotalCents * Math.abs(item.percentageBps)) / 10_000);
+  }
+  return Number(item.amountCents);
+}
+
 @Injectable()
 export class QuoteLineItemsService {
   constructor(
@@ -52,9 +72,16 @@ export class QuoteLineItemsService {
         where: { engagementQuoteId: quote.id },
         orderBy: { position: 'asc' },
       });
-      const items = rows.map(toRowDto);
-      const lineItemTotal = items.reduce((sum, r) => sum + r.amountCents, 0);
       const baseTotal = Number(quote.baseTotalCents);
+      // Recompute percentage rows against the LIVE base so the per-line amount the
+      // UI shows ("10% off → −₹10,000") and the total both track a re-quote,
+      // instead of showing the stale create-time snapshot.
+      const items = rows.map((r) => {
+        const dto = toRowDto(r);
+        dto.amountCents = effectiveLineItemCents(r, baseTotal);
+        return dto;
+      });
+      const lineItemTotal = items.reduce((sum, r) => sum + r.amountCents, 0);
       const grand = Math.max(0, baseTotal + lineItemTotal);
       return {
         baseTotalCents: baseTotal,

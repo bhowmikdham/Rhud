@@ -277,6 +277,21 @@ export interface BasePriceResult {
  * `unmatched: { reason }` — the manager surface will flag it for human
  * resolution rather than silently zeroing the price.
  */
+/**
+ * Read a tier-driving dimension as a safe, finite, non-negative count. The type
+ * says `number`, but a value can arrive via an `as ScopedEntity[]` cast from a
+ * loosely-validated DTO (the quote route validates `dimensions` only with
+ * `@IsObject()`), so at runtime it could be a string, object, or NaN. Left
+ * unguarded, that makes `pickTier` range comparisons silently mis-match
+ * (`"abc" < min` and `"abc" > max` are both false) and `Math.round(price × scope)`
+ * become NaN — a wrong/NaN price persisted with no error. A bad value collapses
+ * to 0, which routes the line through the existing unmatched / manual-quote path.
+ */
+function safeScope(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
 export function computeBasePrice(
   rateCard: RateCard,
   entities: ScopedEntity[],
@@ -311,7 +326,7 @@ export function computeBasePrice(
     for (const group of groups.values()) {
       if (group.length < 2) continue; // singletons price normally
       const sl = linesByService.get(group[0]!.serviceLineSlug)!;
-      const pooledScope = group.reduce((s, e) => s + (e.dimensions[sl.scopeUnit] ?? 0), 0);
+      const pooledScope = group.reduce((s, e) => s + safeScope(e.dimensions[sl.scopeUnit]), 0);
       const tier = pickTier(sl.tiers, {
         scopeValue: pooledScope,
         methodology: group[0]!.methodology ?? null,
@@ -350,7 +365,7 @@ export function computeBasePrice(
       continue;
     }
 
-    const scopeValue = e.dimensions[sl.scopeUnit] ?? 0;
+    const scopeValue = safeScope(e.dimensions[sl.scopeUnit]);
 
     // When pooled, this app uses the COMBINED-volume tier (so a small app
     // benefits from the opportunity's total scope); otherwise it picks its

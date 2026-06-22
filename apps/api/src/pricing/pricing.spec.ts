@@ -67,6 +67,22 @@ describe('computeBasePrice (CSaaS rate card)', () => {
     expect(r.lines[0]!.tierLabel).toBe('31-50');
   });
 
+  it('a non-number dimension never produces a NaN price (safeScope → 0, not NaN)', () => {
+    // The /pricing/quote route validates dimensions only with @IsObject(), so a
+    // string/object can reach the kernel via the `as ScopedEntity[]` cast. It must
+    // collapse to 0 (unmatched/manual path), never NaN through pickTier/Math.round.
+    const r = computeBasePrice(RATE_CARD, [{
+      entityId: 'bad',
+      serviceLineSlug: 'vapt_web_app',
+      dimensions: { pages: 'abc' } as unknown as ScopedEntity['dimensions'],
+      methodology: 'grey_box',
+      customerType: 'external',
+    }]);
+    expect(Number.isFinite(r.totalCents)).toBe(true);
+    expect(Number.isNaN(r.lines[0]!.priceCents)).toBe(false);
+    expect(r.lines[0]!.scopeValue).toBe(0);
+  });
+
   it('methodology axis: same dimension, different methodology, different price', () => {
     const grey = computeBasePrice(RATE_CARD, [{
       entityId: 'g', serviceLineSlug: 'vapt_web_app',
